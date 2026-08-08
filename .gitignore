@@ -1,0 +1,5 @@
+/dist/
+/llm-wiki
+/coverage.out
+*.test
+.DS_Store

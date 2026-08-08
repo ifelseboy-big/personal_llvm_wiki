@@ -1,0 +1,56 @@
+version: 2
+
+project_name: llm-wiki
+
+before:
+  hooks:
+    - go mod verify
+    - go test ./...
+
+builds:
+  - id: llm-wiki
+    main: ./cmd/llm-wiki
+    binary: llm-wiki
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+    goarch:
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - >-
+        -s -w
+        -X llm-wiki/internal/app.Version={{.Version}}
+        -X llm-wiki/internal/app.Commit={{.Commit}}
+        -X llm-wiki/internal/app.Date={{.Date}}
+
+archives:
+  - id: binaries
+    ids: [llm-wiki]
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - HANDOFF.md
+      - docs/TECHNICAL_DESIGN.md
+      - schemas/*
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+sboms:
+  - artifacts: archive
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+
+release:
+  draft: true

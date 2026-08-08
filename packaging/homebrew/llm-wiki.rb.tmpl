@@ -1,0 +1,19 @@
+class LlmWiki < Formula
+  desc "File-first trusted personal knowledge base CLI"
+  homepage "{{HOMEPAGE}}"
+  version "{{VERSION}}"
+
+  on_macos do
+    url "{{DARWIN_ARM64_URL}}"
+    sha256 "{{DARWIN_ARM64_SHA256}}"
+  end
+
+  def install
+    odie "llm-wiki only supports Apple Silicon Macs" unless Hardware::CPU.arm?
+    bin.install "llm-wiki"
+  end
+
+  test do
+    system "#{bin}/llm-wiki", "--version"
+  end
+end

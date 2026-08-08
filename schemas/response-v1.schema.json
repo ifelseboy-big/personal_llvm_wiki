@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://llm-wiki.dev/schemas/response-v1.schema.json",
+  "title": "llm-wiki CLI response v1",
+  "type": "object",
+  "required": ["schema_version", "ok", "command", "tool_version", "warnings", "affected_files"],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "ok": { "type": "boolean" },
+    "command": { "type": "string", "minLength": 1 },
+    "tool_version": { "type": "string", "minLength": 1 },
+    "wiki": {
+      "type": "object",
+      "required": ["id", "name", "path"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^wiki_[0-9a-hjkmnp-tv-z]{26}$" },
+        "name": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "data": true,
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "affected_files": { "type": "array", "items": { "type": "string" } },
+    "error": {
+      "type": "object",
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]+$" },
+        "message": { "type": "string", "minLength": 1 },
+        "details": { "type": "object" },
+        "retryable": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "meta": { "type": "object" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "ok": { "const": true } }, "required": ["ok"] },
+      "then": { "not": { "required": ["error"] } },
+      "else": { "required": ["error"] }
+    }
+  ],
+  "additionalProperties": false
+}

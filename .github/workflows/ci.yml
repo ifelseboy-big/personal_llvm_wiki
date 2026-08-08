@@ -1,0 +1,22 @@
+name: ci
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: true
+      - run: go mod verify
+      - run: go test ./...
+      - run: CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath ./cmd/llm-wiki

@@ -1,0 +1,19 @@
+name = "personal"
+version = "1.0.0"
+schema_version = 1
+description = "个人可信知识库：原始证据、发布知识和 AI 派生内容严格分层"
+
+managed_files = [
+  "AGENTS.md",
+  "rules/capture.md",
+  "rules/publish.md",
+  "rules/derived.md",
+  "rules/quality.md",
+  "templates/raw/note.md",
+  "templates/raw/source.md",
+  "templates/knowledge/concept.md",
+  "templates/knowledge/guide.md",
+  "templates/knowledge/reference.md",
+  "templates/knowledge/decision.md",
+  "templates/knowledge/project.md",
+]

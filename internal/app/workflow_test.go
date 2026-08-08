@@ -1,0 +1,191 @@
+package app
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"llm-wiki/internal/config"
+	"llm-wiki/internal/document"
+)
+
+func TestCompleteCLIWorkflow(t *testing.T) {
+	t.Setenv("LLM_WIKI_CONFIG", filepath.Join(t.TempDir(), "user-config.toml"))
+	root := filepath.Join(t.TempDir(), "wiki")
+	runCLI(t, "", "init", root, "--name", "workflow", "--json", "--no-interactive")
+	rawResponse := runCLI(t, "# Source\n\n稳定 IR 解耦编译器组件。\n", "raw", "add", "-", "--name", "source.md", "--wiki", root, "--json", "--no-interactive")
+	rawID := nestedString(t, rawResponse.Data, "items", 0, "id")
+	draft := filepath.Join(t.TempDir(), "draft.md")
+	if err := os.WriteFile(draft, []byte("---\ntype: concept\ntitle: 稳定 IR\n---\n# 稳定 IR\n\n稳定 IR 解耦编译器组件。\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	proposalResponse := runCLI(t, "", "publish", "propose", "--source", rawID, "--file", draft, "--wiki", root, "--json", "--no-interactive")
+	changeID := nestedString(t, proposalResponse.Data, "change_id")
+	knowledgeID := nestedString(t, proposalResponse.Data, "knowledge_id")
+	runCLI(t, "", "publish", "diff", changeID, "--wiki", root, "--json", "--no-interactive")
+	runCLI(t, "", "publish", "apply", changeID, "--wiki", root, "--json", "--no-interactive")
+	runCLI(t, "", "build", "--wiki", root, "--json", "--no-interactive")
+	query := runCLI(t, "", "query", "稳定 IR", "--wiki", root, "--json", "--no-interactive")
+	if count := nestedFloat(t, query.Data, "count"); count < 1 {
+		t.Fatalf("expected query evidence, got %#v", query.Data)
+	}
+	trace := runCLI(t, "", "trace", knowledgeID, "--wiki", root, "--json", "--no-interactive")
+	if valid, ok := trace.Data.(map[string]any)["valid"].(bool); !ok || !valid {
+		t.Fatalf("invalid trace %#v", trace.Data)
+	}
+	runCLI(t, "", "index", "rebuild", "--wiki", root, "--json", "--no-interactive")
+	doctor := runCLI(t, "", "doctor", "--wiki", root, "--json", "--no-interactive")
+	if healthy, ok := doctor.Data.(map[string]any)["healthy"].(bool); !ok || !healthy {
+		t.Fatalf("doctor failed after complete workflow: %#v", doctor.Data)
+	}
+}
+
+func TestAuxiliaryCLICommandSurface(t *testing.T) {
+	t.Setenv("LLM_WIKI_CONFIG", filepath.Join(t.TempDir(), "user-config.toml"))
+	t.Setenv("LLM_WIKI_CODEX_SKILLS_DIR", filepath.Join(t.TempDir(), "skills"))
+	root := filepath.Join(t.TempDir(), "wiki")
+	runCLI(t, "", "init", root, "--name", "surface", "--json", "--no-interactive")
+	runCLI(t, "", "locate", "--wiki", root, "--json", "--no-interactive")
+	runCLI(t, "", "status", "--wiki", root, "--json", "--no-interactive")
+	runCLI(t, "", "index", "status", "--wiki", root, "--json", "--no-interactive")
+	runCLI(t, "", "index", "update", "--wiki", root, "--json", "--no-interactive")
+	runCLI(t, "", "build", "status", "--wiki", root, "--json", "--no-interactive")
+	runCLI(t, "", "migrate", "--plan", "--wiki", root, "--json", "--no-interactive")
+	runCLI(t, "", "template", "list", "--wiki", root, "--json", "--no-interactive")
+	runCLI(t, "", "template", "show", "concept", "--wiki", root, "--json", "--no-interactive")
+	runCLI(t, "", "template", "upgrade", "--plan", "--wiki", root, "--json", "--no-interactive")
+
+	rawResponse := runCLI(t, "# Reject source\n", "raw", "add", "-", "--name", "reject.md", "--wiki", root, "--json", "--no-interactive")
+	rawID := nestedString(t, rawResponse.Data, "items", 0, "id")
+	runCLI(t, "", "raw", "list", "--wiki", root, "--json", "--no-interactive")
+	runCLI(t, "", "raw", "show", rawID, "--wiki", root, "--json", "--no-interactive")
+	draft := filepath.Join(t.TempDir(), "reject-draft.md")
+	if err := os.WriteFile(draft, []byte("# Rejected knowledge\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	proposal := runCLI(t, "", "publish", "propose", "--source", rawID, "--file", draft, "--wiki", root, "--json", "--no-interactive")
+	changeID := nestedString(t, proposal.Data, "change_id")
+	runCLI(t, "", "publish", "reject", changeID, "--reason", "test rejection", "--wiki", root, "--json", "--no-interactive")
+
+	runCLI(t, "", "skill", "status", "codex", "--json", "--no-interactive")
+	runCLI(t, "", "skill", "install", "codex", "--yes", "--json", "--no-interactive")
+	runCLI(t, "", "skill", "update", "codex", "--yes", "--json", "--no-interactive")
+	runCLI(t, "", "skill", "uninstall", "codex", "--yes", "--json", "--no-interactive")
+}
+
+func TestQuerySynchronizesFromFilesAndTraceHashesActualEvidence(t *testing.T) {
+	t.Setenv("LLM_WIKI_CONFIG", filepath.Join(t.TempDir(), "user-config.toml"))
+	root := filepath.Join(t.TempDir(), "wiki")
+	runCLI(t, "", "init", root, "--name", "facts", "--json", "--no-interactive")
+	rawResponse := runCLI(t, "# Source\n\nOriginal evidence.\n", "raw", "add", "-", "--name", "source.md", "--wiki", root, "--json", "--no-interactive")
+	rawID := nestedString(t, rawResponse.Data, "items", 0, "id")
+	rawPath := nestedString(t, rawResponse.Data, "items", 0, "path")
+	draft := filepath.Join(t.TempDir(), "draft.md")
+	if err := os.WriteFile(draft, []byte("# File facts\n\nOriginal evidence.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	proposal := runCLI(t, "", "publish", "propose", "--source", rawID, "--file", draft, "--wiki", root, "--json", "--no-interactive")
+	changeID := nestedString(t, proposal.Data, "change_id")
+	knowledgeID := nestedString(t, proposal.Data, "knowledge_id")
+	runCLI(t, "", "publish", "apply", changeID, "--wiki", root, "--json", "--no-interactive")
+
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	knowledge, err := document.FindByID(cfg.KnowledgeDir(), knowledgeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	knowledge.Body = append(knowledge.Body, []byte("\nUniqueFileFactToken\n")...)
+	knowledge.Metadata.ContentHash = document.HashBytes(document.NormalizeMarkdownBody(knowledge.Body))
+	if err := document.Write(knowledge.Path, knowledge.Metadata, knowledge.Body); err != nil {
+		t.Fatal(err)
+	}
+	query := runCLI(t, "", "query", "UniqueFileFactToken", "--wiki", root, "--json", "--no-interactive")
+	if nestedFloat(t, query.Data, "count") < 1 || len(query.Warnings) == 0 {
+		t.Fatalf("query did not synchronize from file facts: %#v", query)
+	}
+
+	path := filepath.Join(root, filepath.FromSlash(rawPath))
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b = bytes.Replace(b, []byte("Original evidence."), []byte("Tampered evidence."), 1)
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	trace := runCLI(t, "", "trace", knowledgeID, "--wiki", root, "--json", "--no-interactive")
+	data := trace.Data.(map[string]any)
+	if valid, ok := data["valid"].(bool); !ok || valid {
+		t.Fatalf("trace trusted recorded metadata instead of actual raw bytes: %#v", trace.Data)
+	}
+}
+
+func runCLI(t *testing.T, stdin string, args ...string) Response {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	root := NewRootCommandWithIO(strings.NewReader(stdin), &stdout, &stderr)
+	root.SetArgs(args)
+	if err := root.Execute(); err != nil {
+		t.Fatalf("command %v: %v stderr=%s stdout=%s", args, err, stderr.String(), stdout.String())
+	}
+	var response Response
+	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
+		t.Fatalf("decode %v output %q: %v", args, stdout.String(), err)
+	}
+	if !response.OK {
+		t.Fatalf("command %v returned failure %#v", args, response)
+	}
+	var generic any
+	b, _ := json.Marshal(response.Data)
+	_ = json.Unmarshal(b, &generic)
+	response.Data = generic
+	return response
+}
+
+func nestedString(t *testing.T, value any, path ...any) string {
+	t.Helper()
+	current := value
+	for _, part := range path {
+		switch key := part.(type) {
+		case string:
+			m, ok := current.(map[string]any)
+			if !ok {
+				t.Fatalf("%v is not an object at %s", current, key)
+			}
+			current = m[key]
+		case int:
+			a, ok := current.([]any)
+			if !ok || key >= len(a) {
+				t.Fatalf("%v is not an array at %d", current, key)
+			}
+			current = a[key]
+		default:
+			t.Fatal(fmt.Sprintf("unsupported path component %T", part))
+		}
+	}
+	out, ok := current.(string)
+	if !ok {
+		t.Fatalf("%v is not a string", current)
+	}
+	return out
+}
+
+func nestedFloat(t *testing.T, value any, key string) float64 {
+	t.Helper()
+	m, ok := value.(map[string]any)
+	if !ok {
+		t.Fatalf("%v is not an object", value)
+	}
+	out, ok := m[key].(float64)
+	if !ok {
+		t.Fatalf("%v is not a number", m[key])
+	}
+	return out
+}
