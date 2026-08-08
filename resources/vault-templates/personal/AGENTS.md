@@ -30,6 +30,7 @@
 详细规则见：
 
 - [采集规则](rules/capture.md)
+- [元数据与 Obsidian Properties 规则](rules/metadata.md)
 - [发布规则](rules/publish.md)
 - [派生层规则](rules/derived.md)
 - [知识质量规则](rules/quality.md)

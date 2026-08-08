@@ -18,11 +18,12 @@ func TestStatusRejectsManifestOutputPathTraversal(t *testing.T) {
 	}
 	cfg := result.Config
 	manifest := Manifest{
-		SchemaVersion: 1, WikiID: cfg.InstanceID, Compiler: CompilerName, CompilerVersion: CompilerVersion,
+		SchemaVersion: 2, WikiID: cfg.InstanceID, Compiler: CompilerName, CompilerVersion: CompilerVersion,
 		ConfigHash: buildConfigHash(cfg), GeneratedAt: time.Now().Format(time.RFC3339),
 		Items: []ManifestItem{{
 			KnowledgeID: "know_01arz3ndektsv4rrffq69g5fav", KnowledgeHash: document.HashBytes([]byte("knowledge")),
-			OutputPath: "../../outside.md", OutputHash: document.HashBytes([]byte("output")), Fingerprint: document.HashBytes([]byte("fingerprint")),
+			KnowledgeFileHash: document.HashBytes([]byte("knowledge file")),
+			OutputPath:        "../../outside.md", OutputHash: document.HashBytes([]byte("output")), Fingerprint: document.HashBytes([]byte("fingerprint")),
 		}},
 	}
 	b, err := json.Marshal(manifest)

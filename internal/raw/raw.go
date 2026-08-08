@@ -30,6 +30,7 @@ type AddOptions struct {
 	DryRun         bool
 	Stdin          io.Reader
 	Now            time.Time
+	fallbackOrigin string
 }
 
 type Added struct {
@@ -51,9 +52,6 @@ func Add(cfg *config.Instance, opts AddOptions) ([]Added, error) {
 	if opts.Type == "" {
 		opts.Type = "note"
 	}
-	if opts.Origin == "" {
-		opts.Origin = "file"
-	}
 	if opts.Now.IsZero() {
 		opts.Now = time.Now()
 	}
@@ -71,6 +69,7 @@ func Add(cfg *config.Instance, opts AddOptions) ([]Added, error) {
 	}
 
 	if opts.Input == "-" {
+		opts.fallbackOrigin = "stdin"
 		name := opts.Name
 		if name == "" {
 			name = "stdin.md"
@@ -83,7 +82,6 @@ func Add(cfg *config.Instance, opts AddOptions) ([]Added, error) {
 		if int64(len(data)) > cfg.Security.MaxInputBytes {
 			return nil, fmt.Errorf("stdin exceeds max_input_bytes %d", cfg.Security.MaxInputBytes)
 		}
-		opts.Origin = "stdin"
 		item, err := addBytes(cfg, name, data, opts)
 		if err != nil {
 			return nil, err
@@ -95,6 +93,7 @@ func Add(cfg *config.Instance, opts AddOptions) ([]Added, error) {
 	if err != nil {
 		return nil, err
 	}
+	opts.fallbackOrigin = "file"
 	info, err := os.Lstat(abs)
 	if err != nil {
 		return nil, err
@@ -252,11 +251,13 @@ func addBytes(cfg *config.Instance, originalName string, data []byte, opts AddOp
 		}
 		body := document.NormalizeMarkdownBody(data)
 		title := opts.Title
+		inputMeta := document.Metadata{}
 		if bytes.HasPrefix(body, []byte("---\n")) || bytes.HasPrefix(body, []byte("---\r\n")) {
 			existing, parsedBody, err := document.Parse(body)
 			if err != nil {
 				return Added{}, err
 			}
+			inputMeta = existing
 			body = parsedBody
 			if title == "" {
 				title = existing.Title
@@ -272,11 +273,14 @@ func addBytes(cfg *config.Instance, originalName string, data []byte, opts AddOp
 			title = strings.TrimSuffix(base, filepath.Ext(base))
 		}
 		hash := document.HashBytes(body)
+		origin := resolveOrigin(opts, inputMeta.Origin)
 		meta := document.Metadata{
 			SchemaVersion: document.CurrentSchema, ID: id, Type: opts.Type,
-			Title: title, Status: "raw", Origin: opts.Origin,
+			Title: title, Status: "raw", Origin: origin,
 			CapturedAt: opts.Now.Format(time.RFC3339), ContentHash: hash,
 			MediaType: "text/markdown", OriginalName: originalName,
+			Tags: cleanStrings(inputMeta.Tags), Aliases: cleanStrings(inputMeta.Aliases),
+			Extra: copyUserProperties(inputMeta.Extra),
 		}
 		result.Path = filepath.ToSlash(filepath.Join(relDir, base))
 		result.ContentHash = hash
@@ -307,7 +311,7 @@ func addBytes(cfg *config.Instance, originalName string, data []byte, opts AddOp
 	}
 	meta := document.Metadata{
 		SchemaVersion: document.CurrentSchema, ID: id, Type: "source", Title: title,
-		Status: "raw", Origin: opts.Origin, CapturedAt: opts.Now.Format(time.RFC3339),
+		Status: "raw", Origin: resolveOrigin(opts, ""), CapturedAt: opts.Now.Format(time.RFC3339),
 		ContentHash: hash, MediaType: mediaType, OriginalName: originalName, Asset: base,
 	}
 	body := []byte(fmt.Sprintf("# %s\n\nImported binary source `%s`.\n", title, base))
@@ -326,6 +330,46 @@ func addBytes(cfg *config.Instance, originalName string, data []byte, opts AddOp
 		return Added{}, err
 	}
 	return result, nil
+}
+
+func cleanStrings(items []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item != "" && !seen[item] {
+			seen[item] = true
+			out = append(out, item)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func copyUserProperties(properties map[string]any) map[string]any {
+	out := make(map[string]any, len(properties))
+	for key, value := range properties {
+		if value != nil {
+			out[key] = value
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func resolveOrigin(opts AddOptions, frontmatterOrigin string) string {
+	if origin := strings.TrimSpace(opts.Origin); origin != "" {
+		return origin
+	}
+	if origin := strings.TrimSpace(frontmatterOrigin); origin != "" {
+		return origin
+	}
+	if origin := strings.TrimSpace(opts.fallbackOrigin); origin != "" {
+		return origin
+	}
+	return "file"
 }
 
 func commitRawEntry(cfg *config.Instance, targetDir, id string, write func(stageDir string) error) error {

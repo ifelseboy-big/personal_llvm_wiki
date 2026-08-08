@@ -18,15 +18,16 @@ import (
 
 const (
 	CompilerName    = "standard"
-	CompilerVersion = 1
+	CompilerVersion = 2
 )
 
 type ManifestItem struct {
-	KnowledgeID   string `json:"knowledge_id"`
-	KnowledgeHash string `json:"knowledge_hash"`
-	OutputPath    string `json:"output_path"`
-	OutputHash    string `json:"output_hash"`
-	Fingerprint   string `json:"fingerprint"`
+	KnowledgeID       string `json:"knowledge_id"`
+	KnowledgeHash     string `json:"knowledge_hash"`
+	KnowledgeFileHash string `json:"knowledge_file_hash"`
+	OutputPath        string `json:"output_path"`
+	OutputHash        string `json:"output_hash"`
+	Fingerprint       string `json:"fingerprint"`
 }
 
 type Manifest struct {
@@ -95,7 +96,7 @@ func Build(cfg *config.Instance, full, dryRun bool) (*Result, error) {
 
 	configHash := buildConfigHash(cfg)
 	manifest := Manifest{
-		SchemaVersion: 1, WikiID: cfg.InstanceID, Compiler: CompilerName,
+		SchemaVersion: 2, WikiID: cfg.InstanceID, Compiler: CompilerName,
 		CompilerVersion: CompilerVersion, ConfigHash: configHash,
 		GeneratedAt: time.Now().Format(time.RFC3339),
 	}
@@ -117,8 +118,13 @@ func Build(cfg *config.Instance, full, dryRun bool) (*Result, error) {
 		if err != nil {
 			return nil, err
 		}
+		knowledgeBytes, err := os.ReadFile(doc.Path)
+		if err != nil {
+			return nil, err
+		}
+		knowledgeFileHash := document.HashBytes(knowledgeBytes)
 		fingerprint := document.HashBytes([]byte(strings.Join([]string{
-			doc.Metadata.ID, doc.Metadata.ContentHash, CompilerName,
+			doc.Metadata.ID, knowledgeFileHash, CompilerName,
 			fmt.Sprintf("%d", CompilerVersion), configHash,
 		}, "\x00")))
 		body := compileBody(doc)
@@ -129,7 +135,7 @@ func Build(cfg *config.Instance, full, dryRun bool) (*Result, error) {
 			DerivedFrom: &document.DerivedFrom{ID: doc.Metadata.ID, ContentHash: doc.Metadata.ContentHash},
 			Compiler:    CompilerName, CompilerVersion: CompilerVersion,
 			BuildFingerprint: fingerprint, GeneratedAt: doc.Metadata.UpdatedAt,
-			Tags: doc.Metadata.Tags, Aliases: doc.Metadata.Aliases,
+			Tags: doc.Metadata.Tags, Aliases: doc.Metadata.Aliases, Extra: doc.Metadata.Extra,
 		}
 		data, err := document.Render(meta, body)
 		if err != nil {
@@ -140,7 +146,7 @@ func Build(cfg *config.Instance, full, dryRun bool) (*Result, error) {
 		}
 		rel := filepath.ToSlash(filepath.Join("documents", doc.Metadata.ID+".md"))
 		manifest.Items = append(manifest.Items, ManifestItem{
-			KnowledgeID: doc.Metadata.ID, KnowledgeHash: doc.Metadata.ContentHash,
+			KnowledgeID: doc.Metadata.ID, KnowledgeHash: doc.Metadata.ContentHash, KnowledgeFileHash: knowledgeFileHash,
 			OutputPath: rel, OutputHash: document.HashBytes(data), Fingerprint: fingerprint,
 		})
 		outputs = append(outputs, output{rel: rel, data: data})
@@ -306,8 +312,12 @@ func GetStatus(cfg *config.Instance) (*Status, error) {
 			entry.State, entry.Reason = "orphan", "source knowledge is missing"
 		} else if doc.Metadata.ContentHash != item.KnowledgeHash {
 			entry.State, entry.Reason = "stale", "source knowledge hash changed"
+		} else if knowledgeBytes, err := os.ReadFile(doc.Path); err != nil {
+			return nil, err
+		} else if document.HashBytes(knowledgeBytes) != item.KnowledgeFileHash {
+			entry.State, entry.Reason = "stale", "source knowledge metadata changed"
 		} else if expected := document.HashBytes([]byte(strings.Join([]string{
-			doc.Metadata.ID, doc.Metadata.ContentHash, CompilerName,
+			doc.Metadata.ID, item.KnowledgeFileHash, CompilerName,
 			fmt.Sprintf("%d", CompilerVersion), buildConfigHash(cfg),
 		}, "\x00"))); item.Fingerprint != expected {
 			entry.State, entry.Reason = "stale", "build fingerprint does not match source knowledge"
@@ -340,7 +350,7 @@ func GetStatus(cfg *config.Instance) (*Status, error) {
 }
 
 func validateManifest(cfg *config.Instance, manifest Manifest) error {
-	if manifest.SchemaVersion != 1 || manifest.WikiID != cfg.InstanceID || manifest.Compiler != CompilerName ||
+	if manifest.SchemaVersion != 2 || manifest.WikiID != cfg.InstanceID || manifest.Compiler != CompilerName ||
 		manifest.CompilerVersion != CompilerVersion || manifest.ConfigHash != buildConfigHash(cfg) {
 		return errors.New("derived manifest schema, wiki, compiler, or configuration does not match")
 	}
@@ -353,7 +363,8 @@ func validateManifest(cfg *config.Instance, manifest Manifest) error {
 	for _, item := range manifest.Items {
 		expectedPath := filepath.ToSlash(filepath.Join("documents", item.KnowledgeID+".md"))
 		if !document.ValidID("know", item.KnowledgeID) || item.OutputPath != expectedPath ||
-			!document.ValidHash(item.KnowledgeHash) || !document.ValidHash(item.OutputHash) || !document.ValidHash(item.Fingerprint) ||
+			!document.ValidHash(item.KnowledgeHash) || !document.ValidHash(item.KnowledgeFileHash) ||
+			!document.ValidHash(item.OutputHash) || !document.ValidHash(item.Fingerprint) ||
 			seenIDs[item.KnowledgeID] || seenPaths[item.OutputPath] || (previousID != "" && item.KnowledgeID < previousID) {
 			return errors.New("derived manifest contains invalid, duplicate, or unsorted items")
 		}

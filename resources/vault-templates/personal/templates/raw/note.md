@@ -1,7 +1,11 @@
 ---
 type: note
 title: "{{标题}}"
+description: "{{这份原始记录的主题和采集背景}}"
 origin: manual
+aliases: []
+tags: []
+cssclasses: []
 ---
 # {{标题}}
 

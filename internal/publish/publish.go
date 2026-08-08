@@ -159,19 +159,6 @@ func Propose(cfg *config.Instance, opts ProposeOptions) (*ProposeResult, error) 
 			return nil, err
 		}
 	}
-	if draftMeta.Type == "" {
-		draftMeta.Type = "concept"
-	}
-	if !validType.MatchString(draftMeta.Type) {
-		return nil, fmt.Errorf("invalid knowledge type %q", draftMeta.Type)
-	}
-	if draftMeta.Title == "" {
-		draftMeta.Title = firstHeading(body)
-	}
-	if draftMeta.Title == "" {
-		return nil, errors.New("draft title is required in frontmatter or first heading")
-	}
-
 	sourceIDs := append([]string(nil), opts.SourceIDs...)
 	sort.Strings(sourceIDs)
 	sourceIDs = unique(sourceIDs)
@@ -193,16 +180,23 @@ func Propose(cfg *config.Instance, opts ProposeOptions) (*ProposeResult, error) 
 	publishedAt := opts.Now.Format(time.RFC3339)
 	targetPath := ""
 	oldBytes := []byte{}
+	var existing *document.Document
 	if knowledgeID != "" {
 		if !strings.HasPrefix(knowledgeID, "know_") {
 			return nil, errors.New("draft id for an update must start with know_")
 		}
-		existing, err := document.FindByID(cfg.KnowledgeDir(), knowledgeID)
+		existing, err = document.FindByID(cfg.KnowledgeDir(), knowledgeID)
 		if err != nil {
 			return nil, fmt.Errorf("update target %s: %w", knowledgeID, err)
 		}
 		if err := existing.Validate("knowledge", cfg.Publish.RequireSources); err != nil {
 			return nil, err
+		}
+		if draftMeta.Type == "" {
+			draftMeta.Type = existing.Metadata.Type
+		}
+		if draftMeta.Title == "" {
+			draftMeta.Title = existing.Metadata.Title
 		}
 		baseHash = existing.Metadata.ContentHash
 		publishedAt = existing.Metadata.PublishedAt
@@ -214,19 +208,45 @@ func Propose(cfg *config.Instance, opts ProposeOptions) (*ProposeResult, error) 
 		}
 		baseFileHash = document.HashBytes(oldBytes)
 	} else {
+		if draftMeta.Type == "" {
+			draftMeta.Type = "concept"
+		}
+		if draftMeta.Title == "" {
+			draftMeta.Title = firstHeading(body)
+		}
 		knowledgeID, err = document.NewID("know", opts.Now)
 		if err != nil {
 			return nil, err
 		}
+	}
+	if !validType.MatchString(draftMeta.Type) {
+		return nil, fmt.Errorf("invalid knowledge type %q", draftMeta.Type)
+	}
+	if draftMeta.Title == "" {
+		return nil, errors.New("draft title is required in frontmatter or first heading")
+	}
+	if targetPath == "" {
 		targetPath = filepath.ToSlash(filepath.Join(cfg.Paths.Knowledge, draftMeta.Type,
 			document.Slug(draftMeta.Title)+"--"+knowledgeID+".md"))
+	}
+	tags := draftMeta.Tags
+	aliases := draftMeta.Aliases
+	extra := mergeUserProperties(nil, draftMeta.Extra)
+	if existing != nil {
+		if tags == nil {
+			tags = existing.Metadata.Tags
+		}
+		if aliases == nil {
+			aliases = existing.Metadata.Aliases
+		}
+		extra = mergeUserProperties(existing.Metadata.Extra, draftMeta.Extra)
 	}
 	contentHash := document.HashBytes(body)
 	knowledgeMeta := document.Metadata{
 		SchemaVersion: document.CurrentSchema,
 		ID:            knowledgeID, Type: draftMeta.Type, Title: draftMeta.Title, Status: "published",
 		Sources: sources, PublishedAt: publishedAt, UpdatedAt: opts.Now.Format(time.RFC3339),
-		ContentHash: contentHash, Tags: cleanStrings(draftMeta.Tags), Aliases: cleanStrings(draftMeta.Aliases),
+		ContentHash: contentHash, Tags: cleanStrings(tags), Aliases: cleanStrings(aliases), Extra: extra,
 	}
 	newBytes, err := document.Render(knowledgeMeta, body)
 	if err != nil {
@@ -827,6 +847,29 @@ func cleanStrings(items []string) []string {
 		}
 	}
 	sort.Strings(out)
+	return out
+}
+
+// mergeUserProperties preserves Obsidian/custom YAML properties while keeping
+// the typed Metadata fields under llm-wiki control. A null draft value is an
+// explicit request to remove a custom property; omission preserves it.
+func mergeUserProperties(base, draft map[string]any) map[string]any {
+	out := make(map[string]any, len(base)+len(draft))
+	for key, value := range base {
+		if value != nil {
+			out[key] = value
+		}
+	}
+	for key, value := range draft {
+		if value == nil {
+			delete(out, key)
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
 	return out
 }
 

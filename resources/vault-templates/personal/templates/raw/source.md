@@ -1,7 +1,11 @@
 ---
 type: source
 title: "{{资料名称}}"
+description: "{{资料内容及其用途的简要说明}}"
 origin: file
+aliases: []
+tags: []
+cssclasses: []
 ---
 # {{资料名称}}
 

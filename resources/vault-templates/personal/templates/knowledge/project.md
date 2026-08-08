@@ -1,8 +1,11 @@
 ---
 type: project
 title: "{{项目名称}}"
-tags: []
+description: "{{项目目标与当前范围}}"
 aliases: []
+tags: []
+cssclasses: []
+related: []
 ---
 # {{项目名称}}
 

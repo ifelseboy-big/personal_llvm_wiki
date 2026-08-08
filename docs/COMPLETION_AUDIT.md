@@ -39,9 +39,10 @@
 `personal` 模板包含：
 
 - 根级 `AGENTS.md`：事实层级、强制命令流程和禁止行为。
-- `rules/capture.md`、`publish.md`、`derived.md`、`quality.md`。
+- `rules/capture.md`、`metadata.md`、`publish.md`、`derived.md`、`quality.md`。
 - raw `note`、`source` 模板。
 - knowledge `concept`、`guide`、`reference`、`decision`、`project` 模板。
+- Obsidian Properties 在 raw 采集、knowledge 发布更新和 derived 构建中无损保留并进入可重建全文索引；系统字段始终由 CLI 重建。
 - 模板版本、安装基线、用户覆盖和三方升级机制。
 
 ## 安全边界

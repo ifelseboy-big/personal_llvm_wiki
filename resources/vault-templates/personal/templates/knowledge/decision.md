@@ -1,8 +1,11 @@
 ---
 type: decision
 title: "{{决策名称}}"
-tags: []
+description: "{{决策内容及其适用范围}}"
 aliases: []
+tags: []
+cssclasses: []
+related: []
 ---
 # {{决策名称}}
 

@@ -20,7 +20,7 @@ import (
 	"llm-wiki/internal/vault"
 )
 
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 type RebuildResult struct {
 	Path      string         `json:"path"`
@@ -231,9 +231,9 @@ func rebuildLocked(cfg *config.Instance) (*RebuildResult, error) {
 						VALUES(?,?,?,?,?,?,?,?)`, c.ID, doc.Metadata.ID, c.Ordinal, c.HeadingPath, c.Body, c.Hash, c.StartLine, c.EndLine); err != nil {
 						return nil, err
 					}
-					if _, err := tx.Exec(`INSERT INTO chunks_fts(document_id,chunk_id,title,headings,tags,body)
+					if _, err := tx.Exec(`INSERT INTO chunks_fts(document_id,chunk_id,title,headings,properties,body)
 						VALUES(?,?,?,?,?,?)`, doc.Metadata.ID, c.ID, tokenize(doc.Metadata.Title), tokenize(c.HeadingPath),
-						tokenize(strings.Join(doc.Metadata.Tags, " ")), tokenize(c.Body)); err != nil {
+						tokenize(propertySearchText(doc.Metadata)), tokenize(c.Body)); err != nil {
 						return nil, err
 					}
 					result.Chunks++
@@ -586,9 +586,9 @@ func insertScanned(tx *sql.Tx, item *scannedDocument, cfg *config.Instance, inde
 			VALUES(?,?,?,?,?,?,?,?)`, c.ID, item.doc.Metadata.ID, c.Ordinal, c.HeadingPath, c.Body, c.Hash, c.StartLine, c.EndLine); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(`INSERT INTO chunks_fts(document_id,chunk_id,title,headings,tags,body)
+		if _, err := tx.Exec(`INSERT INTO chunks_fts(document_id,chunk_id,title,headings,properties,body)
 			VALUES(?,?,?,?,?,?)`, item.doc.Metadata.ID, c.ID, tokenize(item.doc.Metadata.Title), tokenize(c.HeadingPath),
-			tokenize(strings.Join(item.doc.Metadata.Tags, " ")), tokenize(c.Body)); err != nil {
+			tokenize(propertySearchText(item.doc.Metadata)), tokenize(c.Body)); err != nil {
 			return err
 		}
 	}
@@ -762,6 +762,25 @@ func tokenize(s string) string {
 	return strings.Join(tokens, " ")
 }
 
+func propertySearchText(meta document.Metadata) string {
+	parts := make([]string, 0, len(meta.Tags)+len(meta.Aliases)+len(meta.Extra)*2)
+	parts = append(parts, meta.Tags...)
+	parts = append(parts, meta.Aliases...)
+	keys := make([]string, 0, len(meta.Extra))
+	for key := range meta.Extra {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		value, err := json.Marshal(meta.Extra[key])
+		if err != nil {
+			continue
+		}
+		parts = append(parts, key, string(value))
+	}
+	return strings.Join(parts, " ")
+}
+
 func matchQuery(s string) string {
 	tokens := strings.Fields(tokenize(s))
 	seen := map[string]bool{}
@@ -833,7 +852,7 @@ CREATE TABLE chunks(
   UNIQUE(document_id,ordinal),FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE
 );
 CREATE VIRTUAL TABLE chunks_fts USING fts5(
-  document_id UNINDEXED,chunk_id UNINDEXED,title,headings,tags,body,
+  document_id UNINDEXED,chunk_id UNINDEXED,title,headings,properties,body,
   tokenize='unicode61 remove_diacritics 2'
 );
 CREATE TABLE operations(

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"testing"
 	"time"
@@ -42,6 +43,50 @@ func TestInputSizeLimit(t *testing.T) {
 	cfg.Security.MaxInputBytes = 4
 	if _, err := Add(cfg, AddOptions{Input: "-", Name: "large.md", Stdin: bytes.NewBufferString("12345")}); err == nil {
 		t.Fatal("expected size-limit rejection")
+	}
+}
+
+func TestMarkdownImportPreservesObsidianProperties(t *testing.T) {
+	cfg := newTestWiki(t)
+	path := filepath.Join(t.TempDir(), "note.md")
+	input := []byte(`---
+type: note
+title: Imported note
+origin: manual
+tags:
+  - inbox
+aliases:
+  - Import alias
+description: Raw description
+cssclasses:
+  - raw-note
+status: published
+content_hash: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+---
+# Imported note
+
+Original material.
+`)
+	if err := os.WriteFile(path, input, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	items, err := Add(cfg, AddOptions{Input: path, Now: time.Date(2026, 8, 9, 0, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := Show(cfg, items[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Metadata.Status != "raw" || doc.Metadata.Origin != "manual" ||
+		!reflect.DeepEqual(doc.Metadata.Tags, []string{"inbox"}) || !reflect.DeepEqual(doc.Metadata.Aliases, []string{"Import alias"}) {
+		t.Fatalf("raw import lost user properties or trusted input system fields: %#v", doc.Metadata)
+	}
+	if doc.Metadata.Extra["description"] != "Raw description" {
+		t.Fatalf("raw import lost custom properties: %#v", doc.Metadata.Extra)
+	}
+	if _, ok := doc.Metadata.Extra["cssclasses"]; !ok {
+		t.Fatalf("raw import lost cssclasses: %#v", doc.Metadata.Extra)
 	}
 }
 

@@ -72,7 +72,7 @@ created_at = "2026-08-08T10:00:00+08:00"
 
 [template]
 name = "personal"
-version = "1.0.0"
+version = "1.1.0"
 
 [paths]
 raw = "raw"
@@ -141,6 +141,10 @@ captured_at: 2026-08-08T10:00:00+08:00
 content_hash: sha256:...
 media_type: text/markdown
 original_name: example.md
+description: 原始材料说明
+tags: []
+aliases: []
+cssclasses: []
 ```
 
 非 Markdown 文件放入 `raw/YYYY/MM/<raw-id>/`，同目录创建 `<stem>.source.md`。sidecar 是该 raw ID 的规范元数据，原文件是其内容载荷。
@@ -152,6 +156,7 @@ schema_version: 1
 id: know_01...
 type: concept
 title: 示例概念
+description: 一句话摘要
 status: published
 sources:
   - id: raw_01...
@@ -161,9 +166,13 @@ updated_at: 2026-08-08T11:00:00+08:00
 content_hash: sha256:...
 tags: []
 aliases: []
+cssclasses: []
+related: []
 ```
 
 `sources` 至少一个且全部可解析。缺失来源、来源哈希变化或正文哈希不匹配均使文档失去可发布状态，`doctor` 和 `index update` 必须报告，不得静默修复。
+
+frontmatter 同时兼容 Obsidian Properties。系统属性由 CLI 重建，草稿值不能覆盖；用户属性允许扩展并在发布时无损保留。更新时省略用户属性表示保持原值，同名值表示覆盖，`null` 表示删除；`tags: []` 和 `aliases: []` 表示明确清空。Obsidian 不支持在 Properties 界面编辑嵌套对象，因此 `sources` 只允许由 CLI 管理，不能为适配界面而拍平或迁移到 SQLite。
 
 ### 5.5 Derived frontmatter
 
@@ -174,12 +183,12 @@ derived_from:
   id: know_01...
   content_hash: sha256:...
 compiler: standard
-compiler_version: 1
+compiler_version: 2
 build_fingerprint: sha256:...
 generated_at: 2026-08-08T11:00:00+08:00
 ```
 
-`generated_at` 是运行信息，不参与 `build_fingerprint`。派生正文只由可信正文、确定性编译器和构建配置生成。
+`generated_at` 是运行信息，不参与 `build_fingerprint`。指纹包含 knowledge 完整文件哈希、确定性编译器版本和构建配置，因此仅修改用户 Properties 也会使派生层变为 stale。派生正文只由可信正文生成，用户 Properties 确定性复制到派生 frontmatter。
 
 ## 6. 文件布局
 
@@ -303,11 +312,11 @@ files(path PRIMARY KEY, layer, size, mtime_ns, file_hash, document_id, indexed_a
 documents(id PRIMARY KEY, layer, path UNIQUE, type, title, status, content_hash, updated_at, metadata_json)
 source_links(knowledge_id, raw_id, raw_content_hash, PRIMARY KEY(knowledge_id, raw_id))
 chunks(id PRIMARY KEY, document_id, ordinal, heading_path, body, body_hash, start_line, end_line)
-chunks_fts(document_id UNINDEXED, chunk_id UNINDEXED, title, headings, tags, body)
+chunks_fts(document_id UNINDEXED, chunk_id UNINDEXED, title, headings, properties, body)
 operations(id PRIMARY KEY, kind, state, started_at, finished_at, detail_json)
 ```
 
-`metadata_json` 是解析缓存，不是元数据事实源。完整重建必须先扫描文件、校验所有文档和引用，在临时数据库完成后原子替换旧数据库。
+`metadata_json` 是解析缓存，不是元数据事实源。`properties` 由 `tags`、`aliases` 和用户自定义 Properties 确定性生成，仅用于全文检索。完整重建必须先扫描文件、校验所有文档和引用，在临时数据库完成后原子替换旧数据库。
 
 增量更新仍对候选文件计算内容哈希，不能只依赖 mtime/size。删除、重命名和来源关系均从本次文件扫描推导。
 
@@ -338,6 +347,7 @@ resources/vault-templates/personal/
   template.toml
   AGENTS.md
   rules/capture.md
+  rules/metadata.md
   rules/publish.md
   rules/derived.md
   templates/raw/note.md

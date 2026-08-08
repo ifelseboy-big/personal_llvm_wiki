@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"llm-wiki/internal/templates"
 )
 
 func TestInitExistingVaultRequiresExplicitConflictPolicy(t *testing.T) {
@@ -54,7 +56,11 @@ func TestWriteLockRejectsConcurrentWriter(t *testing.T) {
 
 func TestInitTemplatePreflightFailureLeavesNoInstanceConfig(t *testing.T) {
 	root := t.TempDir()
-	baseline := filepath.Join(root, ".llm-wiki", "template-base", "1.0.0", "AGENTS.md")
+	manifest, err := templates.LoadManifest("personal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := filepath.Join(root, ".llm-wiki", "template-base", manifest.Version, "AGENTS.md")
 	if err := os.MkdirAll(filepath.Dir(baseline), 0o700); err != nil {
 		t.Fatal(err)
 	}

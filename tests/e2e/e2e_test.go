@@ -172,6 +172,159 @@ func TestFileFirstFullWorkflowAndRebuildEquivalence(t *testing.T) {
 	}
 }
 
+func TestObsidianPropertiesSurvivePublishCreateAndUpdate(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "wiki")
+	initResult, err := vault.Init(vault.InitOptions{Path: root, Name: "properties", Template: "personal"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := initResult.Config
+	now := time.Date(2026, 8, 9, 10, 0, 0, 0, time.UTC)
+	added, err := raw.Add(cfg, raw.AddOptions{
+		Input: "-", Name: "source.md", Stdin: bytes.NewBufferString("# Source\n\nProperty evidence.\n"), Now: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	draft := filepath.Join(t.TempDir(), "create.md")
+	createBody := []byte(`---
+type: concept
+title: Obsidian properties
+tags:
+  - metadata
+aliases:
+  - AliasOnlyZXQ
+description: DescriptionOnlyZXQ
+cssclasses:
+  - knowledge-note
+related:
+  - "[[RelatedOnlyZXQ]]"
+rating: 5
+obsolete: remove-me
+status: raw
+sources: []
+content_hash: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+published_at: invalid
+---
+# Obsidian properties
+
+Property-backed knowledge.
+`)
+	if err := os.WriteFile(draft, createBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := publish.Propose(cfg, publish.ProposeOptions{
+		SourceIDs: []string{added[0].ID}, DraftPath: draft, Now: now.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	applied, err := publish.Apply(cfg, proposal.Proposal.ID, false, now.Add(2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := publish.CompleteOperation(cfg, applied.OperationID); err != nil {
+		t.Fatal(err)
+	}
+	created, err := document.FindByID(cfg.KnowledgeDir(), proposal.Proposal.KnowledgeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Metadata.Status != "published" || len(created.Metadata.Sources) != 1 || created.Metadata.Sources[0].ID != added[0].ID {
+		t.Fatalf("draft overrode system-managed metadata: %#v", created.Metadata)
+	}
+	if created.Metadata.Extra["description"] != "DescriptionOnlyZXQ" || created.Metadata.Extra["rating"] != 5 {
+		t.Fatalf("custom properties were not preserved: %#v", created.Metadata.Extra)
+	}
+	if got, ok := created.Metadata.Extra["cssclasses"].([]any); !ok || len(got) != 1 || got[0] != "knowledge-note" {
+		t.Fatalf("cssclasses property was not preserved: %#v", created.Metadata.Extra["cssclasses"])
+	}
+	if _, err := indexstore.Rebuild(cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, query := range []string{"AliasOnlyZXQ", "DescriptionOnlyZXQ", "RelatedOnlyZXQ"} {
+		matches, err := indexstore.Query(cfg, query, 8)
+		if err != nil || len(matches) != 1 || matches[0].KnowledgeID != proposal.Proposal.KnowledgeID {
+			t.Fatalf("property %q is not searchable: %#v %v", query, matches, err)
+		}
+	}
+
+	update := filepath.Join(t.TempDir(), "update.md")
+	updateBody := []byte("---\n" +
+		"id: " + proposal.Proposal.KnowledgeID + "\n" +
+		"aliases: []\n" +
+		"description: DescriptionUpdatedZXQ\n" +
+		"obsolete: null\n" +
+		"status: raw\n" +
+		"sources: []\n" +
+		"---\n" +
+		"# Obsidian properties\n\nUpdated property-backed knowledge.\n")
+	if err := os.WriteFile(update, updateBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	updateProposal, err := publish.Propose(cfg, publish.ProposeOptions{
+		SourceIDs: []string{added[0].ID}, DraftPath: update, Now: now.Add(3 * time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedResult, err := publish.Apply(cfg, updateProposal.Proposal.ID, false, now.Add(4*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := publish.CompleteOperation(cfg, updatedResult.OperationID); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := document.FindByID(cfg.KnowledgeDir(), proposal.Proposal.KnowledgeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Metadata.Type != "concept" || updated.Metadata.Title != "Obsidian properties" ||
+		!reflect.DeepEqual(updated.Metadata.Tags, []string{"metadata"}) || len(updated.Metadata.Aliases) != 0 {
+		t.Fatalf("omitted tags were not preserved or aliases were not cleared: %#v", updated.Metadata)
+	}
+	if updated.Metadata.Extra["description"] != "DescriptionUpdatedZXQ" || updated.Metadata.Extra["obsolete"] != nil {
+		t.Fatalf("custom property update/delete semantics failed: %#v", updated.Metadata.Extra)
+	}
+	if _, ok := updated.Metadata.Extra["cssclasses"]; !ok {
+		t.Fatalf("omitted custom property was not preserved: %#v", updated.Metadata.Extra)
+	}
+	if err := updated.Validate("knowledge", true); err != nil {
+		t.Fatalf("updated knowledge is invalid: %v", err)
+	}
+	if _, err := indexstore.Update(cfg, false); err != nil {
+		t.Fatal(err)
+	}
+	updatedMatches, err := indexstore.Query(cfg, "DescriptionUpdatedZXQ", 8)
+	if err != nil || len(updatedMatches) != 1 {
+		t.Fatalf("updated property is not searchable: %#v %v", updatedMatches, err)
+	}
+	oldMatches, err := indexstore.Query(cfg, "DescriptionOnlyZXQ", 8)
+	if err != nil || len(oldMatches) != 0 {
+		t.Fatalf("deleted property value remains searchable: %#v %v", oldMatches, err)
+	}
+	if _, err := buildlayer.Build(cfg, false, false); err != nil {
+		t.Fatal(err)
+	}
+	derivedID, err := document.DerivedID(updated.Metadata.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	derived, err := document.FindByID(cfg.DerivedDir(), derivedID)
+	if err != nil || derived.Metadata.Extra["description"] != "DescriptionUpdatedZXQ" {
+		t.Fatalf("derived document lost custom properties: %#v %v", derived, err)
+	}
+	updated.Metadata.Extra["description"] = "MetadataDriftZXQ"
+	if err := document.Write(updated.Path, updated.Metadata, updated.Body); err != nil {
+		t.Fatal(err)
+	}
+	buildStatus, err := buildlayer.GetStatus(cfg)
+	if err != nil || buildStatus.Fresh || len(buildStatus.Items) != 1 || buildStatus.Items[0].Reason != "source knowledge metadata changed" {
+		t.Fatalf("metadata-only knowledge change was not detected: %#v %v", buildStatus, err)
+	}
+}
+
 func TestProposalBecomesStaleWhenRawEvidenceChanges(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "wiki")
 	initResult, err := vault.Init(vault.InitOptions{Path: root, Name: "stale", Template: "personal"})

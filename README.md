@@ -55,9 +55,11 @@ skill status|install|update|uninstall
 内置 `personal` 模板会生成：
 
 - `AGENTS.md`：AI 和维护者必须遵守的事实层级及命令流程。
-- `rules/`：采集、发布、派生层和质量规则。
+- `rules/`：采集、元数据、发布、派生层和质量规则。
 - `templates/raw/`：人工记录和文件来源模板。
 - `templates/knowledge/`：concept、guide、reference、decision、project 模板。
+
+模板 frontmatter 兼容 Obsidian Properties。`tags`、`aliases`、`cssclasses`、`description`、`related` 以及其他自定义属性在采集、发布和派生构建时保留并可检索；更新草稿省略属性表示保持，写为 `null` 表示删除。ID、状态、来源、时间和哈希仍由 CLI 管理，草稿不能覆盖。
 
 `template upgrade --plan` 使用安装时基线、用户当前文件和新内置版本进行三方判断；用户修改的文件不会被静默覆盖。
 
