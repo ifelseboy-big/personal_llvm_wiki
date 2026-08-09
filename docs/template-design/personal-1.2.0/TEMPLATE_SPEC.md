@@ -9,8 +9,8 @@
 | 变量 | 含义 |
 |---|---|
 | `{{title}}` | 草稿标题或当前 Obsidian 文件名 |
-| `{{date}}` | 创建日期，格式 `YYYY-MM-DD` |
-| `{{time}}` | 创建时间，格式 `HH:mm` |
+| `{{date:YYYY-MM-DD}}` | 创建日期；显式格式不受 Obsidian Templates 全局设置影响 |
+| `{{time:HH:mm}}` | 创建时间；显式格式不受 Obsidian Templates 全局设置影响 |
 
 写作提示统一写成：
 
@@ -26,7 +26,7 @@ Agent 在创建提案前必须处理：
 - 模板要求的章节为空；
 - 空白或仍为提示语的 `description`。
 
-这些属于目标 Vault 的写作治理，不由 CLI 解析 `AGENTS.md` 后执行。CLI 可以提供通用模板 lint，但 `publish` 的硬约束只负责来源、哈希、事务、路径和结构完整性。
+CLI 不解析 `AGENTS.md` 的自然语言语义，但 personal 1.2.0 的 `publish` 会执行通用、确定性的结构检查：模板残留、title/H1、公共字段类型、raw-ID 脚注完整性和知识链接可解析性。Agent 与审批者仍负责判断关键事实是否真的被附近引用支持、内容是否重复、推断是否越界等语义质量。
 
 ## 2. 建议命令
 
@@ -93,7 +93,7 @@ schema_version, id, status, sources,
 captured_at, published_at, updated_at,
 content_hash, media_type, original_name, asset,
 derived_from, compiler, compiler_version,
-build_fingerprint, generated_at
+build_fingerprint, generated_at, governance_version
 ```
 
 `id` 只允许在更新草稿中用来定位既有 knowledge；最终值仍由 CLI 决定。
@@ -107,7 +107,7 @@ build_fingerprint, generated_at
 | `superseded` | 已被新知识替代 | 默认排除，可显式包含 |
 | `retracted` | 已确认不应继续使用 | 默认排除，可显式包含并强警告 |
 
-`valid_until` 已过或 `review_after` 到期时，查询结果必须携带 warning；SQLite 只执行过滤，判断依据仍是 Markdown Properties。
+`valid_until` 已过、`valid_from` 尚未到达或 `review_after` 到期时，查询结果必须携带 warning。升级到 1.2.0 时，CLI 在根目录 `.llm-wiki-governance.json` 记录既有 knowledge 的完整文件哈希；只有与该基线完全一致且没有 `governance_version` 的文档按 legacy 读取。legacy 文档一律作为 `current` 候选并给迁移 warning，不解释升级前可能同名的 lifecycle 和日期自定义属性；重新发布后写入受保护的 `governance_version: personal-1.2` 并执行严格检查。该基线必须随知识库备份或提交。SQLite 只执行候选过滤，最终判断依据仍是 Markdown Properties。
 
 ## 6. 关联格式
 
@@ -135,12 +135,14 @@ LLVM IR 为多语言前端提供共同的优化边界。[^raw_01abc-1]
 [^raw_01abc-1]: locator: 第 3 节，第 2 段
 ```
 
-校验器必须保证：
+CLI 机械校验器必须保证：
 
 - 脚注中的 raw ID 存在于系统 `sources`；
-- 每个事实性关键结论附近至少有一个来源脚注；
+- 引用标签、定义和 locator 完整，且 raw ID 位于系统 `sources`；
 - 冲突观点分别引用各自来源；
 - 脚注只提供定位信息，不复制来源哈希；哈希仍以 `sources` 为准。
+
+“每个事实性关键结论附近都有足够证据”涉及语义判断，必须由 Agent 与审批者按 `rules/citations.md` 检查，CLI 不声称仅靠正则或 Markdown 结构即可证明。
 
 ## 8. 模板专属属性
 
@@ -151,13 +153,13 @@ LLVM IR 为多语言前端提供共同的优化边界。[^raw_01abc-1]
 | `guide` | `applies_to`、`last_verified` |
 | `tutorial` | `learning_outcome`、`estimated_time`、`applies_to`、`last_verified` |
 | `reference` | `reference_version`、`applies_to`、`last_verified` |
-| `decision` | `decision_state`、`decided_at`、`decision_makers`、`consulted`、`informed` |
-| `project` | `project_state`、`as_of`、`owner`、`started_at`、`target_date` |
+| `decision` | `decision_state`（`proposed`、`accepted`、`deprecated`）、`decided_at`、`decision_makers`、`consulted`、`informed` |
+| `project` | `project_state`（`active`、`paused`、`completed`、`cancelled`）、`as_of`、`owner`、`started_at`、`target_date` |
 
 所有日期使用 `YYYY-MM-DD`，日期时间使用 RFC 3339。相同属性名在整个 Vault 中必须保持相同类型。
 
 ## 9. 查询事实边界
 
-SQLite 只返回候选 knowledge ID、路径、匹配行号、chunk hash、文件 hash 和排序分数。CLI 必须根据候选重新读取 `knowledge/` Markdown，校验 ID、文件 hash、正文 hash 和 raw 来源，再从发布文档返回正文、metadata 与 sources。
+SQLite 只返回候选 knowledge ID、路径、匹配行号、chunk hash、文件 hash 和排序分数。CLI 必须根据候选重新读取 `knowledge/` Markdown，校验 ID、文件 hash 和正文 hash，再从发布文档返回正文、metadata 与发布时绑定的 sources。raw 当前字节是否仍与发布时哈希一致由 `trace` 和 `doctor` 报告；raw 后续漂移不会悄悄改写已经发布的事实快照。
 
 `query` 不自动更新索引。索引与发布文件不一致时返回 `INDEX_STALE`，由调用方显式执行 `llm-wiki index update`；不得回退使用 SQLite 缓存内容。

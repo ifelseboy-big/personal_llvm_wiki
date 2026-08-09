@@ -9,12 +9,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	buildlayer "llm-wiki/internal/build"
 	"llm-wiki/internal/config"
 	"llm-wiki/internal/document"
+	"llm-wiki/internal/governance"
 	indexstore "llm-wiki/internal/index"
 	"llm-wiki/internal/publish"
 	"llm-wiki/internal/skill"
@@ -243,6 +245,7 @@ func newInitCommand(rt *Runtime) *cobra.Command {
 				}
 			}
 			files := append([]string{}, result.CreatedFiles...)
+			files = append(files, result.UpdatedFiles...)
 			return rt.Success("init", wikiRef(result.Config), result, warnings, files)
 		},
 	}
@@ -355,6 +358,7 @@ func newDoctorCommand(rt *Runtime) *cobra.Command {
 				Message string `json:"message"`
 			}
 			checks := []check{{Name: "config", OK: true, Message: "schema and managed paths are valid"}}
+			attention := []string{}
 			allRaw := map[string]string{}
 			rawDocs, rawProblems := document.ScanMarkdown(cfg.RawDir())
 			for _, doc := range rawDocs {
@@ -387,6 +391,33 @@ func newDoctorCommand(rt *Runtime) *cobra.Command {
 					}
 				}
 				checks = append(checks, check{Name: "knowledge:" + doc.Metadata.ID, OK: err == nil, Message: errorMessage(err, "valid")})
+				if err == nil && governance.UsesPersonalV12(cfg) {
+					legacy, governanceErr := governance.ValidateStored(cfg, doc, time.Now())
+					if governanceErr != nil {
+						checks = append(checks, check{Name: "knowledge-governance:" + doc.Metadata.ID, OK: false, Message: governanceErr.Error()})
+						continue
+					}
+					assessment, assessmentErr := governance.AssessStoredLifecycle(cfg, doc.Metadata, time.Now(), legacy)
+					if assessmentErr != nil {
+						checks = append(checks, check{Name: "knowledge-lifecycle:" + doc.Metadata.ID, OK: false, Message: assessmentErr.Error()})
+						continue
+					}
+					attention = append(attention, assessment.Warnings...)
+					if legacy {
+						checks = append(checks, check{
+							Name: "knowledge-governance:" + doc.Metadata.ID, OK: true,
+							Message: "upgrade-baselined legacy knowledge remains valid; republish when convenient to adopt personal 1.2 governance",
+						})
+						continue
+					}
+					checks = append(checks, check{
+						Name: "knowledge-governance:" + doc.Metadata.ID, OK: true,
+						Message: "personal 1.2.0 metadata, citations, and links are valid",
+					})
+					if reciprocalErr := governance.ValidateReciprocalRelations(cfg, doc); reciprocalErr != nil {
+						checks = append(checks, check{Name: "knowledge-relations:" + doc.Metadata.ID, OK: false, Message: reciprocalErr.Error()})
+					}
+				}
 			}
 			for _, problem := range knowledgeProblems {
 				checks = append(checks, check{Name: "knowledge:parse", OK: false, Message: problem.Error()})
@@ -450,13 +481,14 @@ func newDoctorCommand(rt *Runtime) *cobra.Command {
 			for _, c := range checks {
 				ok = ok && c.OK
 			}
-			data := map[string]any{"healthy": ok, "checks": checks}
+			attention = governance.SortedWarnings(attention)
+			data := map[string]any{"healthy": ok, "checks": checks, "attention": attention}
 			if !ok {
 				err := E("DOCTOR_CHECK_FAILED", "wiki invariants failed", ExitValidation, nil)
 				err.Details = data
 				return err
 			}
-			return rt.Success("doctor", ref, data, nil, nil)
+			return rt.Success("doctor", ref, data, attention, nil)
 		},
 	}
 }
@@ -572,6 +604,7 @@ func newTemplateCommand(rt *Runtime) *cobra.Command {
 	show.Flags().StringVar(&file, "file", "", "show a file inside the template")
 	show.Flags().StringVar(&kind, "kind", "", "content template kind: raw or knowledge")
 	cmd.AddCommand(show)
+	cmd.AddCommand(newTemplateCreateCommand(rt))
 	cmd.AddCommand(newTemplateUpgradeCommand(rt))
 	return cmd
 }

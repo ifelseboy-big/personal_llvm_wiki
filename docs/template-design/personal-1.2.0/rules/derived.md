@@ -3,17 +3,17 @@
 事实流向是单向的：
 
 ```text
-raw/ -> publish proposal -> knowledge/ -> derived/ + .llm-wiki/index.sqlite
+raw/ -> publish proposal -> knowledge/ -> llm-wiki/ + .llm-wiki/index.sqlite
 ```
 
-`knowledge/` 是已发布事实层。`derived/` 和 SQLite 都能删除后重建，任何情况下都不能反向覆盖知识文件。
+`knowledge/` 是已发布事实层。`llm-wiki/` 和 SQLite 都能删除后重建，任何情况下都不能反向覆盖知识文件。
 
 ## 构建规则
 
 - 派生物只读取已发布知识，不读取模型缓存或搜索摘要作为补充事实。
 - 用户属性按公开规则确定性复制；系统内部字段只在确有用途时输出。
-- 构建指纹至少包含完整知识文件内容、模板版本和生成器版本。
-- 输入与版本未变化时，重复构建必须得到等价输出。
+- 构建指纹至少包含完整知识文件内容、生成器版本、确定性构建配置和当前有效生命周期状态。
+- 输入、版本与有效生命周期状态未变化时，重复构建必须得到等价输出；跨过有效期或复核日期会使派生层变为 stale。
 - 正常漂移运行 `llm-wiki build` 增量修复。
 - 清单缺失、损坏、生成器规则变更或进行完整审计时使用 `llm-wiki build --full`。
 

@@ -16,6 +16,7 @@ import (
 	"llm-wiki/internal/config"
 	"llm-wiki/internal/document"
 	"llm-wiki/internal/fsutil"
+	"llm-wiki/internal/governance"
 	resourcebundle "llm-wiki/resources"
 )
 
@@ -167,6 +168,9 @@ func ListContent(cfg *config.Instance) ([]ContentTemplate, error) {
 func ReadContent(cfg *config.Instance, kind, name string) (ContentTemplate, error) {
 	if kind != "" && kind != "raw" && kind != "knowledge" {
 		return ContentTemplate{}, fmt.Errorf("invalid content template kind %q", kind)
+	}
+	if name == "" || filepath.Base(name) != name || document.SafeBaseName(name) != name {
+		return ContentTemplate{}, fmt.Errorf("invalid content template name %q", name)
 	}
 	kinds := []string{"knowledge", "raw"}
 	if kind != "" {
@@ -391,7 +395,7 @@ func ApplyUpgrade(cfg *config.Instance, keepConflicts, dryRun bool) (*UpgradePla
 			break
 		}
 	}
-	if !hasTemplateWrites && plan.CurrentVersion == plan.TargetVersion {
+	if !hasTemplateWrites && plan.CurrentVersion == plan.TargetVersion && cfg.Template.Version == plan.TargetVersion {
 		return plan, nil, nil
 	}
 	m, err := LoadManifest(cfg.Template.Name)
@@ -399,6 +403,20 @@ func ApplyUpgrade(cfg *config.Instance, keepConflicts, dryRun bool) (*UpgradePla
 		return nil, nil, err
 	}
 	var affected []string
+	previousState, err := loadInstallState(cfg)
+	if err != nil {
+		return plan, affected, err
+	}
+	if m.Name == "personal" && versionBefore(previousState.TemplateVersion, 1, 2) && !versionBefore(m.Version, 1, 2) {
+		baseline, baselineErr := legacyKnowledgeBaseline(cfg)
+		if baselineErr != nil {
+			return plan, affected, baselineErr
+		}
+		if err = governance.WriteLegacyBaseline(cfg, baseline); err != nil {
+			return plan, affected, err
+		}
+		affected = append(affected, governance.StateFileName)
+	}
 	for _, action := range plan.Actions {
 		if action.Action != "create" && action.Action != "update" {
 			continue
@@ -416,7 +434,9 @@ func ApplyUpgrade(cfg *config.Instance, keepConflicts, dryRun bool) (*UpgradePla
 		}
 		affected = append(affected, action.Path)
 	}
-	state := InstallState{TemplateName: m.Name, TemplateVersion: m.Version}
+	state := InstallState{
+		TemplateName: m.Name, TemplateVersion: m.Version,
+	}
 	for _, relative := range m.ManagedFiles {
 		b, err := ReadFile(m.Name, relative)
 		if err != nil {
@@ -446,6 +466,33 @@ func ApplyUpgrade(cfg *config.Instance, keepConflicts, dryRun bool) (*UpgradePla
 	}
 	affected = append(affected, config.FileName)
 	return plan, affected, nil
+}
+
+func versionBefore(version string, major, minor int) bool {
+	var gotMajor, gotMinor, patch int
+	if _, err := fmt.Sscanf(version, "%d.%d.%d", &gotMajor, &gotMinor, &patch); err != nil {
+		return false
+	}
+	return gotMajor < major || (gotMajor == major && gotMinor < minor)
+}
+
+func legacyKnowledgeBaseline(cfg *config.Instance) (map[string]string, error) {
+	docs, problems := document.ScanMarkdown(cfg.KnowledgeDir())
+	if len(problems) > 0 {
+		return nil, problems[0]
+	}
+	baseline := make(map[string]string, len(docs))
+	for _, doc := range docs {
+		if _, duplicate := baseline[doc.Metadata.ID]; duplicate {
+			return nil, fmt.Errorf("duplicate legacy knowledge id %s", doc.Metadata.ID)
+		}
+		b, err := os.ReadFile(doc.Path)
+		if err != nil {
+			return nil, err
+		}
+		baseline[doc.Metadata.ID] = document.HashBytes(b)
+	}
+	return baseline, nil
 }
 
 func loadInstallState(cfg *config.Instance) (InstallState, error) {

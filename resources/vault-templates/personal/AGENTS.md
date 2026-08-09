@@ -8,7 +8,7 @@
 - `raw/` 保存原始证据，不是整理后的知识结论。
 - `.llm-wiki/index.sqlite` 只用于检索候选。查询命中后必须读取对应 `knowledge/` 文件，不能直接把 SQLite 缓存当作事实。
 - `llm-wiki/` 是从 `knowledge/` 生成的 AI 派生视图，可以删除重建，冲突时无条件以 `knowledge/` 为准。
-- `AGENTS.md`、`rules/` 和 `templates/` 是治理材料，不是用户事实。
+- `templates/`、`rules/`、`views/`、`AGENTS.md` 和 `LLM-WIKI.md` 是治理材料，不是用户事实。
 
 不得直接创建、修改或移动 `knowledge/` 中的发布文件，不得直接编辑 `llm-wiki/`，不得根据 SQLite 或派生内容反向恢复事实。
 
@@ -26,7 +26,7 @@
 | `raw list`、`raw show` | 无额外规则 |
 | `query`、`show`、`trace` | 无额外规则；CLI 必须从 `knowledge/` 返回事实 |
 | 使用非当前、过期、有争议或被替代的查询结果 | [[rules/lifecycle|生命周期规则]] |
-| `publish propose` | [[rules/metadata|元数据规则]]、[[rules/publish|发布规则]]、[[rules/quality|质量规则]]及选用模板 |
+| `publish propose` | [[rules/types|类型规则]]、[[rules/metadata|元数据规则]]、[[rules/citations|引用规则]]、[[rules/publish|发布规则]]、[[rules/quality|质量规则]]及选用模板 |
 | `publish diff`、`publish apply`、`publish reject` | [[rules/publish|发布规则]]；`apply` 必须获得用户明确批准 |
 | `build`、`build status` | [[rules/derived|派生层规则]] |
 | `index`、`status`、`doctor` | 无额外语义规则 |
@@ -41,3 +41,5 @@
 6. 发布后执行 `llm-wiki build`；索引失败不改变 knowledge 已经成为事实的状态。
 
 AI 调用始终使用 `--json --no-interactive`，只处理版本化 JSON 字段和 `error.code`。stale 或冲突提案必须重新生成，不能强制覆盖。
+
+面向人的使用入口见 [[LLM-WIKI]]。

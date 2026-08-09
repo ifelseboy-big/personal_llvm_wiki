@@ -76,7 +76,7 @@ func newRawAddCommand(rt *Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&name, "name", "", "name for stdin input")
 	cmd.Flags().StringVar(&title, "title", "", "override captured title")
 	cmd.Flags().StringVar(&typeName, "type", "note", "raw material type")
-	cmd.Flags().StringVar(&origin, "origin", "file", "capture origin")
+	cmd.Flags().StringVar(&origin, "origin", "", "override capture origin; otherwise preserve frontmatter or infer file/stdin")
 	cmd.Flags().BoolVar(&allowSensitive, "allow-sensitive", false, "explicitly allow a sensitive file")
 	return cmd
 }

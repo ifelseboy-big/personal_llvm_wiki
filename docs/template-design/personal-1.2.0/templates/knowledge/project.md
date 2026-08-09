@@ -14,7 +14,7 @@ related: []
 supersedes: []
 superseded_by: []
 project_state: active
-as_of: "{{date}}"
+as_of: "{{date:YYYY-MM-DD}}"
 owner: ""
 started_at:
 target_date:

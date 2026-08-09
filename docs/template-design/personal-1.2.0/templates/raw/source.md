@@ -7,7 +7,7 @@ source_url:
 authors: []
 publisher:
 source_date:
-retrieved_at: "{{date}}"
+retrieved_at: "{{date:YYYY-MM-DD}}"
 license:
 language:
 aliases: []

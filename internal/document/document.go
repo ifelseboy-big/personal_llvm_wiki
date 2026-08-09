@@ -53,28 +53,29 @@ type DerivedFrom struct {
 }
 
 type Metadata struct {
-	SchemaVersion    int            `yaml:"schema_version" json:"schema_version"`
-	ID               string         `yaml:"id" json:"id"`
-	Type             string         `yaml:"type,omitempty" json:"type,omitempty"`
-	Title            string         `yaml:"title,omitempty" json:"title,omitempty"`
-	Status           string         `yaml:"status,omitempty" json:"status,omitempty"`
-	Origin           string         `yaml:"origin,omitempty" json:"origin,omitempty"`
-	CapturedAt       string         `yaml:"captured_at,omitempty" json:"captured_at,omitempty"`
-	PublishedAt      string         `yaml:"published_at,omitempty" json:"published_at,omitempty"`
-	UpdatedAt        string         `yaml:"updated_at,omitempty" json:"updated_at,omitempty"`
-	ContentHash      string         `yaml:"content_hash,omitempty" json:"content_hash,omitempty"`
-	MediaType        string         `yaml:"media_type,omitempty" json:"media_type,omitempty"`
-	OriginalName     string         `yaml:"original_name,omitempty" json:"original_name,omitempty"`
-	Asset            string         `yaml:"asset,omitempty" json:"asset,omitempty"`
-	Sources          []SourceRef    `yaml:"sources,omitempty" json:"sources,omitempty"`
-	Tags             []string       `yaml:"tags,omitempty" json:"tags,omitempty"`
-	Aliases          []string       `yaml:"aliases,omitempty" json:"aliases,omitempty"`
-	DerivedFrom      *DerivedFrom   `yaml:"derived_from,omitempty" json:"derived_from,omitempty"`
-	Compiler         string         `yaml:"compiler,omitempty" json:"compiler,omitempty"`
-	CompilerVersion  int            `yaml:"compiler_version,omitempty" json:"compiler_version,omitempty"`
-	BuildFingerprint string         `yaml:"build_fingerprint,omitempty" json:"build_fingerprint,omitempty"`
-	GeneratedAt      string         `yaml:"generated_at,omitempty" json:"generated_at,omitempty"`
-	Extra            map[string]any `yaml:",inline" json:"extra,omitempty"`
+	SchemaVersion     int            `yaml:"schema_version" json:"schema_version"`
+	ID                string         `yaml:"id" json:"id"`
+	Type              string         `yaml:"type,omitempty" json:"type,omitempty"`
+	Title             string         `yaml:"title,omitempty" json:"title,omitempty"`
+	Status            string         `yaml:"status,omitempty" json:"status,omitempty"`
+	Origin            string         `yaml:"origin,omitempty" json:"origin,omitempty"`
+	CapturedAt        string         `yaml:"captured_at,omitempty" json:"captured_at,omitempty"`
+	PublishedAt       string         `yaml:"published_at,omitempty" json:"published_at,omitempty"`
+	UpdatedAt         string         `yaml:"updated_at,omitempty" json:"updated_at,omitempty"`
+	ContentHash       string         `yaml:"content_hash,omitempty" json:"content_hash,omitempty"`
+	MediaType         string         `yaml:"media_type,omitempty" json:"media_type,omitempty"`
+	OriginalName      string         `yaml:"original_name,omitempty" json:"original_name,omitempty"`
+	Asset             string         `yaml:"asset,omitempty" json:"asset,omitempty"`
+	Sources           []SourceRef    `yaml:"sources,omitempty" json:"sources,omitempty"`
+	Tags              []string       `yaml:"tags,omitempty" json:"tags,omitempty"`
+	Aliases           []string       `yaml:"aliases,omitempty" json:"aliases,omitempty"`
+	DerivedFrom       *DerivedFrom   `yaml:"derived_from,omitempty" json:"derived_from,omitempty"`
+	Compiler          string         `yaml:"compiler,omitempty" json:"compiler,omitempty"`
+	CompilerVersion   int            `yaml:"compiler_version,omitempty" json:"compiler_version,omitempty"`
+	BuildFingerprint  string         `yaml:"build_fingerprint,omitempty" json:"build_fingerprint,omitempty"`
+	GeneratedAt       string         `yaml:"generated_at,omitempty" json:"generated_at,omitempty"`
+	GovernanceVersion string         `yaml:"governance_version,omitempty" json:"governance_version,omitempty"`
+	Extra             map[string]any `yaml:",inline" json:"extra,omitempty"`
 }
 
 type Document struct {

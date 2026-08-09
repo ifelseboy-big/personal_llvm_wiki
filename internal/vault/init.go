@@ -26,6 +26,7 @@ type InitOptions struct {
 type InitResult struct {
 	Config        *config.Instance `json:"config"`
 	CreatedFiles  []string         `json:"created_files"`
+	UpdatedFiles  []string         `json:"updated_files,omitempty"`
 	CreatedDirs   []string         `json:"created_directories"`
 	Registered    bool             `json:"registered"`
 	Default       bool             `json:"default"`
@@ -81,6 +82,10 @@ func Init(opts InitOptions) (*InitResult, error) {
 	if len(conflicts) > 0 && !opts.KeepConflicts && !opts.DryRun {
 		return nil, fmt.Errorf("initialization conflicts with existing files: %v", conflicts)
 	}
+	ignorePlan, err := planGitIgnore(root)
+	if err != nil {
+		return nil, fmt.Errorf("configure %s: %w", gitIgnoreFileName, err)
+	}
 	wikiID, err := document.NewID("wiki", time.Now())
 	if err != nil {
 		return nil, err
@@ -108,6 +113,13 @@ func Init(opts InitOptions) (*InitResult, error) {
 		Config: cfg, CreatedDirs: dirs,
 		CreatedFiles: append([]string{config.FileName}, internalTemplateFiles...), Conflicts: conflicts,
 	}
+	if ignorePlan.changed {
+		if ignorePlan.existed {
+			result.UpdatedFiles = append(result.UpdatedFiles, gitIgnoreFileName)
+		} else {
+			result.CreatedFiles = append(result.CreatedFiles, gitIgnoreFileName)
+		}
+	}
 	if opts.DryRun {
 		if _, err := templates.Install(cfg, opts.Template, true, true); err != nil {
 			return nil, err
@@ -126,10 +138,17 @@ func Init(opts InitOptions) (*InitResult, error) {
 	if err := config.Save(cfg); err != nil {
 		return nil, err
 	}
+	if err := ignorePlan.apply(); err != nil {
+		_ = os.Remove(filepath.Join(root, config.FileName))
+		return nil, fmt.Errorf("configure %s: %w", gitIgnoreFileName, err)
+	}
 	installed, err := templates.Install(cfg, opts.Template, false, opts.KeepConflicts)
 	if err != nil {
-		_ = os.Remove(filepath.Join(root, config.FileName))
-		return nil, err
+		cleanupErr := os.Remove(filepath.Join(root, config.FileName))
+		if errors.Is(cleanupErr, os.ErrNotExist) {
+			cleanupErr = nil
+		}
+		return nil, errors.Join(err, ignorePlan.rollback(), cleanupErr)
 	}
 	result.TemplateFiles = installed
 	result.CreatedFiles = append(result.CreatedFiles, installed...)

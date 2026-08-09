@@ -72,7 +72,7 @@ created_at = "2026-08-08T10:00:00+08:00"
 
 [template]
 name = "personal"
-version = "1.1.1"
+version = "1.2.0"
 
 [paths]
 raw = "raw"
@@ -157,6 +157,10 @@ id: know_01...
 type: concept
 title: 示例概念
 description: 一句话摘要
+lifecycle: current
+valid_from:
+valid_until:
+review_after:
 status: published
 sources:
   - id: raw_01...
@@ -164,15 +168,18 @@ sources:
 published_at: 2026-08-08T11:00:00+08:00
 updated_at: 2026-08-08T11:00:00+08:00
 content_hash: sha256:...
+governance_version: personal-1.2
 tags: []
 aliases: []
 cssclasses: []
 related: []
+supersedes: []
+superseded_by: []
 ```
 
 `sources` 至少一个且全部可解析。缺失来源、来源哈希变化或正文哈希不匹配均使文档失去可发布状态，`doctor` 和 `index update` 必须报告，不得静默修复。
 
-frontmatter 同时兼容 Obsidian Properties。系统属性由 CLI 重建，草稿值不能覆盖；用户属性允许扩展并在发布时无损保留。更新时省略用户属性表示保持原值，同名值表示覆盖，`null` 表示删除；`tags: []` 和 `aliases: []` 表示明确清空。Obsidian 不支持在 Properties 界面编辑嵌套对象，因此 `sources` 只允许由 CLI 管理，不能为适配界面而拍平或迁移到 SQLite。
+frontmatter 同时兼容 Obsidian Properties。系统属性由 CLI 重建，草稿值不能覆盖；personal 1.2 发布会写入 `governance_version: personal-1.2`，供 doctor、query、build 和 index 区分严格治理文档与升级前文档。用户属性允许扩展并在发布时无损保留。更新时省略用户属性表示保持原值，同名值表示覆盖，`null` 表示删除；`tags: []` 和 `aliases: []` 表示明确清空。Obsidian 不支持在 Properties 界面编辑嵌套对象，因此 `sources` 只允许由 CLI 管理，不能为适配界面而拍平或迁移到 SQLite。
 
 ### 5.5 Derived frontmatter
 
@@ -183,12 +190,12 @@ derived_from:
   id: know_01...
   content_hash: sha256:...
 compiler: standard
-compiler_version: 2
+compiler_version: 3
 build_fingerprint: sha256:...
 generated_at: 2026-08-08T11:00:00+08:00
 ```
 
-`generated_at` 是运行信息，不参与 `build_fingerprint`。指纹包含 knowledge 完整文件哈希、确定性编译器版本和构建配置，因此仅修改用户 Properties 也会使派生层变为 stale。派生正文只由可信正文生成，用户 Properties 确定性复制到派生 frontmatter。
+`generated_at` 是运行信息，不参与 `build_fingerprint`。指纹包含 knowledge 完整文件哈希、确定性编译器版本、构建配置和当前 effective lifecycle 状态，因此修改用户 Properties、跨过有效期或到达复核日期都会使派生层变为 stale。派生正文只由可信正文生成，用户 Properties 确定性复制到派生 frontmatter。
 
 ## 6. 文件布局
 
@@ -200,6 +207,7 @@ llm-wiki/manifest.json
 templates/raw/*.md
 templates/knowledge/*.md
 rules/*.md
+.llm-wiki-governance.json
 .llm-wiki/
   index.sqlite
   changes/<change-id>/
@@ -210,6 +218,10 @@ rules/*.md
 ```
 
 Slug 只用于可读路径，所有关系依赖稳定 ID。扫描器忽略不在三个管理根目录中的已有 Obsidian 文档；它们必须通过 `raw add` 显式导入。
+
+`init` 创建或增量补全根目录 `.gitignore`，忽略 `llm-wiki/`、SQLite 索引、锁、日志、缓存和事务暂存目录。它不忽略 `.llm-wiki/changes/`、`template-state.json` 或 `template-base/`，因此变更审计和模板升级基线可以随知识库提交。已有规则和文件权限保持不变。
+
+从 personal 1.1.x 升级时还会创建根目录 `.llm-wiki-governance.json`，记录升级前 knowledge 的完整文件哈希。它不在 `.llm-wiki/` 运行目录内，必须随 Vault 备份或提交；删除该文件不会丢失正文，但旧文档在重新发布前会被拒绝读取，避免把后来改动误判为 legacy。
 
 ## 7. 命令与全局协议
 
@@ -351,21 +363,30 @@ operations(id PRIMARY KEY, kind, state, started_at, finished_at, detail_json)
 resources/vault-templates/personal/
   template.toml
   AGENTS.md
+  LLM-WIKI.md
   rules/capture.md
   rules/metadata.md
+  rules/types.md
   rules/lifecycle.md
+  rules/citations.md
   rules/publish.md
   rules/derived.md
+  rules/quality.md
   templates/raw/note.md
   templates/raw/source.md
+  templates/knowledge/claim.md
   templates/knowledge/concept.md
   templates/knowledge/guide.md
+  templates/knowledge/tutorial.md
   templates/knowledge/reference.md
   templates/knowledge/decision.md
   templates/knowledge/project.md
+  views/knowledge.base
+  views/review.base
+  views/raw.base
 ```
 
-模板 manifest 记录模板版本、兼容的实例 Schema、每个受管文件的初始 hash。初始化只复制实例必需规则和用户可编辑模板。
+模板 manifest 记录模板版本、兼容的实例 Schema、每个受管文件的初始 hash。初始化只复制实例必需规则、用户可编辑模板、使用入口和可选 Bases 视图。`template create` 只向用户显式指定的非受管路径生成草稿，支持属性设置、稳定 related 链接、dry-run 和覆盖确认。
 
 升级时比较“旧内置版本、用户当前文件、新内置版本”：未修改的受管文件可更新；用户修改过的文件只生成三方 diff 和升级提案，绝不静默覆盖。`raw/`、`knowledge/`、`llm-wiki/` 永远不属于模板升级写入目标。
 

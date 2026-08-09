@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"llm-wiki/internal/config"
+	"llm-wiki/internal/document"
+	"llm-wiki/internal/governance"
 	"llm-wiki/internal/publish"
 	"llm-wiki/internal/raw"
 	"llm-wiki/internal/vault"
@@ -63,7 +65,7 @@ func TestSimpleChineseRetrievalRankingAndFallback(t *testing.T) {
 		"# 团队会议记录\n\n核心结论用于记录下周的会议室安排，与编译器无关。\n")
 	titleID := publishSearchFixture(t, cfg, 2, base,
 		"TitlePriorityZXQ", nil,
-		"# 精确标题\n\n普通正文。\n")
+		"# TitlePriorityZXQ\n\n普通正文。\n")
 	publishSearchFixture(t, cfg, 3, base,
 		"正文命中文档", nil,
 		"# 正文命中文档\n\nTitlePriorityZXQ 只在正文出现。\n"+strings.Repeat("填充内容用于降低正文密度。\n", 20))
@@ -145,6 +147,100 @@ func TestSimpleChineseRetrievalRankingAndFallback(t *testing.T) {
 		t.Fatalf("LLVM result did not rank ahead of unrelated Chinese result: %#v", llvmMatches)
 	}
 
+	inactive, err := document.FindByID(cfg.KnowledgeDir(), unrelatedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inactive.Metadata.Extra["lifecycle"] = "superseded"
+	if err := document.Write(inactive.Path, inactive.Metadata, inactive.Body); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Update(cfg, false); err != nil {
+		t.Fatal(err)
+	}
+	defaultInactive, err := Search(cfg, "团队会议记录", 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range defaultInactive.Candidates {
+		if candidate.KnowledgeID == unrelatedID {
+			t.Fatal("default query returned superseded knowledge")
+		}
+	}
+	withInactive, err := SearchWithOptions(cfg, "团队会议记录", SearchOptions{Limit: 8, IncludeInactive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundInactive := false
+	for _, candidate := range withInactive.Candidates {
+		if candidate.KnowledgeID == unrelatedID {
+			foundInactive = true
+		}
+	}
+	if !foundInactive {
+		t.Fatal("include-inactive did not return superseded knowledge")
+	}
+
+	legacyRaw, err := raw.Add(cfg, raw.AddOptions{
+		Input: "-", Name: "legacy-source.md", Stdin: bytes.NewBufferString("# Legacy source\n"), Now: base.Add(24 * time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyBody := []byte("# LegacyCustomLifecycleZXQ\n\nLegacy searchable body.\n")
+	legacyMeta := document.Metadata{
+		ID: "know_01arz3ndektsv4rrffq69g5fay", Type: "concept", Title: "LegacyCustomLifecycleZXQ", Status: "published",
+		PublishedAt: base.Format(time.RFC3339), UpdatedAt: base.Format(time.RFC3339), ContentHash: document.HashBytes(legacyBody),
+		Sources:           []document.SourceRef{{ID: legacyRaw[0].ID, ContentHash: legacyRaw[0].ContentHash}},
+		GovernanceVersion: "pre-1.2-user-property",
+		Extra:             map[string]any{"lifecycle": "retracted"},
+	}
+	legacyPath := filepath.Join(cfg.KnowledgeDir(), "concept", "legacy-custom--"+legacyMeta.ID+".md")
+	if err := document.Write(legacyPath, legacyMeta, legacyBody); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Template.Version = "1.1.1"
+	if _, err := Update(cfg, false); err != nil {
+		t.Fatal(err)
+	}
+	preUpgradeMatches, err := Search(cfg, "LegacyCustomLifecycleZXQ", 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundPreUpgrade := false
+	for _, candidate := range preUpgradeMatches.Candidates {
+		foundPreUpgrade = foundPreUpgrade || candidate.KnowledgeID == legacyMeta.ID
+	}
+	if !foundPreUpgrade {
+		t.Fatal("new binary applied personal 1.2 lifecycle filtering before explicit template upgrade")
+	}
+	cfg.Template.Version = "1.2.0"
+	legacyMeta.GovernanceVersion = ""
+	if err := document.Write(legacyPath, legacyMeta, legacyBody); err != nil {
+		t.Fatal(err)
+	}
+	legacyBytes, err := os.ReadFile(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := governance.WriteLegacyBaseline(cfg, map[string]string{legacyMeta.ID: document.HashBytes(legacyBytes)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Update(cfg, false); err != nil {
+		t.Fatal(err)
+	}
+	legacyMatches, err := Search(cfg, "LegacyCustomLifecycleZXQ", 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundLegacy := false
+	for _, candidate := range legacyMatches.Candidates {
+		foundLegacy = foundLegacy || candidate.KnowledgeID == legacyMeta.ID
+	}
+	if !foundLegacy {
+		t.Fatal("default query hid upgrade-baselined legacy knowledge because of a pre-1.2 lifecycle property")
+	}
+
 	db, err := openDB(DBPath(cfg))
 	if err != nil {
 		t.Fatal(err)
@@ -189,7 +285,7 @@ func publishSearchFixture(t *testing.T, cfg *config.Instance, ordinal int, base 
 		t.Fatal(err)
 	}
 	draft := filepath.Join(t.TempDir(), fmt.Sprintf("draft-%02d.md", ordinal))
-	frontmatter := "---\ntype: concept\ntitle: " + title + "\n"
+	frontmatter := "---\ntype: concept\ntitle: " + title + "\ndescription: Search fixture\nlifecycle: current\n"
 	if len(aliases) > 0 {
 		frontmatter += "aliases:\n"
 		for _, alias := range aliases {
@@ -197,6 +293,7 @@ func publishSearchFixture(t *testing.T, cfg *config.Instance, ordinal int, base 
 		}
 	}
 	frontmatter += "---\n"
+	body += fmt.Sprintf("\nFixture evidence.[^%s-1]\n\n[^%s-1]: locator: test fixture\n", added[0].ID, added[0].ID)
 	if err := os.WriteFile(draft, []byte(frontmatter+body), 0o600); err != nil {
 		t.Fatal(err)
 	}

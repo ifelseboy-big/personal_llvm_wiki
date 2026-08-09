@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,6 +11,7 @@ import (
 
 	buildlayer "llm-wiki/internal/build"
 	"llm-wiki/internal/document"
+	"llm-wiki/internal/governance"
 	indexstore "llm-wiki/internal/index"
 	"llm-wiki/internal/publish"
 	"llm-wiki/internal/raw"
@@ -33,7 +35,7 @@ func TestFileFirstFullWorkflowAndRebuildEquivalence(t *testing.T) {
 		t.Fatal(err)
 	}
 	draft := filepath.Join(t.TempDir(), "draft.md")
-	draftBody := []byte("---\ntype: concept\ntitle: LLVM 的模块化架构\ntags: [LLVM, 编译器]\n---\n# LLVM 的模块化架构\n\nLLVM 使用稳定的 IR 解耦前端、优化器和后端。\n\n## 核心结论\n\n稳定 IR 是跨语言复用的关键边界。\n")
+	draftBody := []byte(fmt.Sprintf("---\ntype: concept\ntitle: LLVM 的模块化架构\ndescription: LLVM 模块化架构的稳定知识\nlifecycle: current\ntags: [LLVM, 编译器]\n---\n# LLVM 的模块化架构\n\nLLVM 使用稳定的 IR 解耦前端、优化器和后端。[^%s-1]\n\n## 核心结论\n\n稳定 IR 是跨语言复用的关键边界。\n\n[^%s-1]: locator: 原始内容\n", added[0].ID, added[0].ID))
 	if err := os.WriteFile(draft, draftBody, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +65,7 @@ func TestFileFirstFullWorkflowAndRebuildEquivalence(t *testing.T) {
 		t.Fatal(err)
 	}
 	updateDraft := filepath.Join(t.TempDir(), "update.md")
-	updateBody := []byte("---\nid: " + proposal.Proposal.KnowledgeID + "\ntype: concept\ntitle: LLVM 的模块化架构\n---\n# LLVM 的模块化架构\n\n更新后的正文。\n\n## 核心结论\n\n稳定 IR 是跨语言复用的关键边界。\n")
+	updateBody := []byte(fmt.Sprintf("---\nid: %s\ntype: concept\ntitle: LLVM 的模块化架构\n---\n# LLVM 的模块化架构\n\n更新后的正文。[^%s-1]\n\n## 核心结论\n\n稳定 IR 是跨语言复用的关键边界。\n\n[^%s-1]: locator: 原始内容\n", proposal.Proposal.KnowledgeID, added[0].ID, added[0].ID))
 	if err := os.WriteFile(updateDraft, updateBody, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -186,9 +188,29 @@ func TestObsidianPropertiesSurvivePublishCreateAndUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	relationDraft := filepath.Join(t.TempDir(), "relation-target.md")
+	relationBody := []byte(fmt.Sprintf("---\ntype: concept\ntitle: RelatedOnlyZXQ\ndescription: Canonical relation target\nlifecycle: current\n---\n# RelatedOnlyZXQ\n\nRelation target evidence.[^%s-1]\n\n[^%s-1]: locator: property evidence\n", added[0].ID, added[0].ID))
+	if err := os.WriteFile(relationDraft, relationBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	relationProposal, err := publish.Propose(cfg, publish.ProposeOptions{SourceIDs: []string{added[0].ID}, DraftPath: relationDraft, Now: now.Add(10 * time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	relationApplied, err := publish.Apply(cfg, relationProposal.Proposal.ID, false, now.Add(20*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := publish.CompleteOperation(cfg, relationApplied.OperationID); err != nil {
+		t.Fatal(err)
+	}
+	relationLink, err := governance.CanonicalKnowledgeLink(cfg, relationProposal.Proposal.KnowledgeID)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	draft := filepath.Join(t.TempDir(), "create.md")
-	createBody := []byte(`---
+	createBody := []byte(fmt.Sprintf(`---
 type: concept
 title: Obsidian properties
 tags:
@@ -196,10 +218,11 @@ tags:
 aliases:
   - AliasOnlyZXQ
 description: DescriptionOnlyZXQ
+lifecycle: current
 cssclasses:
   - knowledge-note
 related:
-  - "[[RelatedOnlyZXQ]]"
+  - %q
 rating: 5
 obsolete: remove-me
 status: raw
@@ -209,8 +232,10 @@ published_at: invalid
 ---
 # Obsidian properties
 
-Property-backed knowledge.
-`)
+Property-backed knowledge.[^%s-1]
+
+[^%s-1]: locator: property evidence
+`, relationLink, added[0].ID, added[0].ID))
 	if err := os.WriteFile(draft, createBody, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -218,6 +243,21 @@ Property-backed knowledge.
 		SourceIDs: []string{added[0].ID}, DraftPath: draft, Now: now.Add(time.Hour),
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	relationTarget, err := document.FindByID(cfg.KnowledgeDir(), relationProposal.Proposal.KnowledgeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relationTarget.Metadata.Title = "Relation target changed after proposal"
+	if err := document.Write(relationTarget.Path, relationTarget.Metadata, relationTarget.Body); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := publish.Apply(cfg, proposal.Proposal.ID, false, now.Add(90*time.Minute)); err == nil {
+		t.Fatal("apply accepted a relation target that changed after proposal")
+	}
+	relationTarget.Metadata.Title = "RelatedOnlyZXQ"
+	if err := document.Write(relationTarget.Path, relationTarget.Metadata, relationTarget.Body); err != nil {
 		t.Fatal(err)
 	}
 	applied, err := publish.Apply(cfg, proposal.Proposal.ID, false, now.Add(2*time.Hour))
@@ -240,14 +280,30 @@ Property-backed knowledge.
 	if got, ok := created.Metadata.Extra["cssclasses"].([]any); !ok || len(got) != 1 || got[0] != "knowledge-note" {
 		t.Fatalf("cssclasses property was not preserved: %#v", created.Metadata.Extra["cssclasses"])
 	}
+	if got, ok := created.Metadata.Extra["related"].([]any); !ok || len(got) != 1 || got[0] != relationLink {
+		t.Fatalf("canonical related property was not preserved: %#v", created.Metadata.Extra["related"])
+	}
 	if _, err := indexstore.Rebuild(cfg); err != nil {
 		t.Fatal(err)
 	}
-	for _, query := range []string{"AliasOnlyZXQ", "DescriptionOnlyZXQ", "RelatedOnlyZXQ"} {
+	for _, query := range []string{"AliasOnlyZXQ", "DescriptionOnlyZXQ"} {
 		matches, err := indexstore.SearchCandidates(cfg, query, 8)
 		if err != nil || len(matches) != 1 || matches[0].KnowledgeID != proposal.Proposal.KnowledgeID {
 			t.Fatalf("property %q is not searchable: %#v %v", query, matches, err)
 		}
+	}
+	relatedMatches, err := indexstore.SearchCandidates(cfg, "RelatedOnlyZXQ", 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundRelatedProperty := false
+	for _, match := range relatedMatches {
+		if match.KnowledgeID == proposal.Proposal.KnowledgeID {
+			foundRelatedProperty = true
+		}
+	}
+	if !foundRelatedProperty {
+		t.Fatalf("canonical related property is not searchable: %#v", relatedMatches)
 	}
 
 	update := filepath.Join(t.TempDir(), "update.md")
@@ -259,7 +315,8 @@ Property-backed knowledge.
 		"status: raw\n" +
 		"sources: []\n" +
 		"---\n" +
-		"# Obsidian properties\n\nUpdated property-backed knowledge.\n")
+		"# Obsidian properties\n\nUpdated property-backed knowledge.[^" + added[0].ID + "-1]\n\n" +
+		"[^" + added[0].ID + "-1]: locator: property evidence\n")
 	if err := os.WriteFile(update, updateBody, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +377,15 @@ Property-backed knowledge.
 		t.Fatal(err)
 	}
 	buildStatus, err := buildlayer.GetStatus(cfg)
-	if err != nil || buildStatus.Fresh || len(buildStatus.Items) != 1 || buildStatus.Items[0].Reason != "source knowledge metadata changed" {
+	foundMetadataDrift := false
+	if err == nil {
+		for _, item := range buildStatus.Items {
+			if item.KnowledgeID == updated.Metadata.ID && item.Reason == "source knowledge metadata changed" {
+				foundMetadataDrift = true
+			}
+		}
+	}
+	if err != nil || buildStatus.Fresh || !foundMetadataDrift {
 		t.Fatalf("metadata-only knowledge change was not detected: %#v %v", buildStatus, err)
 	}
 }
@@ -338,7 +403,8 @@ func TestProposalBecomesStaleWhenRawEvidenceChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	draft := filepath.Join(t.TempDir(), "draft.md")
-	if err := os.WriteFile(draft, []byte("# Published\n\nOriginal.\n"), 0o600); err != nil {
+	staleBody := []byte(fmt.Sprintf("---\ntype: concept\ntitle: Published\ndescription: Stale proposal fixture\nlifecycle: current\n---\n# Published\n\nOriginal.[^%s-1]\n\n[^%s-1]: locator: raw original\n", added[0].ID, added[0].ID))
+	if err := os.WriteFile(draft, staleBody, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	proposal, err := publish.Propose(cfg, publish.ProposeOptions{SourceIDs: []string{added[0].ID}, DraftPath: draft, Now: now.Add(time.Hour)})

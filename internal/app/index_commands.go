@@ -6,38 +6,42 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"llm-wiki/internal/config"
 	"llm-wiki/internal/document"
 	"llm-wiki/internal/fsutil"
+	"llm-wiki/internal/governance"
 	indexstore "llm-wiki/internal/index"
 	"llm-wiki/internal/publish"
 	"llm-wiki/internal/vault"
 )
 
 var (
-	errQueryIndexStale = errors.New("search index does not match published knowledge")
+	errQueryIndexStale     = errors.New("search index does not match published knowledge")
+	errKnowledgeGovernance = errors.New("published knowledge governance is invalid")
 )
 
 type queryEvidence struct {
-	KnowledgeID   string               `json:"knowledge_id"`
-	Title         string               `json:"title"`
-	Type          string               `json:"type"`
-	Path          string               `json:"path"`
-	ChunkID       string               `json:"chunk_id"`
-	Ordinal       int                  `json:"ordinal"`
-	HeadingPath   string               `json:"heading_path,omitempty"`
-	Body          string               `json:"body"`
-	StartLine     int                  `json:"start_line"`
-	EndLine       int                  `json:"end_line"`
-	Score         float64              `json:"score"`
-	RetrievalMode string               `json:"retrieval_mode"`
-	ContentHash   string               `json:"content_hash"`
-	FileHash      string               `json:"file_hash"`
-	Sources       []document.SourceRef `json:"sources"`
-	Metadata      document.Metadata    `json:"metadata"`
+	KnowledgeID   string                         `json:"knowledge_id"`
+	Title         string                         `json:"title"`
+	Type          string                         `json:"type"`
+	Path          string                         `json:"path"`
+	ChunkID       string                         `json:"chunk_id"`
+	Ordinal       int                            `json:"ordinal"`
+	HeadingPath   string                         `json:"heading_path,omitempty"`
+	Body          string                         `json:"body"`
+	StartLine     int                            `json:"start_line"`
+	EndLine       int                            `json:"end_line"`
+	Score         float64                        `json:"score"`
+	RetrievalMode string                         `json:"retrieval_mode"`
+	ContentHash   string                         `json:"content_hash"`
+	FileHash      string                         `json:"file_hash"`
+	Sources       []document.SourceRef           `json:"sources"`
+	Metadata      document.Metadata              `json:"metadata"`
+	Lifecycle     governance.LifecycleAssessment `json:"lifecycle"`
 }
 
 type loadedQueryDocument struct {
@@ -109,6 +113,7 @@ func newIndexCommand(rt *Runtime) *cobra.Command {
 
 func newQueryCommand(rt *Runtime) *cobra.Command {
 	var limit int
+	var includeInactive bool
 	cmd := &cobra.Command{
 		Use: "query <question>", Args: cobra.ExactArgs(1),
 		Short: "Retrieve published knowledge evidence without generating an answer",
@@ -126,7 +131,9 @@ func newQueryCommand(rt *Runtime) *cobra.Command {
 				recoveryErr.Details = map[string]any{"operations": pending}
 				return recoveryErr
 			}
-			searchResult, err := indexstore.Search(cfg, args[0], limit)
+			searchResult, err := indexstore.SearchWithOptions(cfg, args[0], indexstore.SearchOptions{
+				Limit: limit, IncludeInactive: includeInactive,
+			})
 			if errors.Is(err, os.ErrNotExist) {
 				return E("INDEX_NOT_FOUND", "index does not exist; run llm-wiki index rebuild", ExitIndex, err)
 			}
@@ -139,11 +146,14 @@ func newQueryCommand(rt *Runtime) *cobra.Command {
 			if err != nil {
 				return E("QUERY_FAILED", "cannot query index", ExitIndex, err)
 			}
-			items, err := hydrateQueryCandidates(cfg, searchResult.Candidates)
+			items, lifecycleWarnings, err := hydrateQueryCandidates(cfg, searchResult.Candidates)
 			if errors.Is(err, errQueryIndexStale) {
 				return E("INDEX_STALE", "index candidates do not match published knowledge; run llm-wiki index update", ExitConflict, err)
 			}
 			if err != nil {
+				if errors.Is(err, errKnowledgeGovernance) {
+					return E("KNOWLEDGE_INVALID", "published knowledge has invalid governance metadata", ExitValidation, err)
+				}
 				return E("KNOWLEDGE_READ_FAILED", "cannot load published knowledge selected by the index", ExitIO, err)
 			}
 			return rt.Success("query", ref, map[string]any{
@@ -151,32 +161,45 @@ func newQueryCommand(rt *Runtime) *cobra.Command {
 				"retrieval_modes": searchResult.RetrievalModes,
 				"evidence":        items, "count": len(items),
 				"answer_generated": false, "facts_from": "knowledge_markdown",
-			}, nil, nil)
+			}, lifecycleWarnings, nil)
 		},
 	}
 	cmd.Flags().IntVar(&limit, "limit", 8, "maximum evidence chunks")
+	cmd.Flags().BoolVar(&includeInactive, "include-inactive", false, "include superseded and retracted knowledge for audit")
 	return cmd
 }
 
-func hydrateQueryCandidates(cfg *config.Instance, candidates []indexstore.Candidate) ([]queryEvidence, error) {
+func hydrateQueryCandidates(cfg *config.Instance, candidates []indexstore.Candidate) ([]queryEvidence, []string, error) {
 	cache := map[string]*loadedQueryDocument{}
+	assessments := map[string]governance.LifecycleAssessment{}
 	items := make([]queryEvidence, 0, len(candidates))
+	var warnings []string
 	for _, candidate := range candidates {
 		loaded := cache[candidate.KnowledgeID]
 		if loaded == nil {
 			var err error
 			loaded, err = loadIndexedKnowledge(cfg, candidate)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			cache[candidate.KnowledgeID] = loaded
+			legacy, governanceErr := governance.ValidateStored(cfg, loaded.doc, time.Now())
+			if governanceErr != nil {
+				return nil, nil, fmt.Errorf("%w: %s: %v", errKnowledgeGovernance, candidate.KnowledgeID, governanceErr)
+			}
+			assessment, assessmentErr := governance.AssessStoredLifecycle(cfg, loaded.doc.Metadata, time.Now(), legacy)
+			if assessmentErr != nil {
+				return nil, nil, fmt.Errorf("%w: %s: %v", errKnowledgeGovernance, candidate.KnowledgeID, assessmentErr)
+			}
+			assessments[candidate.KnowledgeID] = assessment
+			warnings = append(warnings, assessment.Warnings...)
 		} else if loaded.path != candidate.Path || loaded.fileHash != candidate.IndexedFileHash ||
 			loaded.doc.Metadata.ContentHash != candidate.IndexedContentHash {
-			return nil, fmt.Errorf("%w: inconsistent candidates for %s", errQueryIndexStale, candidate.KnowledgeID)
+			return nil, nil, fmt.Errorf("%w: inconsistent candidates for %s", errQueryIndexStale, candidate.KnowledgeID)
 		}
 		body, heading, err := candidateExcerpt(loaded.lines, candidate)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		items = append(items, queryEvidence{
 			KnowledgeID:   loaded.doc.Metadata.ID,
@@ -195,9 +218,10 @@ func hydrateQueryCandidates(cfg *config.Instance, candidates []indexstore.Candid
 			FileHash:      loaded.fileHash,
 			Sources:       loaded.doc.Metadata.Sources,
 			Metadata:      loaded.doc.Metadata,
+			Lifecycle:     assessments[candidate.KnowledgeID],
 		})
 	}
-	return items, nil
+	return items, governance.SortedWarnings(warnings), nil
 }
 
 func loadIndexedKnowledge(cfg *config.Instance, candidate indexstore.Candidate) (*loadedQueryDocument, error) {
@@ -288,11 +312,20 @@ func newShowCommand(rt *Runtime) *cobra.Command {
 			if err := doc.Validate("knowledge", cfg.Publish.RequireSources); err != nil {
 				return E("KNOWLEDGE_INVALID", "published knowledge failed file validation", ExitValidation, err)
 			}
+			legacy, governanceErr := governance.ValidateStored(cfg, doc, time.Now())
+			if governanceErr != nil {
+				return E("KNOWLEDGE_INVALID", "published knowledge failed governance validation", ExitValidation, governanceErr)
+			}
+			assessment, assessmentErr := governance.AssessStoredLifecycle(cfg, doc.Metadata, time.Now(), legacy)
+			if assessmentErr != nil {
+				return E("KNOWLEDGE_INVALID", "published knowledge has invalid lifecycle metadata", ExitValidation, assessmentErr)
+			}
 			rel, _ := filepath.Rel(cfg.Root, doc.Path)
+			warnings := append([]string(nil), assessment.Warnings...)
 			return rt.Success("show", ref, map[string]any{
 				"path": filepath.ToSlash(rel), "metadata": doc.Metadata, "body": string(doc.Body),
-				"facts_from": "knowledge_markdown",
-			}, nil, nil)
+				"facts_from": "knowledge_markdown", "lifecycle": assessment,
+			}, governance.SortedWarnings(warnings), nil)
 		},
 	}
 }

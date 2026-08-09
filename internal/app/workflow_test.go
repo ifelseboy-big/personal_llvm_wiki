@@ -23,7 +23,7 @@ func TestCompleteCLIWorkflow(t *testing.T) {
 	rawResponse := runCLI(t, "# Source\n\n稳定 IR 解耦编译器组件。\n", "raw", "add", "-", "--name", "source.md", "--wiki", root, "--json", "--no-interactive")
 	rawID := nestedString(t, rawResponse.Data, "items", 0, "id")
 	draft := filepath.Join(t.TempDir(), "draft.md")
-	if err := os.WriteFile(draft, []byte("---\ntype: concept\ntitle: 稳定 IR\n---\n# 稳定 IR\n\n稳定 IR 解耦编译器组件。\n"), 0o600); err != nil {
+	if err := os.WriteFile(draft, governedDraft("稳定 IR", "稳定 IR 解耦编译器组件。", rawID), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	proposalResponse := runCLI(t, "", "publish", "propose", "--source", rawID, "--file", draft, "--wiki", root, "--json", "--no-interactive")
@@ -82,13 +82,25 @@ func TestAuxiliaryCLICommandSurface(t *testing.T) {
 	runCLI(t, "", "template", "list", "--wiki", root, "--json", "--no-interactive")
 	runCLI(t, "", "template", "show", "concept", "--wiki", root, "--json", "--no-interactive")
 	runCLI(t, "", "template", "upgrade", "--plan", "--wiki", root, "--json", "--no-interactive")
+	templateOutput := filepath.Join(t.TempDir(), "source-template.md")
+	createdTemplate := runCLI(t, "", "template", "create", "source", "--kind", "raw", "--title", `A "quoted" source`,
+		"--output", templateOutput, "--set", "origin=web", "--set", "authors=[Alice, Bob]", "--wiki", root, "--json", "--no-interactive")
+	if version := nestedString(t, createdTemplate.Data, "template_version"); version != "1.2.0" {
+		t.Fatalf("template create returned version %q", version)
+	}
+	templateRaw := runCLI(t, "", "raw", "add", templateOutput, "--wiki", root, "--json", "--no-interactive")
+	templateRawID := nestedString(t, templateRaw.Data, "items", 0, "id")
+	templateRawShow := runCLI(t, "", "raw", "show", templateRawID, "--wiki", root, "--json", "--no-interactive")
+	if origin := nestedString(t, templateRawShow.Data, "metadata", "origin"); origin != "web" {
+		t.Fatalf("raw add replaced template origin with %q", origin)
+	}
 
 	rawResponse := runCLI(t, "# Reject source\n", "raw", "add", "-", "--name", "reject.md", "--wiki", root, "--json", "--no-interactive")
 	rawID := nestedString(t, rawResponse.Data, "items", 0, "id")
 	runCLI(t, "", "raw", "list", "--wiki", root, "--json", "--no-interactive")
 	runCLI(t, "", "raw", "show", rawID, "--wiki", root, "--json", "--no-interactive")
 	draft := filepath.Join(t.TempDir(), "reject-draft.md")
-	if err := os.WriteFile(draft, []byte("# Rejected knowledge\n"), 0o600); err != nil {
+	if err := os.WriteFile(draft, governedDraft("Rejected knowledge", "Rejected knowledge remains reviewable.", rawID), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	proposal := runCLI(t, "", "publish", "propose", "--source", rawID, "--file", draft, "--wiki", root, "--json", "--no-interactive")
@@ -109,7 +121,7 @@ func TestQueryUsesIndexForCandidatesAndKnowledgeForFacts(t *testing.T) {
 	rawID := nestedString(t, rawResponse.Data, "items", 0, "id")
 	rawPath := nestedString(t, rawResponse.Data, "items", 0, "path")
 	draft := filepath.Join(t.TempDir(), "draft.md")
-	if err := os.WriteFile(draft, []byte("# File facts\n\nOriginal evidence.\n"), 0o600); err != nil {
+	if err := os.WriteFile(draft, governedDraft("File facts", "Original evidence.", rawID), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	proposal := runCLI(t, "", "publish", "propose", "--source", rawID, "--file", draft, "--wiki", root, "--json", "--no-interactive")
@@ -200,6 +212,11 @@ func TestQueryUsesIndexForCandidatesAndKnowledgeForFacts(t *testing.T) {
 	if valid, ok := data["valid"].(bool); !ok || valid {
 		t.Fatalf("trace trusted recorded metadata instead of actual raw bytes: %#v", trace.Data)
 	}
+}
+
+func governedDraft(title, fact, rawID string) []byte {
+	return []byte(fmt.Sprintf("---\ntype: concept\ntitle: %q\ndescription: Test knowledge for %s\nlifecycle: current\n---\n# %s\n\n%s[^%s-1]\n\n[^%s-1]: locator: test fixture\n",
+		title, title, title, fact, rawID, rawID))
 }
 
 func runCLI(t *testing.T, stdin string, args ...string) Response {

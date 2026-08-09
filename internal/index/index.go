@@ -15,13 +15,14 @@ import (
 
 	"llm-wiki/internal/config"
 	"llm-wiki/internal/document"
+	"llm-wiki/internal/governance"
 	"llm-wiki/internal/sqlite3simple"
 	"llm-wiki/internal/vault"
 )
 
 const (
 	SchemaVersion       = 3
-	QueryPlannerVersion = "1"
+	QueryPlannerVersion = "2"
 )
 
 type RebuildResult struct {
@@ -76,6 +77,11 @@ type SearchResult struct {
 	NormalizedQuery string
 	RetrievalModes  []string
 	Candidates      []Candidate
+}
+
+type SearchOptions struct {
+	Limit           int
+	IncludeInactive bool
 }
 
 var (
@@ -186,6 +192,11 @@ func rebuildLocked(cfg *config.Instance) (*RebuildResult, error) {
 		for _, doc := range docs {
 			if err := doc.Validate(spec.name, cfg.Publish.RequireSources); err != nil {
 				return nil, fmt.Errorf("validate %s: %w", doc.Path, err)
+			}
+			if spec.name == "knowledge" {
+				if _, err := governance.ValidateStored(cfg, doc, time.Now()); err != nil {
+					return nil, fmt.Errorf("validate governance %s: %w", doc.Path, err)
+				}
 			}
 			if spec.name == "raw" {
 				if _, duplicate := rawHashes[doc.Metadata.ID]; duplicate {
@@ -520,6 +531,11 @@ func scanValidated(cfg *config.Instance) ([]*scannedDocument, error) {
 			if err := doc.Validate(spec.layer, cfg.Publish.RequireSources); err != nil {
 				return nil, fmt.Errorf("validate %s: %w", doc.Path, err)
 			}
+			if spec.layer == "knowledge" {
+				if _, err := governance.ValidateStored(cfg, doc, time.Now()); err != nil {
+					return nil, fmt.Errorf("validate governance %s: %w", doc.Path, err)
+				}
+			}
 			if spec.layer == "raw" {
 				if _, exists := rawHashes[doc.Metadata.ID]; exists {
 					return nil, fmt.Errorf("duplicate raw id %s", doc.Metadata.ID)
@@ -708,12 +724,16 @@ func SearchCandidates(cfg *config.Instance, question string, limit int) ([]Candi
 }
 
 func Search(cfg *config.Instance, question string, limit int) (*SearchResult, error) {
+	return SearchWithOptions(cfg, question, SearchOptions{Limit: limit})
+}
+
+func SearchWithOptions(cfg *config.Instance, question string, opts SearchOptions) (*SearchResult, error) {
 	normalized := normalizeQuery(question)
 	if normalized == "" {
 		return nil, ErrNoSearchTerms
 	}
-	if limit <= 0 {
-		limit = 8
+	if opts.Limit <= 0 {
+		opts.Limit = 8
 	}
 	path := DBPath(cfg)
 	if _, err := os.Stat(path); err != nil {
@@ -729,29 +749,34 @@ func Search(cfg *config.Instance, question string, limit int) (*SearchResult, er
 	}
 
 	result := &SearchResult{NormalizedQuery: normalized, RetrievalModes: []string{"strict"}}
-	fetchLimit := limit * 4
-	strict, err := searchLevel(db, normalized, fetchLimit, true, "strict")
+	fetchLimit := opts.Limit * 4
+	filterInactive := governance.UsesPersonalV12(cfg) && !opts.IncludeInactive
+	strict, err := searchLevel(db, normalized, fetchLimit, true, "strict", filterInactive)
 	if err != nil {
 		return nil, err
 	}
-	result.Candidates = mergeCandidates(result.Candidates, strict, limit)
-	if len(result.Candidates) < limit {
+	result.Candidates = mergeCandidates(result.Candidates, strict, opts.Limit)
+	if len(result.Candidates) < opts.Limit {
 		if relaxed := relaxedQuery(normalized); relaxed != "" {
 			result.RetrievalModes = append(result.RetrievalModes, "relaxed")
-			items, err := searchLevel(db, relaxed, fetchLimit, false, "relaxed")
+			items, err := searchLevel(db, relaxed, fetchLimit, false, "relaxed", filterInactive)
 			if err != nil {
 				return nil, err
 			}
-			result.Candidates = mergeCandidates(result.Candidates, items, limit)
+			result.Candidates = mergeCandidates(result.Candidates, items, opts.Limit)
 		}
 	}
 	return result, nil
 }
 
-func searchLevel(db *sql.DB, query string, limit int, useSimpleQuery bool, mode string) ([]Candidate, error) {
+func searchLevel(db *sql.DB, query string, limit int, useSimpleQuery bool, mode string, filterInactive bool) ([]Candidate, error) {
 	matchExpression := "?"
 	if useSimpleQuery {
 		matchExpression = "simple_query(?, 0)"
+	}
+	lifecycleFilter := ""
+	if filterInactive {
+		lifecycleFilter = "AND (COALESCE(json_extract(d.metadata_json,'$.governance_version'),'') != 'personal-1.2' OR trim(COALESCE(json_extract(d.metadata_json,'$.extra.lifecycle'),'current')) NOT IN ('superseded','retracted'))"
 	}
 	rows, err := db.Query(fmt.Sprintf(`
 		SELECT d.id,d.path,c.id,c.ordinal,c.start_line,c.end_line,c.body_hash,
@@ -761,8 +786,8 @@ func searchLevel(db *sql.DB, query string, limit int, useSimpleQuery bool, mode 
 		JOIN chunks c ON c.id=chunks_fts.chunk_id
 		JOIN documents d ON d.id=c.document_id
 		JOIN files f ON f.document_id=d.id AND f.path=d.path
-		WHERE chunks_fts MATCH %s AND d.layer='knowledge'
-		ORDER BY rank ASC,d.id ASC,c.ordinal ASC LIMIT ?`, matchExpression), query, limit)
+		WHERE chunks_fts MATCH %s AND d.layer='knowledge' %s
+		ORDER BY rank ASC,d.id ASC,c.ordinal ASC LIMIT ?`, matchExpression, lifecycleFilter), query, limit)
 	if err != nil {
 		return nil, err
 	}

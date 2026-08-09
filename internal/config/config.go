@@ -74,7 +74,7 @@ func DefaultInstance(name, id string, now time.Time) *Instance {
 		InstanceID:    id,
 		Name:          name,
 		CreatedAt:     now.Format(time.RFC3339),
-		Template:      TemplateConfig{Name: "personal", Version: "1.1.1"},
+		Template:      TemplateConfig{Name: "personal", Version: "1.2.0"},
 		Paths: PathsConfig{
 			Raw: "raw", Knowledge: "knowledge", Derived: "llm-wiki",
 			Templates: "templates", Rules: "rules", Runtime: ".llm-wiki",
@@ -178,7 +178,7 @@ func (c *Instance) Validate() error {
 		}
 		clean := filepath.Clean(p)
 		key := clean
-		if runtime.GOOS == "windows" {
+		if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
 			key = strings.ToLower(key)
 		}
 		if seen[key] {
@@ -224,7 +224,7 @@ func validateRelativePath(p string) error {
 }
 
 func pathsOverlap(a, b string) bool {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
 		a, b = strings.ToLower(a), strings.ToLower(b)
 	}
 	rel, err := filepath.Rel(a, b)

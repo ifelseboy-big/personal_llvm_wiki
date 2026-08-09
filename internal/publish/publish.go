@@ -16,6 +16,7 @@ import (
 	"llm-wiki/internal/config"
 	"llm-wiki/internal/document"
 	"llm-wiki/internal/fsutil"
+	"llm-wiki/internal/governance"
 	"llm-wiki/internal/vault"
 )
 
@@ -248,6 +249,14 @@ func Propose(cfg *config.Instance, opts ProposeOptions) (*ProposeResult, error) 
 		Sources: sources, PublishedAt: publishedAt, UpdatedAt: opts.Now.Format(time.RFC3339),
 		ContentHash: contentHash, Tags: cleanStrings(tags), Aliases: cleanStrings(aliases), Extra: extra,
 	}
+	if governance.UsesPersonalV12(cfg) {
+		knowledgeMeta.GovernanceVersion = governance.PersonalV12Version
+	}
+	if err := governance.ValidateForPublish(cfg, &document.Document{
+		Path: filepath.Join(cfg.Root, filepath.FromSlash(targetPath)), Metadata: knowledgeMeta, Body: body,
+	}, opts.Now); err != nil {
+		return nil, err
+	}
 	newBytes, err := document.Render(knowledgeMeta, body)
 	if err != nil {
 		return nil, err
@@ -404,6 +413,11 @@ func Apply(cfg *config.Instance, changeID string, dryRun bool, now time.Time) (*
 	}
 	if meta.ID != proposal.KnowledgeID || meta.ContentHash != proposal.NewContentHash || document.HashBytes(body) != proposal.NewContentHash {
 		return nil, errors.New("proposed document metadata does not match proposal")
+	}
+	if err := governance.ValidateForPublish(cfg, &document.Document{
+		Path: filepath.Join(cfg.Root, filepath.FromSlash(proposal.TargetPath)), Metadata: meta, Body: body,
+	}, now); err != nil {
+		return nil, fmt.Errorf("proposed knowledge no longer satisfies personal 1.2.0 governance: %w", err)
 	}
 	result := &ApplyResult{
 		ChangeID: changeID, KnowledgeID: proposal.KnowledgeID, TargetPath: proposal.TargetPath,

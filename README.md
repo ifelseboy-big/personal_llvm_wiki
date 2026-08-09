@@ -8,6 +8,7 @@
 - `knowledge/`：经 `publish apply` 明确确认的可信知识，唯一最终事实源。
 - `llm-wiki/`：从可信知识确定性构建的 AI 派生视图，可删除重建。
 - `.llm-wiki/index.sqlite`：可删除、可重建的全文检索索引，不是知识或元数据来源。
+- `.llm-wiki-governance.json`：仅在 1.1.x 升级时创建的旧知识完整文件基线，必须随 Vault 备份或提交。
 
 ## 构建
 
@@ -46,7 +47,7 @@ publish propose|diff|apply|reject
 build [--full], build status
 query, show, trace
 index status|update|rebuild
-template list|show|upgrade
+template list|show|create|upgrade
 skill status|install|update|uninstall
 ```
 
@@ -56,12 +57,16 @@ skill status|install|update|uninstall
 
 内置 `personal` 模板会生成：
 
-- `AGENTS.md`：AI 和维护者必须先读取的知识库治理入口及操作路由。
-- `rules/`：采集、元数据、生命周期、发布、派生层和质量规则。
+- `.gitignore`：自动忽略可重建的 `llm-wiki/`、SQLite 索引和本地运行目录；保留 `.llm-wiki/changes/`、模板状态及模板基线供 Git 追踪。已有 `.gitignore` 时只追加缺失规则，不覆盖用户内容。
+- `AGENTS.md`、`LLM-WIKI.md`：AI 治理入口和人的使用首页。
+- `rules/`：采集、类型、元数据、生命周期、引用、发布、派生层和质量规则。
 - `templates/raw/`：人工记录和文件来源模板。
-- `templates/knowledge/`：concept、guide、reference、decision、project 模板。
+- `templates/knowledge/`：claim、concept、guide、tutorial、reference、decision、project 模板。
+- `views/`：可选的 Obsidian Bases 当前知识、复核和 raw 视图。
 
-模板 frontmatter 兼容 Obsidian Properties。`tags`、`aliases`、`cssclasses`、`description`、`related` 以及其他自定义属性在采集、发布和派生构建时保留并可检索；更新草稿省略属性表示保持，写为 `null` 表示删除。ID、状态、来源、时间和哈希仍由 CLI 管理，草稿不能覆盖。
+personal 1.2.0 模板 frontmatter 兼容 Obsidian Properties，并加入 lifecycle、有效期、复核日期、稳定关系和 raw-ID 命名脚注。`template create` 可展开 Obsidian 核心变量并生成可编辑草稿；`tags`、`aliases`、`cssclasses`、`description`、`related` 以及其他自定义属性在采集、发布和派生构建时保留并可检索。更新草稿省略属性表示保持，写为 `null` 表示删除。ID、状态、来源、时间和哈希仍由 CLI 管理，草稿不能覆盖。
+
+从 personal 1.1.x 升级时，既有 knowledge 不会被直接改写；其完整文件哈希记录在根目录 `.llm-wiki-governance.json`。原文件保持不变时按 legacy 读取并提示迁移，下一次通过提案发布后写入 `governance_version: personal-1.2` 并进入严格校验。
 
 `template upgrade --plan` 使用安装时基线、用户当前文件和新内置版本进行三方判断；用户修改的文件不会被静默覆盖。
 

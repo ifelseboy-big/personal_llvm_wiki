@@ -11,8 +11,8 @@
 
 ## 时间字段
 
-- `valid_from`：事实开始适用的日期或时间。
-- `valid_until`：事实停止适用的日期或时间。
+- `valid_from`：事实开始适用的日期，格式为 `YYYY-MM-DD`。
+- `valid_until`：事实停止适用的日期，格式为 `YYYY-MM-DD`。
 - `review_after`：到期后需要人工复核，不等于事实自动失效。
 - `updated_at`：系统记录的文件更新时间，不能替代事实有效期。
 

@@ -13,12 +13,13 @@ import (
 	"llm-wiki/internal/config"
 	"llm-wiki/internal/document"
 	"llm-wiki/internal/fsutil"
+	"llm-wiki/internal/governance"
 	"llm-wiki/internal/vault"
 )
 
 const (
 	CompilerName    = "standard"
-	CompilerVersion = 2
+	CompilerVersion = 3
 )
 
 type ManifestItem struct {
@@ -109,6 +110,14 @@ func Build(cfg *config.Instance, full, dryRun bool) (*Result, error) {
 		if err := doc.Validate("knowledge", cfg.Publish.RequireSources); err != nil {
 			return nil, err
 		}
+		legacyGovernance, err := governance.ValidateStored(cfg, doc, time.Now())
+		if err != nil {
+			return nil, err
+		}
+		lifecycle, err := governance.AssessStoredLifecycle(cfg, doc.Metadata, time.Now(), legacyGovernance)
+		if err != nil {
+			return nil, err
+		}
 		for _, source := range doc.Metadata.Sources {
 			if rawHashes[source.ID] != source.ContentHash {
 				return nil, fmt.Errorf("knowledge %s source %s is missing or changed", doc.Metadata.ID, source.ID)
@@ -123,18 +132,17 @@ func Build(cfg *config.Instance, full, dryRun bool) (*Result, error) {
 			return nil, err
 		}
 		knowledgeFileHash := document.HashBytes(knowledgeBytes)
-		fingerprint := document.HashBytes([]byte(strings.Join([]string{
-			doc.Metadata.ID, knowledgeFileHash, CompilerName,
-			fmt.Sprintf("%d", CompilerVersion), configHash,
-		}, "\x00")))
-		body := compileBody(doc)
+		fingerprint := derivedFingerprint(doc.Metadata.ID, knowledgeFileHash, configHash,
+			governance.UsesPersonalV12(cfg), legacyGovernance, lifecycle)
+		body := compileBody(doc, governance.UsesPersonalV12(cfg), legacyGovernance, lifecycle)
 		meta := document.Metadata{
 			SchemaVersion: document.CurrentSchema, ID: derivedID,
 			Title: doc.Metadata.Title, Type: doc.Metadata.Type,
 			ContentHash: document.HashBytes(body),
 			DerivedFrom: &document.DerivedFrom{ID: doc.Metadata.ID, ContentHash: doc.Metadata.ContentHash},
 			Compiler:    CompilerName, CompilerVersion: CompilerVersion,
-			BuildFingerprint: fingerprint, GeneratedAt: doc.Metadata.UpdatedAt,
+			GovernanceVersion: doc.Metadata.GovernanceVersion,
+			BuildFingerprint:  fingerprint, GeneratedAt: doc.Metadata.UpdatedAt,
 			Tags: doc.Metadata.Tags, Aliases: doc.Metadata.Aliases, Extra: doc.Metadata.Extra,
 		}
 		data, err := document.Render(meta, body)
@@ -274,6 +282,13 @@ func Build(cfg *config.Instance, full, dryRun bool) (*Result, error) {
 }
 
 func GetStatus(cfg *config.Instance) (*Status, error) {
+	return getStatusAt(cfg, time.Now())
+}
+
+func getStatusAt(cfg *config.Instance, now time.Time) (*Status, error) {
+	if now.IsZero() {
+		now = time.Now()
+	}
 	status := &Status{Fresh: true}
 	manifestPath := filepath.Join(cfg.DerivedDir(), "manifest.json")
 	if err := fsutil.EnsureNoSymlinkPath(cfg.Root, manifestPath); err != nil {
@@ -308,6 +323,20 @@ func GetStatus(cfg *config.Instance) (*Status, error) {
 		entry := ItemStatus{KnowledgeID: item.KnowledgeID, OutputPath: item.OutputPath, State: "fresh"}
 		desiredPaths[item.OutputPath] = true
 		doc := known[item.KnowledgeID]
+		legacy := false
+		assessment := governance.LifecycleAssessment{Lifecycle: "current"}
+		if doc != nil {
+			var governanceErr error
+			legacy, governanceErr = governance.ValidateStored(cfg, doc, now)
+			if governanceErr != nil {
+				return nil, governanceErr
+			}
+			var assessmentErr error
+			assessment, assessmentErr = governance.AssessStoredLifecycle(cfg, doc.Metadata, now, legacy)
+			if assessmentErr != nil {
+				return nil, assessmentErr
+			}
+		}
 		if doc == nil {
 			entry.State, entry.Reason = "orphan", "source knowledge is missing"
 		} else if doc.Metadata.ContentHash != item.KnowledgeHash {
@@ -316,10 +345,8 @@ func GetStatus(cfg *config.Instance) (*Status, error) {
 			return nil, err
 		} else if document.HashBytes(knowledgeBytes) != item.KnowledgeFileHash {
 			entry.State, entry.Reason = "stale", "source knowledge metadata changed"
-		} else if expected := document.HashBytes([]byte(strings.Join([]string{
-			doc.Metadata.ID, item.KnowledgeFileHash, CompilerName,
-			fmt.Sprintf("%d", CompilerVersion), buildConfigHash(cfg),
-		}, "\x00"))); item.Fingerprint != expected {
+		} else if expected := derivedFingerprint(doc.Metadata.ID, item.KnowledgeFileHash, buildConfigHash(cfg),
+			governance.UsesPersonalV12(cfg), legacy, assessment); item.Fingerprint != expected {
 			entry.State, entry.Reason = "stale", "build fingerprint does not match source knowledge"
 		} else if output, err := os.ReadFile(filepath.Join(cfg.DerivedDir(), filepath.FromSlash(item.OutputPath))); errors.Is(err, os.ErrNotExist) {
 			entry.State, entry.Reason = "missing", "derived output is missing"
@@ -327,6 +354,20 @@ func GetStatus(cfg *config.Instance) (*Status, error) {
 			return nil, err
 		} else if document.HashBytes(output) != item.OutputHash {
 			entry.State, entry.Reason = "drift", "derived output was modified"
+		}
+		if entry.State == "fresh" {
+			derivedBytes, readErr := os.ReadFile(filepath.Join(cfg.DerivedDir(), filepath.FromSlash(item.OutputPath)))
+			if readErr != nil {
+				return nil, readErr
+			}
+			derivedMeta, _, parseErr := document.Parse(derivedBytes)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			expectedBodyHash := document.HashBytes(compileBody(doc, governance.UsesPersonalV12(cfg), legacy, assessment))
+			if derivedMeta.ContentHash != expectedBodyHash {
+				entry.State, entry.Reason = "stale", "knowledge lifecycle state changed"
+			}
 		}
 		if entry.State != "fresh" {
 			status.Fresh = false
@@ -378,17 +419,57 @@ func validateManifest(cfg *config.Instance, manifest Manifest) error {
 	return nil
 }
 
-func compileBody(doc *document.Document) []byte {
+func compileBody(doc *document.Document, usesPersonalV12, legacyGovernance bool, assessment governance.LifecycleAssessment) []byte {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s\n\n", doc.Metadata.Title)
-	fmt.Fprintf(&b, "> Trusted knowledge: `%s` at content hash `%s`.\n", doc.Metadata.ID, doc.Metadata.ContentHash)
+	if usesPersonalV12 && legacyGovernance {
+		fmt.Fprintf(&b, "> **Legacy governance:** `%s` predates personal 1.2 claim-level citation checks; verify its raw sources before relying on it.\n", doc.Metadata.ID)
+	} else {
+		fmt.Fprintf(&b, "> Trusted knowledge: `%s` at content hash `%s`.\n", doc.Metadata.ID, doc.Metadata.ContentHash)
+	}
+	if !usesPersonalV12 {
+		writeRawEvidence(&b, doc)
+		return appendSourceBody(&b, doc)
+	}
+	switch {
+	case assessment.Inactive:
+		fmt.Fprintf(&b, "> **Warning:** lifecycle is `%s`; this document is retained for audit and must not be used as a current fact.\n", assessment.Lifecycle)
+	case assessment.Disputed:
+		b.WriteString("> **Warning:** lifecycle is `disputed`; present the unresolved evidence conflict when using this knowledge.\n")
+	case assessment.LegacyDefaulted:
+		b.WriteString("> Lifecycle is missing in this legacy document and is treated as `current` until republished.\n")
+	default:
+		fmt.Fprintf(&b, "> Lifecycle: `%s`.\n", assessment.Lifecycle)
+	}
+	if assessment.NotYetValid {
+		b.WriteString("> **Warning:** this knowledge is not yet valid and must not be used as a current fact.\n")
+	}
+	if assessment.Expired {
+		b.WriteString("> **Warning:** this knowledge has expired and must not be used as a current fact.\n")
+	}
+	if assessment.ReviewDue {
+		b.WriteString("> **Review due:** this knowledge requires review but is not automatically invalid.\n")
+	}
+	for _, key := range []string{"valid_from", "valid_until", "review_after"} {
+		if value, exists := doc.Metadata.Extra[key]; exists && value != nil && fmt.Sprint(value) != "" {
+			fmt.Fprintf(&b, "> %s: `%v`.\n", key, value)
+		}
+	}
+	writeRawEvidence(&b, doc)
+	return appendSourceBody(&b, doc)
+}
+
+func writeRawEvidence(b *strings.Builder, doc *document.Document) {
 	if len(doc.Metadata.Sources) > 0 {
 		b.WriteString("> Raw evidence:")
 		for _, source := range doc.Metadata.Sources {
-			fmt.Fprintf(&b, " `%s`@`%s`", source.ID, source.ContentHash)
+			fmt.Fprintf(b, " `%s`@`%s`", source.ID, source.ContentHash)
 		}
 		b.WriteString(".\n")
 	}
+}
+
+func appendSourceBody(b *strings.Builder, doc *document.Document) []byte {
 	b.WriteString("\n")
 	body := strings.TrimSpace(string(document.NormalizeMarkdownBody(doc.Body)))
 	if body != "" {
@@ -396,6 +477,15 @@ func compileBody(doc *document.Document) []byte {
 		b.WriteByte('\n')
 	}
 	return []byte(b.String())
+}
+
+func derivedFingerprint(knowledgeID, knowledgeFileHash, configHash string, usesPersonalV12, legacy bool, assessment governance.LifecycleAssessment) string {
+	lifecycleState := fmt.Sprintf("v12=%t;legacy=%t;lifecycle=%s;inactive=%t;disputed=%t;not_yet_valid=%t;expired=%t;review_due=%t",
+		usesPersonalV12, legacy, assessment.Lifecycle, assessment.Inactive, assessment.Disputed,
+		assessment.NotYetValid, assessment.Expired, assessment.ReviewDue)
+	return document.HashBytes([]byte(strings.Join([]string{
+		knowledgeID, knowledgeFileHash, CompilerName, fmt.Sprintf("%d", CompilerVersion), configHash, lifecycleState,
+	}, "\x00")))
 }
 
 func buildConfigHash(cfg *config.Instance) string {

@@ -11,8 +11,8 @@ Agent 根据 `AGENTS.md`、相关规则和模板判断知识语义；CLI 不解�
 
 ```bash
 llm-wiki publish propose \
-  --file draft.md \
-  --reason "新增可核验的模板发布规则"
+	--source <raw-id> \
+	--file draft.md
 ```
 
 新建知识必须有 `type` 和 `title`。系统生成稳定 `id`、`published_at`、`updated_at`、`sources` 和内容指纹。
@@ -29,7 +29,7 @@ llm-wiki publish propose \
 - 标题与一级标题一致，没有 `{{...}}` 或模板提示残留。
 - 必填章节有实质内容，`description` 不是占位文本。
 - raw 引用存在且定位格式有效。
-- 知识链接可解析，替代关系成对一致。
+- 知识链接可解析；替代关系的对端在两份文档都发布后由 `doctor` 检查成对一致。
 - 生命周期、有效期和类型专属字段合法。
 - diff 只包含本次提案声明的变更。
 
