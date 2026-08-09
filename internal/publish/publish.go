@@ -84,6 +84,33 @@ type RecoveryAction struct {
 	Action      string `json:"action"`
 }
 
+var ErrApplyConflict = errors.New("publication apply conflict")
+
+type ApplyConflictKind string
+
+const (
+	ApplyConflictState  ApplyConflictKind = "state"
+	ApplyConflictSource ApplyConflictKind = "source"
+	ApplyConflictTarget ApplyConflictKind = "target"
+)
+
+type ApplyConflictError struct {
+	Kind  ApplyConflictKind
+	Cause error
+}
+
+func (e *ApplyConflictError) Error() string { return e.Cause.Error() }
+
+func (e *ApplyConflictError) Unwrap() error { return e.Cause }
+
+func (e *ApplyConflictError) Is(target error) bool {
+	return target == ErrApplyConflict || errors.Is(e.Cause, target)
+}
+
+func applyConflict(kind ApplyConflictKind, cause error) error {
+	return &ApplyConflictError{Kind: kind, Cause: cause}
+}
+
 func PendingOperations(cfg *config.Instance) ([]string, error) {
 	root := filepath.Join(cfg.RuntimeDir(), "transactions")
 	entries, err := os.ReadDir(root)
@@ -388,7 +415,7 @@ func Apply(cfg *config.Instance, changeID string, dryRun bool, now time.Time) (*
 		return nil, err
 	}
 	if state.Status != "proposed" {
-		return nil, fmt.Errorf("change is %s, expected proposed", state.Status)
+		return nil, applyConflict(ApplyConflictState, fmt.Errorf("change is %s, expected proposed", state.Status))
 	}
 	if err := validateProposalBase(cfg, proposal); err != nil {
 		state.Status = "stale"
@@ -767,10 +794,10 @@ func validateProposalBase(cfg *config.Instance, proposal Proposal) error {
 	for _, source := range proposal.Sources {
 		doc, err := document.FindByID(cfg.RawDir(), source.ID)
 		if err != nil {
-			return fmt.Errorf("source %s is missing", source.ID)
+			return applyConflict(ApplyConflictSource, fmt.Errorf("source %s is missing", source.ID))
 		}
 		if actual, err := doc.ActualContentHash(); err != nil || actual != source.ContentHash || doc.Metadata.ContentHash != source.ContentHash {
-			return fmt.Errorf("source %s changed after proposal", source.ID)
+			return applyConflict(ApplyConflictSource, fmt.Errorf("source %s changed after proposal", source.ID))
 		}
 	}
 	target := filepath.Join(cfg.Root, filepath.FromSlash(proposal.TargetPath))
@@ -782,7 +809,7 @@ func validateProposalBase(cfg *config.Instance, proposal Proposal) error {
 	}
 	if proposal.BaseHash == "" {
 		if _, err := os.Stat(target); err == nil {
-			return errors.New("target knowledge was created after proposal")
+			return applyConflict(ApplyConflictTarget, errors.New("target knowledge was created after proposal"))
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
@@ -790,7 +817,7 @@ func validateProposalBase(cfg *config.Instance, proposal Proposal) error {
 	}
 	existing, err := document.FindByID(cfg.KnowledgeDir(), proposal.KnowledgeID)
 	if err != nil {
-		return errors.New("target knowledge is missing after proposal")
+		return applyConflict(ApplyConflictTarget, errors.New("target knowledge is missing after proposal"))
 	}
 	rel, _ := filepath.Rel(cfg.Root, existing.Path)
 	currentBytes, readErr := os.ReadFile(existing.Path)
@@ -799,7 +826,7 @@ func validateProposalBase(cfg *config.Instance, proposal Proposal) error {
 	}
 	if filepath.ToSlash(rel) != proposal.TargetPath || existing.Metadata.ContentHash != proposal.BaseHash ||
 		proposal.BaseFileHash == "" || document.HashBytes(currentBytes) != proposal.BaseFileHash {
-		return errors.New("target knowledge changed after proposal")
+		return applyConflict(ApplyConflictTarget, errors.New("target knowledge changed after proposal"))
 	}
 	return nil
 }

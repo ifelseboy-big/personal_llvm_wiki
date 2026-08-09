@@ -68,6 +68,38 @@ func TestQueryRejectsWrapperOnlyChinese(t *testing.T) {
 	}
 }
 
+func TestPublishApplyConflictUsesStableMachineCode(t *testing.T) {
+	t.Setenv("LLM_WIKI_CONFIG", filepath.Join(t.TempDir(), "user-config.toml"))
+	root := filepath.Join(t.TempDir(), "wiki")
+	runCLI(t, "", "init", root, "--name", "apply-conflict", "--json", "--no-interactive")
+	rawResponse := runCLI(t, "# Source\n\nOriginal evidence.\n", "raw", "add", "-", "--name", "source.md", "--wiki", root, "--json", "--no-interactive")
+	rawID := nestedString(t, rawResponse.Data, "items", 0, "id")
+	draft := filepath.Join(t.TempDir(), "draft.md")
+	if err := os.WriteFile(draft, governedDraft("Conflict", "Original evidence.", rawID), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	proposal := runCLI(t, "", "publish", "propose", "--source", rawID, "--file", draft, "--wiki", root, "--json", "--no-interactive")
+	changeID := nestedString(t, proposal.Data, "change_id")
+	cfg, err := config.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawDoc, err := document.FindByID(cfg.RawDir(), rawID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawDoc.Body = append(rawDoc.Body, []byte("\nChanged after proposal.\n")...)
+	rawDoc.Metadata.ContentHash = document.HashBytes(document.NormalizeMarkdownBody(rawDoc.Body))
+	if err := document.Write(rawDoc.Path, rawDoc.Metadata, rawDoc.Body); err != nil {
+		t.Fatal(err)
+	}
+
+	response := runCLIFailure(t, "", "publish", "apply", changeID, "--wiki", root, "--json", "--no-interactive")
+	if response.Error.Code != "PUBLISH_BASE_CHANGED" {
+		t.Fatalf("apply conflict returned unstable protocol error: %#v", response.Error)
+	}
+}
+
 func TestAuxiliaryCLICommandSurface(t *testing.T) {
 	t.Setenv("LLM_WIKI_CONFIG", filepath.Join(t.TempDir(), "user-config.toml"))
 	t.Setenv("LLM_WIKI_CODEX_SKILLS_DIR", filepath.Join(t.TempDir(), "skills"))

@@ -340,6 +340,7 @@ operations(id PRIMARY KEY, kind, state, started_at, finished_at, detail_json)
 - 查询先规范化自然问题并删除确定无检索价值的包装词；默认执行 `simple_query(..., 0)` 严格 AND 检索。结果不足时才以中文连续二字短语和英文完整 token 做宽松 OR 补足，禁止退回中文单字全量 OR。
 - 严格结果始终排在宽松结果前；每级内部按 BM25、文档 ID、chunk ordinal 确定性排序。同一 knowledge 最多返回两个 chunk。
 - SQLite 只返回候选 knowledge ID、路径、行号、chunk hash、文件 hash 和相关性分数。
+- 每次查询在执行 FTS 前比较完整 `knowledge/` 文件集合的相对路径和文件 SHA-256；新增、删除、改名、命中或未命中文档修改均返回 `INDEX_STALE`。不能用 mtime/size 代替文件 hash。
 - CLI 根据候选路径重新读取 `knowledge/` Markdown，校验 ID、完整文件 hash 和正文 hash，再从 Markdown 提取 evidence。
 - 查询不自动同步索引，也不修改知识库；索引与发布文件不一致时返回 `INDEX_STALE`，由调用方显式执行 `index update`。
 - evidence 的正文、metadata 和 sources 只能来自已验证的 `knowledge/` 文件；SQLite 只影响召回与排序。
@@ -430,6 +431,7 @@ Skill 只负责启动和调用约束：先 `locate`，再读取目标知识库�
 6. 安全测试：symlink、`..`、敏感文件、超大文件、恶意 YAML/FTS 输入。
 7. Golden test：JSON Schema 和模板产物。
 8. 端到端：执行 `HANDOFF.md` 的完整 init/raw/propose/apply/build/query/trace/rebuild 场景。
-9. CI 在 macOS 上执行测试，并构建 `darwin/arm64` 发布目标。
+9. CI 在原生 macOS ARM64 上执行格式、vet、普通测试、race、Schema 和 GoReleaser 检查，并以 snapshot 完整生成归档、校验和及 SBOM。
+10. 检索评测分别记录自然语言与关键词改写查询的 Recall@5、Precision@5、MRR、nDCG@5，并提供 1k/10k 文档显式性能基准。
 
 只有上述门槛、所有命令面、模板质量检查和发布产物验证全部通过，目标才算完成。

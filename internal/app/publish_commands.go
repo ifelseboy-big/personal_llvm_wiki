@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -103,7 +102,7 @@ func newPublishApplyCommand(rt *Runtime) *cobra.Command {
 					return E("WIKI_LOCKED", "wiki is locked by another writer", ExitLock, err)
 				}
 				code, exit := "PUBLISH_APPLY_FAILED", ExitValidation
-				if strings.Contains(err.Error(), "changed") || strings.Contains(err.Error(), "stale") || strings.Contains(err.Error(), "expected proposed") {
+				if errors.Is(err, publish.ErrApplyConflict) {
 					code, exit = "PUBLISH_BASE_CHANGED", ExitConflict
 				}
 				return E(code, "cannot apply publication change", exit, err)

@@ -9,14 +9,56 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    runs-on: macos-latest
+  verify:
+    runs-on: macos-15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25.x'
           cache: true
-      - run: go mod verify
-      - run: CGO_ENABLED=1 CC=clang CXX=clang++ go test -tags "fts5 sqlite_omit_load_extension" ./...
-      - run: CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 CC=clang CXX=clang++ go build -tags "fts5 sqlite_omit_load_extension" -trimpath ./cmd/llm-wiki
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          install-only: true
+      - run: make verify
+
+  release-smoke:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: true
+      - uses: anchore/sbom-action/download-syft@v0
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          install-only: true
+      - run: make release-snapshot
+      - name: Verify release artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -e 'any(.[]; .type == "Archive" and .goos == "darwin" and .goarch == "arm64")' dist/artifacts.json
+          jq -e 'any(.[]; .type == "SBOM")' dist/artifacts.json
+          jq -e 'any(.[]; .type == "Checksum")' dist/artifacts.json
+          archive="$(jq -r 'first(.[] | select(.type == "Archive" and .goos == "darwin" and .goarch == "arm64")) | .path' dist/artifacts.json)"
+          test -f "$archive"
+          release_dir="$(mktemp -d)"
+          trap 'rm -rf "$release_dir"' EXIT
+          tar -xzf "$archive" -C "$release_dir"
+          binary="$(find "$release_dir" -type f -name llm-wiki -print -quit)"
+          test -n "$binary"
+          file "$binary" | grep -q arm64
+          "$binary" --version
+          (cd dist && shasum -a 256 -c checksums.txt)

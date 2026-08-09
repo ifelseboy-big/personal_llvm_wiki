@@ -17,9 +17,10 @@
 ```bash
 make build
 make test
+make verify
 ```
 
-构建过程使用 CGO，将固定版本的 SQLite 和 `simple` tokenizer 静态集成到二进制；用户运行时不需要 Node、Python、Homebrew 或单独安装 SQLite/tokenizer。
+构建过程使用 CGO，将固定版本的 SQLite 和 `simple` tokenizer 静态集成到二进制；用户运行时不需要 Node、Python、Homebrew 或单独安装 SQLite/tokenizer。完整开发验收 `make verify` 还需要 `jq` 和 GoReleaser v2。
 
 ## 快速使用
 
@@ -36,7 +37,7 @@ llm-wiki trace <knowledge-id> --wiki personal --json --no-interactive
 
 AI 调用应先通过 `locate --json --no-interactive` 定位知识库，读取该知识库根目录的 `AGENTS.md`，再按其路由加载相关规则。后续命令始终添加 `--json --no-interactive`，并只依赖版本化 JSON 字段与错误码。
 
-`query` 只使用 SQLite 选择候选知识和排序，返回 evidence 前会重新读取并验证对应 `knowledge/` Markdown。索引与发布文件不一致时返回 `INDEX_STALE`，不会使用 SQLite 缓存冒充事实。
+`query` 只使用 SQLite 选择候选知识和排序，检索前会将完整 `knowledge/` Markdown 路径与文件 SHA-256 和索引快照比较，返回 evidence 前还会重新读取并验证候选文件。新增、删除、改名或修改任意知识文件都会返回 `INDEX_STALE`，不会把旧索引的空结果或 SQLite 缓存冒充事实。
 
 ## 命令面
 
@@ -89,3 +90,9 @@ llm-wiki skill install codex --yes
 ## 发布
 
 唯一发布目标是 macOS Apple Silicon（arm64）。`.goreleaser.yaml` 和 GitHub Actions 生成单文件归档、SHA-256 校验和及 SBOM；Homebrew 模板在确定真实仓库和发布地址后填充，避免写入虚构地址。源码中的可移植实现不构成其他平台支持承诺。
+
+发布和普通 CI 均使用原生 `macos-15` ARM64 runner。普通 CI 通过 `make release-snapshot` 提前验证 GoReleaser 归档、校验和、SBOM、二进制架构和可执行性，tag 工作流只负责正式生成 draft release。
+
+## 检索评测
+
+`make eval` 对固定多文档语料分别统计自然语言查询和关键词改写查询的 Recall@5、Precision@5、MRR 与 nDCG@5。`make benchmark-index` 显式运行 1k/10k 文档的完整索引一致性检查与检索性能基准；性能基准不放入普通 CI，避免共享 runner 波动形成错误门禁。

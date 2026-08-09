@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -420,8 +421,13 @@ func TestProposalBecomesStaleWhenRawEvidenceChanges(t *testing.T) {
 	if err := document.Write(rawDoc.Path, rawDoc.Metadata, rawDoc.Body); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := publish.Apply(cfg, proposal.Proposal.ID, false, now.Add(2*time.Hour)); err == nil {
-		t.Fatal("expected stale proposal rejection")
+	if _, err := publish.Apply(cfg, proposal.Proposal.ID, false, now.Add(2*time.Hour)); !errors.Is(err, publish.ErrApplyConflict) {
+		t.Fatalf("expected typed stale proposal rejection, got %v", err)
+	} else {
+		var conflict *publish.ApplyConflictError
+		if !errors.As(err, &conflict) || conflict.Kind != publish.ApplyConflictSource {
+			t.Fatalf("expected source conflict, got %#v", conflict)
+		}
 	}
 	_, state, err := publish.Load(cfg, proposal.Proposal.ID)
 	if err != nil {

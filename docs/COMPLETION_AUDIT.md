@@ -18,11 +18,11 @@
 | 检索 | SQLite FTS5、`simple` 中文 tokenizer、严格/宽松两级召回、证据/行号/来源返回 | 中文/英文/混合查询、排序、索引删除重建等价测试 |
 | 展示溯源 | `show` 校验可信文件与来源，`trace` 比较实际字节哈希 | 实际 raw 篡改测试 |
 | 派生层 | 增量 `build`、`--full`、`build status`、manifest 校验 | 删除派生目录、字节与指纹重建等价测试 |
-| 索引 | `status/update/rebuild`，临时数据库原子替换，查询前文件同步 | SQLite 删除重建与 frontmatter-only 增量测试 |
+| 索引 | `status/update/rebuild`，临时数据库原子替换，查询前完整 knowledge 快照校验 | 新增/删除/改名/未命中修改检测、SQLite 删除重建与 frontmatter-only 增量测试 |
 | 模板 | 内置 `personal`、知识类型模板、自定义覆盖、三方升级 | 模板冲突、用户修改保留、安装预检测试 |
 | Skill | Codex 检测、目标解析、安装/升级/卸载、所有权 manifest | Skill 冲突、篡改保留、symlink、dry-run 测试 |
 | 协议 | JSON v1 envelope、错误码、退出码、wiki ID、affected files | 成功/失败 envelope 与完整命令面测试 |
-| 分发 | Apple Silicon 单二进制、GoReleaser、GitHub Actions、Homebrew 模板 | `darwin/arm64` 构建和 GoReleaser 配置校验 |
+| 分发 | Apple Silicon 单二进制、原生 ARM64 GoReleaser、GitHub Actions、Homebrew 模板 | `darwin/arm64` snapshot 归档、校验和、SBOM 与可执行验证 |
 
 ## 事实源与恢复不变量
 
@@ -30,7 +30,7 @@
 2. proposal 同时绑定 raw 实际内容哈希、知识正文基线、完整知识文件基线和提案文件哈希。
 3. 发布事务使用 `prepared → files_committed → complete` journal；恢复时以文件为准，不使用 SQLite 覆盖文件。
 4. 恢复发现事务后的外部文件变化时保留外部文件并报冲突，不静默覆盖。
-5. 查询前从 raw/knowledge/derived 文件增量同步索引；无变化时不写数据库。
+5. 查询保持只读，在 FTS 前比较完整 `knowledge/` 路径与文件 SHA-256；不一致时返回 `INDEX_STALE`，由调用方显式执行 `index update`。
 6. 删除 `index.sqlite` 后可从文件完整重建，并得到等价 evidence。
 7. 删除 `llm-wiki/` 后可完整构建；派生正文和构建指纹保持等价。
 
@@ -42,6 +42,8 @@
 - `rules/capture.md`、`metadata.md`、`publish.md`、`derived.md`、`quality.md`。
 - raw `note`、`source` 模板。
 - knowledge `concept`、`guide`、`reference`、`decision`、`project` 模板。
+- knowledge `claim`、`tutorial` 模板，生命周期、引用、类型规则和三个 Obsidian Bases 视图。
+- `template create` 草稿生成、稳定关系链接和 personal 1.1.x → 1.2.0 三方升级及 legacy 治理基线。
 - Obsidian Properties 在 raw 采集、knowledge 发布更新和 derived 构建中无损保留并进入可重建全文索引；系统字段始终由 CLI 重建。
 - 模板版本、安装基线、用户覆盖和三方升级机制。
 
@@ -58,13 +60,10 @@
 以下检查均已通过：
 
 ```text
-make test
-make test-race
-CGO_ENABLED=1 CC=clang CXX=clang++ go vet -tags "fts5 sqlite_omit_load_extension" ./...
-go mod verify
-gofmt clean
-jq empty schemas/*.json
-GoReleaser v2.17.1 check
+make verify
+make eval
+make release-build
+make release-snapshot
 ```
 
 唯一发布目标构建成功：

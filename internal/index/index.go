@@ -15,6 +15,7 @@ import (
 
 	"llm-wiki/internal/config"
 	"llm-wiki/internal/document"
+	"llm-wiki/internal/fsutil"
 	"llm-wiki/internal/governance"
 	"llm-wiki/internal/sqlite3simple"
 	"llm-wiki/internal/vault"
@@ -747,6 +748,9 @@ func SearchWithOptions(cfg *config.Instance, question string, opts SearchOptions
 	if err := validateIndexMetadata(db, cfg); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrStale, err)
 	}
+	if err := validateKnowledgeSnapshot(db, cfg); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrStale, err)
+	}
 
 	result := &SearchResult{NormalizedQuery: normalized, RetrievalModes: []string{"strict"}}
 	fetchLimit := opts.Limit * 4
@@ -767,6 +771,96 @@ func SearchWithOptions(cfg *config.Instance, question string, opts SearchOptions
 		}
 	}
 	return result, nil
+}
+
+func validateKnowledgeSnapshot(db *sql.DB, cfg *config.Instance) error {
+	indexed := map[string]string{}
+	rows, err := db.Query(`SELECT path,file_hash FROM files WHERE layer='knowledge' ORDER BY path`)
+	if err != nil {
+		return fmt.Errorf("read indexed knowledge files: %w", err)
+	}
+	for rows.Next() {
+		var path, fileHash string
+		if err := rows.Scan(&path, &fileHash); err != nil {
+			rows.Close()
+			return fmt.Errorf("read indexed knowledge file: %w", err)
+		}
+		indexed[path] = fileHash
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close indexed knowledge files: %w", err)
+	}
+
+	actual, err := scanKnowledgeFileHashes(cfg)
+	if err != nil {
+		return err
+	}
+	paths := make([]string, 0, len(actual))
+	for path := range actual {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		expected, exists := indexed[path]
+		if !exists {
+			return fmt.Errorf("knowledge file %s is not indexed", path)
+		}
+		if expected != actual[path] {
+			return fmt.Errorf("knowledge file %s hash changed", path)
+		}
+		delete(indexed, path)
+	}
+	if len(indexed) > 0 {
+		missing := make([]string, 0, len(indexed))
+		for path := range indexed {
+			missing = append(missing, path)
+		}
+		sort.Strings(missing)
+		return fmt.Errorf("indexed knowledge file %s is missing", missing[0])
+	}
+	return nil
+}
+
+func scanKnowledgeFileHashes(cfg *config.Instance) (map[string]string, error) {
+	files := map[string]string{}
+	err := filepath.WalkDir(cfg.KnowledgeDir(), func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symbolic link is not allowed: %s", path)
+		}
+		if entry.IsDir() || strings.ToLower(filepath.Ext(entry.Name())) != ".md" {
+			return nil
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("managed Markdown is not a regular file: %s", path)
+		}
+		if info.Size() > document.MaxMarkdownBytes {
+			return fmt.Errorf("markdown file exceeds %d byte safety limit", document.MaxMarkdownBytes)
+		}
+		if err := fsutil.EnsureSingleLink(path); err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(cfg.Root, path)
+		if err != nil {
+			return err
+		}
+		files[filepath.ToSlash(rel)] = document.HashBytes(data)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("scan published knowledge: %w", err)
+	}
+	return files, nil
 }
 
 func searchLevel(db *sql.DB, query string, limit int, useSimpleQuery bool, mode string, filterInactive bool) ([]Candidate, error) {

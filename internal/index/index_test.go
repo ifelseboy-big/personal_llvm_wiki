@@ -264,6 +264,125 @@ func TestSimpleChineseRetrievalRankingAndFallback(t *testing.T) {
 	}
 }
 
+func TestSearchDetectsCompleteKnowledgeSnapshotDrift(t *testing.T) {
+	newFixture := func(t *testing.T) (*config.Instance, string) {
+		t.Helper()
+		root := filepath.Join(t.TempDir(), "snapshot-wiki")
+		initialized, err := vault.Init(vault.InitOptions{Path: root, Name: "snapshot", Template: "personal"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg := initialized.Config
+		base := time.Date(2026, 8, 9, 10, 0, 0, 0, time.UTC)
+		publishSearchFixture(t, cfg, 0, base, "StableNeedleZXQ", nil,
+			"# StableNeedleZXQ\n\nStableNeedleZXQ is the expected indexed result.\n")
+		otherID := publishSearchFixture(t, cfg, 1, base, "UnrelatedTokenAAAA", nil,
+			"# UnrelatedTokenAAAA\n\nUnrelatedTokenAAAA belongs to a different document.\n")
+		if _, err := Rebuild(cfg); err != nil {
+			t.Fatal(err)
+		}
+		return cfg, otherID
+	}
+
+	t.Run("added matching document before an empty result", func(t *testing.T) {
+		cfg, _ := newFixture(t)
+		base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+		addedID := publishSearchFixture(t, cfg, 2, base, "NewlyAddedNeedleZXQ", nil,
+			"# NewlyAddedNeedleZXQ\n\nNewlyAddedNeedleZXQ must not be hidden by an old index.\n")
+		if _, err := Search(cfg, "NewlyAddedNeedleZXQ", 8); !errors.Is(err, ErrStale) {
+			t.Fatalf("query against an unindexed new document returned %v, expected ErrStale", err)
+		}
+		if _, err := Update(cfg, false); err != nil {
+			t.Fatal(err)
+		}
+		result, err := Search(cfg, "NewlyAddedNeedleZXQ", 8)
+		if err != nil || len(result.Candidates) == 0 || result.Candidates[0].KnowledgeID != addedID {
+			t.Fatalf("updated index did not return the new document: %#v %v", result, err)
+		}
+	})
+
+	for _, test := range []struct {
+		name   string
+		mutate func(*testing.T, *config.Instance, string)
+	}{
+		{
+			name: "deleted unselected document",
+			mutate: func(t *testing.T, cfg *config.Instance, otherID string) {
+				doc, err := document.FindByID(cfg.KnowledgeDir(), otherID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(doc.Path); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "renamed unselected document",
+			mutate: func(t *testing.T, cfg *config.Instance, otherID string) {
+				doc, err := document.FindByID(cfg.KnowledgeDir(), otherID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				target := filepath.Join(filepath.Dir(doc.Path), "renamed--"+otherID+".md")
+				if err := os.Rename(doc.Path, target); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "modified unselected document",
+			mutate: func(t *testing.T, cfg *config.Instance, otherID string) {
+				doc, err := document.FindByID(cfg.KnowledgeDir(), otherID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				doc.Body = append(doc.Body, []byte("\nExternally changed but still unrelated.\n")...)
+				doc.Metadata.ContentHash = document.HashBytes(document.NormalizeMarkdownBody(doc.Body))
+				if err := document.Write(doc.Path, doc.Metadata, doc.Body); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "same size and mtime modification",
+			mutate: func(t *testing.T, cfg *config.Instance, otherID string) {
+				doc, err := document.FindByID(cfg.KnowledgeDir(), otherID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				info, err := os.Stat(doc.Path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				original, err := os.ReadFile(doc.Path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				modified := bytes.ReplaceAll(original, []byte("UnrelatedTokenAAAA"), []byte("UnrelatedTokenBBBB"))
+				if len(modified) != len(original) || bytes.Equal(modified, original) {
+					t.Fatal("test mutation did not preserve size or content changed unexpectedly")
+				}
+				if err := os.WriteFile(doc.Path, modified, info.Mode().Perm()); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chtimes(doc.Path, info.ModTime(), info.ModTime()); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg, otherID := newFixture(t)
+			test.mutate(t, cfg, otherID)
+			result, err := Search(cfg, "StableNeedleZXQ", 8)
+			if !errors.Is(err, ErrStale) {
+				t.Fatalf("query returned %#v, %v; expected ErrStale after %s", result, err, test.name)
+			}
+		})
+	}
+}
+
 func assertFirstKnowledge(t *testing.T, cfg *config.Instance, query, expectedID string) {
 	t.Helper()
 	matches, err := SearchCandidates(cfg, query, 8)

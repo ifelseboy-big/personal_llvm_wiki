@@ -235,7 +235,7 @@ llm-wiki show <knowledge-id>
 llm-wiki trace <knowledge-id>
 ```
 
-`query` 先使用 SQLite 检索候选 knowledge ID、路径、位置和分数，再打开并验证对应 `knowledge/` Markdown，从发布文档返回正文、元数据与来源。SQLite 中的 chunk 和 metadata 不能直接作为最终证据。CLI 不生成最终自然语言答案，归纳由 Codex 或其他 AI 完成。
+`query` 使用 SQLite 检索前，先比较完整 `knowledge/` Markdown 的相对路径与文件 SHA-256 快照；任何新增、删除、改名或修改都返回 `INDEX_STALE`。快照一致后再检索候选 knowledge ID、路径、位置和分数，并打开验证候选 Markdown，从发布文档返回正文、元数据与来源。SQLite 中的 chunk 和 metadata 不能直接作为最终证据。CLI 不生成最终自然语言答案，归纳由 Codex 或其他 AI 完成。
 
 ### 7.6 索引
 
