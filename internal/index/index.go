@@ -13,14 +13,16 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	_ "modernc.org/sqlite"
-
 	"llm-wiki/internal/config"
 	"llm-wiki/internal/document"
+	"llm-wiki/internal/sqlite3simple"
 	"llm-wiki/internal/vault"
 )
 
-const SchemaVersion = 2
+const (
+	SchemaVersion       = 3
+	QueryPlannerVersion = "1"
+)
 
 type RebuildResult struct {
 	Path      string         `json:"path"`
@@ -31,12 +33,16 @@ type RebuildResult struct {
 }
 
 type Status struct {
-	Exists        bool           `json:"exists"`
-	SchemaVersion int            `json:"schema_version,omitempty"`
-	BuiltAt       string         `json:"built_at,omitempty"`
-	Documents     map[string]int `json:"documents,omitempty"`
-	Chunks        int            `json:"chunks,omitempty"`
-	Path          string         `json:"path"`
+	Exists              bool           `json:"exists"`
+	SchemaVersion       int            `json:"schema_version,omitempty"`
+	BuiltAt             string         `json:"built_at,omitempty"`
+	Tokenizer           string         `json:"tokenizer,omitempty"`
+	TokenizerVersion    string         `json:"tokenizer_version,omitempty"`
+	TokenizerCommit     string         `json:"tokenizer_commit,omitempty"`
+	QueryPlannerVersion string         `json:"query_planner_version,omitempty"`
+	Documents           map[string]int `json:"documents,omitempty"`
+	Chunks              int            `json:"chunks,omitempty"`
+	Path                string         `json:"path"`
 }
 
 type UpdateResult struct {
@@ -63,9 +69,19 @@ type Candidate struct {
 	IndexedFileHash    string  `json:"indexed_file_hash"`
 	IndexedContentHash string  `json:"indexed_content_hash"`
 	Score              float64 `json:"score"`
+	RetrievalMode      string  `json:"retrieval_mode"`
 }
 
-var ErrStale = errors.New("search index is stale")
+type SearchResult struct {
+	NormalizedQuery string
+	RetrievalModes  []string
+	Candidates      []Candidate
+}
+
+var (
+	ErrStale         = errors.New("search index is stale")
+	ErrNoSearchTerms = errors.New("query contains no searchable terms")
+)
 
 type chunk struct {
 	ID          string
@@ -115,7 +131,7 @@ func rebuildLocked(cfg *config.Instance) (*RebuildResult, error) {
 		return nil, err
 	}
 	defer os.Remove(tmpPath)
-	db, err := sql.Open("sqlite", tmpPath)
+	db, err := openDB(tmpPath)
 	if err != nil {
 		return nil, err
 	}
@@ -232,8 +248,8 @@ func rebuildLocked(cfg *config.Instance) (*RebuildResult, error) {
 						return nil, err
 					}
 					if _, err := tx.Exec(`INSERT INTO chunks_fts(document_id,chunk_id,title,headings,properties,body)
-						VALUES(?,?,?,?,?,?)`, doc.Metadata.ID, c.ID, tokenize(doc.Metadata.Title), tokenize(c.HeadingPath),
-						tokenize(propertySearchText(doc.Metadata)), tokenize(c.Body)); err != nil {
+						VALUES(?,?,?,?,?,?)`, doc.Metadata.ID, c.ID, doc.Metadata.Title, c.HeadingPath,
+						propertySearchText(doc.Metadata), c.Body); err != nil {
 						return nil, err
 					}
 					result.Chunks++
@@ -242,10 +258,13 @@ func rebuildLocked(cfg *config.Instance) (*RebuildResult, error) {
 		}
 	}
 	meta := map[string]string{
-		"schema_version": fmt.Sprintf("%d", SchemaVersion),
-		"built_at":       result.RebuiltAt,
-		"wiki_id":        cfg.InstanceID,
-		"tokenizer":      "unicode-han-v1",
+		"schema_version":        fmt.Sprintf("%d", SchemaVersion),
+		"built_at":              result.RebuiltAt,
+		"wiki_id":               cfg.InstanceID,
+		"tokenizer":             sqlite3simple.TokenizerName,
+		"tokenizer_version":     sqlite3simple.TokenizerVersion,
+		"tokenizer_commit":      sqlite3simple.TokenizerCommit,
+		"query_planner_version": QueryPlannerVersion,
 	}
 	for key, value := range meta {
 		if _, err := tx.Exec(`INSERT INTO meta(key,value) VALUES(?,?)`, key, value); err != nil {
@@ -275,7 +294,7 @@ func GetStatus(cfg *config.Instance) (*Status, error) {
 		return nil, err
 	}
 	status.Exists = true
-	db, err := sql.Open("sqlite", path)
+	db, err := openDB(path)
 	if err != nil {
 		return nil, err
 	}
@@ -286,6 +305,10 @@ func GetStatus(cfg *config.Instance) (*Status, error) {
 	}
 	fmt.Sscanf(versionText, "%d", &status.SchemaVersion)
 	_ = db.QueryRow(`SELECT value FROM meta WHERE key='built_at'`).Scan(&status.BuiltAt)
+	_ = db.QueryRow(`SELECT value FROM meta WHERE key='tokenizer'`).Scan(&status.Tokenizer)
+	_ = db.QueryRow(`SELECT value FROM meta WHERE key='tokenizer_version'`).Scan(&status.TokenizerVersion)
+	_ = db.QueryRow(`SELECT value FROM meta WHERE key='tokenizer_commit'`).Scan(&status.TokenizerCommit)
+	_ = db.QueryRow(`SELECT value FROM meta WHERE key='query_planner_version'`).Scan(&status.QueryPlannerVersion)
 	status.Documents = map[string]int{}
 	rows, err := db.Query(`SELECT layer, count(*) FROM documents GROUP BY layer ORDER BY layer`)
 	if err != nil {
@@ -339,7 +362,7 @@ func Update(cfg *config.Instance, dryRun bool) (*UpdateResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", path)
+	db, err := openDB(path)
 	if err != nil {
 		return nil, err
 	}
@@ -349,8 +372,7 @@ func Update(cfg *config.Instance, dryRun bool) (*UpdateResult, error) {
 			return nil, err
 		}
 	}
-	var schemaText string
-	if err := db.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&schemaText); err != nil || schemaText != fmt.Sprintf("%d", SchemaVersion) {
+	if err := validateIndexMetadata(db, cfg); err != nil {
 		if dryRun {
 			return &UpdateResult{Mode: "full", DryRun: true, Added: len(scanned), Documents: len(scanned), UpdatedAt: updatedAt, FullRebuild: true}, nil
 		}
@@ -587,8 +609,8 @@ func insertScanned(tx *sql.Tx, item *scannedDocument, cfg *config.Instance, inde
 			return err
 		}
 		if _, err := tx.Exec(`INSERT INTO chunks_fts(document_id,chunk_id,title,headings,properties,body)
-			VALUES(?,?,?,?,?,?)`, item.doc.Metadata.ID, c.ID, tokenize(item.doc.Metadata.Title), tokenize(c.HeadingPath),
-			tokenize(propertySearchText(item.doc.Metadata)), tokenize(c.Body)); err != nil {
+			VALUES(?,?,?,?,?,?)`, item.doc.Metadata.ID, c.ID, item.doc.Metadata.Title, c.HeadingPath,
+			propertySearchText(item.doc.Metadata), c.Body); err != nil {
 			return err
 		}
 	}
@@ -614,9 +636,81 @@ func totalDocuments(items map[string]int) int {
 	return total
 }
 
+func openDB(path string) (*sql.DB, error) {
+	return sql.Open(sqlite3simple.DriverName, path)
+}
+
+func validateIndexMetadata(db *sql.DB, cfg *config.Instance) error {
+	required := []struct {
+		key   string
+		value string
+	}{
+		{"schema_version", fmt.Sprintf("%d", SchemaVersion)},
+		{"wiki_id", cfg.InstanceID},
+		{"tokenizer", sqlite3simple.TokenizerName},
+		{"tokenizer_version", sqlite3simple.TokenizerVersion},
+		{"tokenizer_commit", sqlite3simple.TokenizerCommit},
+		{"query_planner_version", QueryPlannerVersion},
+	}
+	for _, item := range required {
+		var actual string
+		if err := db.QueryRow(`SELECT value FROM meta WHERE key=?`, item.key).Scan(&actual); err != nil {
+			return fmt.Errorf("index metadata %s is missing: %w", item.key, err)
+		}
+		if actual != item.value {
+			return fmt.Errorf("index metadata %s is %q, expected %q", item.key, actual, item.value)
+		}
+	}
+	return nil
+}
+
+func ProbeTokenizer(cfg *config.Instance) error {
+	db, err := openDB(DBPath(cfg))
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+
+	var generated string
+	if err := db.QueryRow(`SELECT simple_query('中文检索', 0)`).Scan(&generated); err != nil {
+		return fmt.Errorf("simple_query probe: %w", err)
+	}
+	if generated == "" {
+		return errors.New("simple_query probe returned an empty query")
+	}
+	if _, err := db.Exec(`DROP TABLE IF EXISTS temp.simple_tokenizer_probe`); err != nil {
+		return fmt.Errorf("reset simple tokenizer probe: %w", err)
+	}
+	if _, err := db.Exec(`CREATE VIRTUAL TABLE temp.simple_tokenizer_probe USING fts5(text, tokenize='simple 0')`); err != nil {
+		return fmt.Errorf("create simple tokenizer probe: %w", err)
+	}
+	defer db.Exec(`DROP TABLE IF EXISTS temp.simple_tokenizer_probe`)
+	if _, err := db.Exec(`INSERT INTO temp.simple_tokenizer_probe(text) VALUES('中文检索')`); err != nil {
+		return fmt.Errorf("insert simple tokenizer probe: %w", err)
+	}
+	var matches int
+	if err := db.QueryRow(`SELECT count(*) FROM temp.simple_tokenizer_probe WHERE text MATCH simple_query('中文检索', 0)`).Scan(&matches); err != nil {
+		return fmt.Errorf("query simple tokenizer probe: %w", err)
+	}
+	if matches != 1 {
+		return fmt.Errorf("simple tokenizer probe returned %d matches, expected 1", matches)
+	}
+	return nil
+}
+
 func SearchCandidates(cfg *config.Instance, question string, limit int) ([]Candidate, error) {
-	if strings.TrimSpace(question) == "" {
-		return nil, errors.New("query must not be empty")
+	result, err := Search(cfg, question, limit)
+	if err != nil {
+		return nil, err
+	}
+	return result.Candidates, nil
+}
+
+func Search(cfg *config.Instance, question string, limit int) (*SearchResult, error) {
+	normalized := normalizeQuery(question)
+	if normalized == "" {
+		return nil, ErrNoSearchTerms
 	}
 	if limit <= 0 {
 		limit = 8
@@ -625,26 +719,41 @@ func SearchCandidates(cfg *config.Instance, question string, limit int) ([]Candi
 	if _, err := os.Stat(path); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", path)
+	db, err := openDB(path)
 	if err != nil {
 		return nil, err
 	}
 	defer db.Close()
-	var schemaVersion, wikiID string
-	if err := db.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&schemaVersion); err != nil {
-		return nil, fmt.Errorf("%w: index schema metadata is missing", ErrStale)
+	if err := validateIndexMetadata(db, cfg); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrStale, err)
 	}
-	if err := db.QueryRow(`SELECT value FROM meta WHERE key='wiki_id'`).Scan(&wikiID); err != nil {
-		return nil, fmt.Errorf("%w: index wiki metadata is missing", ErrStale)
+
+	result := &SearchResult{NormalizedQuery: normalized, RetrievalModes: []string{"strict"}}
+	fetchLimit := limit * 4
+	strict, err := searchLevel(db, normalized, fetchLimit, true, "strict")
+	if err != nil {
+		return nil, err
 	}
-	if schemaVersion != fmt.Sprintf("%d", SchemaVersion) || wikiID != cfg.InstanceID {
-		return nil, fmt.Errorf("%w: schema or wiki identity does not match", ErrStale)
+	result.Candidates = mergeCandidates(result.Candidates, strict, limit)
+	if len(result.Candidates) < limit {
+		if relaxed := relaxedQuery(normalized); relaxed != "" {
+			result.RetrievalModes = append(result.RetrievalModes, "relaxed")
+			items, err := searchLevel(db, relaxed, fetchLimit, false, "relaxed")
+			if err != nil {
+				return nil, err
+			}
+			result.Candidates = mergeCandidates(result.Candidates, items, limit)
+		}
 	}
-	match := matchQuery(question)
-	if match == "" {
-		return nil, errors.New("query contains no searchable characters")
+	return result, nil
+}
+
+func searchLevel(db *sql.DB, query string, limit int, useSimpleQuery bool, mode string) ([]Candidate, error) {
+	matchExpression := "?"
+	if useSimpleQuery {
+		matchExpression = "simple_query(?, 0)"
 	}
-	rows, err := db.Query(`
+	rows, err := db.Query(fmt.Sprintf(`
 		SELECT d.id,d.path,c.id,c.ordinal,c.start_line,c.end_line,c.body_hash,
 		       f.file_hash,d.content_hash,
 		       bm25(chunks_fts,0.0,0.0,8.0,4.0,6.0,1.0) AS rank
@@ -652,8 +761,8 @@ func SearchCandidates(cfg *config.Instance, question string, limit int) ([]Candi
 		JOIN chunks c ON c.id=chunks_fts.chunk_id
 		JOIN documents d ON d.id=c.document_id
 		JOIN files f ON f.document_id=d.id AND f.path=d.path
-		WHERE chunks_fts MATCH ? AND d.layer='knowledge'
-		ORDER BY rank ASC,d.id ASC,c.ordinal ASC LIMIT ?`, match, limit)
+		WHERE chunks_fts MATCH %s AND d.layer='knowledge'
+		ORDER BY rank ASC,d.id ASC,c.ordinal ASC LIMIT ?`, matchExpression), query, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -668,9 +777,31 @@ func SearchCandidates(cfg *config.Instance, question string, limit int) ([]Candi
 			return nil, err
 		}
 		item.Score = -rank
+		item.RetrievalMode = mode
 		out = append(out, item)
 	}
 	return out, rows.Err()
+}
+
+func mergeCandidates(current, incoming []Candidate, limit int) []Candidate {
+	seenChunks := make(map[string]bool, len(current))
+	perDocument := make(map[string]int, len(current))
+	for _, candidate := range current {
+		seenChunks[candidate.ChunkID] = true
+		perDocument[candidate.KnowledgeID]++
+	}
+	for _, candidate := range incoming {
+		if len(current) >= limit {
+			break
+		}
+		if seenChunks[candidate.ChunkID] || perDocument[candidate.KnowledgeID] >= 2 {
+			continue
+		}
+		seenChunks[candidate.ChunkID] = true
+		perDocument[candidate.KnowledgeID]++
+		current = append(current, candidate)
+	}
+	return current
 }
 
 func makeChunks(documentID string, body []byte, maxChars, overlap int) []chunk {
@@ -679,12 +810,20 @@ func makeChunks(documentID string, body []byte, maxChars, overlap int) []chunk {
 		return nil
 	}
 	lines := strings.Split(normalized, "\n")
+	headingAtLine := make([]string, len(lines))
+	activeHeading := ""
+	for i, line := range lines {
+		if heading := headingText(line); heading != "" {
+			activeHeading = heading
+		}
+		headingAtLine[i] = activeHeading
+	}
 	var out []chunk
 	start := 0
 	for start < len(lines) {
 		end := start
 		chars := 0
-		heading := ""
+		heading := headingAtLine[start]
 		for end < len(lines) {
 			lineChars := utf8.RuneCountInString(lines[end]) + 1
 			if end > start && chars+lineChars > maxChars {
@@ -745,30 +884,6 @@ func headingText(line string) string {
 	return strings.TrimSpace(trimmed[i:])
 }
 
-func tokenize(s string) string {
-	var tokens []string
-	var word strings.Builder
-	flush := func() {
-		if word.Len() > 0 {
-			tokens = append(tokens, strings.ToLower(word.String()))
-			word.Reset()
-		}
-	}
-	for _, r := range s {
-		switch {
-		case unicode.Is(unicode.Han, r):
-			flush()
-			tokens = append(tokens, string(r))
-		case unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_':
-			word.WriteRune(unicode.ToLower(r))
-		default:
-			flush()
-		}
-	}
-	flush()
-	return strings.Join(tokens, " ")
-}
-
 func propertySearchText(meta document.Metadata) string {
 	parts := make([]string, 0, len(meta.Tags)+len(meta.Aliases)+len(meta.Extra)*2)
 	parts = append(parts, meta.Tags...)
@@ -788,18 +903,71 @@ func propertySearchText(meta document.Metadata) string {
 	return strings.Join(parts, " ")
 }
 
-func matchQuery(s string) string {
-	tokens := strings.Fields(tokenize(s))
-	seen := map[string]bool{}
-	var unique []string
-	for _, token := range tokens {
-		if !seen[token] {
-			seen[token] = true
-			unique = append(unique, `"`+strings.ReplaceAll(token, `"`, `""`)+`"`)
+func normalizeQuery(query string) string {
+	for _, wrapper := range []string{"为什么", "是什么", "有什么", "请问", "怎么", "如何", "是否"} {
+		query = strings.ReplaceAll(query, wrapper, " ")
+	}
+	var normalized strings.Builder
+	lastSpace := true
+	for _, r := range query {
+		if strings.ContainsRune("的了吗呢", r) {
+			continue
+		}
+		if unicode.Is(unicode.Han, r) || r == '_' || (r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			if r >= 'A' && r <= 'Z' {
+				r = unicode.ToLower(r)
+			}
+			normalized.WriteRune(r)
+			lastSpace = false
+			continue
+		}
+		if !lastSpace && normalized.Len() > 0 {
+			normalized.WriteByte(' ')
+			lastSpace = true
 		}
 	}
-	sort.Strings(unique)
-	return strings.Join(unique, " OR ")
+	return strings.TrimSpace(normalized.String())
+}
+
+func relaxedQuery(normalized string) string {
+	seen := map[string]bool{}
+	var terms []string
+	appendTerm := func(term string) {
+		quoted := `"` + strings.ReplaceAll(term, `"`, `""`) + `"`
+		if !seen[quoted] {
+			seen[quoted] = true
+			terms = append(terms, quoted)
+		}
+	}
+	for _, field := range strings.Fields(normalized) {
+		var hanRun []rune
+		var wordRun strings.Builder
+		flushHan := func() {
+			for i := 0; i+1 < len(hanRun); i++ {
+				appendTerm(string(hanRun[i : i+2]))
+			}
+			hanRun = nil
+		}
+		flushWord := func() {
+			if wordRun.Len() > 0 {
+				appendTerm(wordRun.String())
+				wordRun.Reset()
+			}
+		}
+		for _, r := range field {
+			if unicode.Is(unicode.Han, r) {
+				flushWord()
+				hanRun = append(hanRun, r)
+			} else {
+				flushHan()
+				wordRun.WriteRune(r)
+			}
+		}
+		flushHan()
+		flushWord()
+	}
+	return strings.Join(terms, " OR ")
 }
 
 func effectiveUpdatedAt(meta document.Metadata) string {
@@ -860,7 +1028,8 @@ CREATE TABLE chunks(
 );
 CREATE VIRTUAL TABLE chunks_fts USING fts5(
   document_id UNINDEXED,chunk_id UNINDEXED,title,headings,properties,body,
-  tokenize='unicode61 remove_diacritics 2'
+  tokenize='simple 0',
+  prefix='2 3 4'
 );
 CREATE TABLE operations(
   id TEXT PRIMARY KEY,kind TEXT NOT NULL,state TEXT NOT NULL,started_at TEXT NOT NULL,

@@ -11,14 +11,14 @@
 
 ## 构建
 
-要求 Go 1.25 或更高版本：
+目标平台为 macOS Apple Silicon。构建需要 Go 1.25 或更高版本，以及 Xcode Command Line Tools 提供的 `clang/clang++`：
 
 ```bash
-go build -o llm-wiki ./cmd/llm-wiki
-go test ./...
+make build
+make test
 ```
 
-生成的二进制不依赖 Node、Python、系统 SQLite 或 CGO。
+构建过程使用 CGO，将固定版本的 SQLite 和 `simple` tokenizer 静态集成到二进制；用户运行时不需要 Node、Python、Homebrew 或单独安装 SQLite/tokenizer。
 
 ## 快速使用
 

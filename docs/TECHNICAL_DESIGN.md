@@ -17,14 +17,14 @@
 
 - 语言：Go 1.25 兼容语法，CI 使用当前稳定 Go。
 - CLI：Cobra，负责子命令、全局参数、帮助和参数验证。
-- SQLite：纯 Go SQLite 驱动，构建不依赖 CGO；启用 FTS5。
+- SQLite：`mattn/go-sqlite3` CGO 驱动，启用 FTS5，并静态注册固定版本的 `simple` 中文 tokenizer。
 - 配置：TOML；规范文档使用 JSON Schema 表达约束。
 - Frontmatter：YAML；正文保持 UTF-8 Markdown。
 - Markdown：CommonMark/GFM 解析，额外识别 Obsidian wikilink，但不改写用户正文。
 - 内置资源：使用 `go:embed` 编译进二进制。
 - 锁：跨平台 advisory file lock；所有可信层写操作持有实例独占锁。
 
-Go 与 Rust 都满足单文件分发。选 Go 是因为当前构建环境可直接验证，且纯 Go SQLite 可以同时满足 Apple Silicon、FTS5 和无系统依赖要求。不得改为依赖本机 `sqlite3` 命令或动态 SQLite 库。
+Go 与 Rust 都满足单文件分发。选 Go 是因为当前构建环境可直接验证；SQLite、FTS5 和 `simple` 源码随二进制构建，不依赖本机 `sqlite3` 命令、Homebrew SQLite 或运行时动态扩展。
 
 ### 2.2 分发
 
@@ -88,7 +88,7 @@ require_sources = true
 [index]
 chunk_max_chars = 1800
 chunk_overlap_chars = 180
-chinese_tokenizer = "unicode-han"
+chinese_tokenizer = "simple"
 
 [security]
 follow_symlinks = false
@@ -323,9 +323,10 @@ operations(id PRIMARY KEY, kind, state, started_at, finished_at, detail_json)
 检索：
 
 - 标题权重 8、标签 6、标题路径 4、正文 1。
-- 中文文本和查询使用内置 Unicode Han 字符分词；英文使用 Unicode token。算法版本写入索引元数据，避免外部词典导致重建漂移。
-- FTS 查询始终参数化并转义；不默认暴露 FTS5 查询语法。
-- 按 BM25、文档 ID、chunk ordinal 进行确定性排序。
+- SQLite 由 `mattn/go-sqlite3` 提供并启用 FTS5；`simple` 官方 `v0.7.1` 源码固定到明确 commit，使用 `simple 0`，不启用 Jieba 和拼音索引/查询扩展。
+- FTS 原始字段直接写入 title、headings、properties 和 body。索引元数据记录 tokenizer 版本/commit 和 query planner 版本，任一不匹配都要求重建。
+- 查询先规范化自然问题并删除确定无检索价值的包装词；默认执行 `simple_query(..., 0)` 严格 AND 检索。结果不足时才以中文连续二字短语和英文完整 token 做宽松 OR 补足，禁止退回中文单字全量 OR。
+- 严格结果始终排在宽松结果前；每级内部按 BM25、文档 ID、chunk ordinal 确定性排序。同一 knowledge 最多返回两个 chunk。
 - SQLite 只返回候选 knowledge ID、路径、行号、chunk hash、文件 hash 和相关性分数。
 - CLI 根据候选路径重新读取 `knowledge/` Markdown，校验 ID、完整文件 hash 和正文 hash，再从 Markdown 提取 evidence。
 - 查询不自动同步索引，也不修改知识库；索引与发布文件不一致时返回 `INDEX_STALE`，由调用方显式执行 `index update`。

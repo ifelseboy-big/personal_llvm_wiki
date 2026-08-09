@@ -43,7 +43,7 @@
       "properties": {
         "chunk_max_chars": { "type": "integer", "minimum": 256 },
         "chunk_overlap_chars": { "type": "integer", "minimum": 0 },
-        "chinese_tokenizer": { "const": "unicode-han" }
+        "chinese_tokenizer": { "const": "simple" }
       },
       "additionalProperties": true
     },

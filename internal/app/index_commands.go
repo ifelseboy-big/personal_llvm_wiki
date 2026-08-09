@@ -22,21 +22,22 @@ var (
 )
 
 type queryEvidence struct {
-	KnowledgeID string               `json:"knowledge_id"`
-	Title       string               `json:"title"`
-	Type        string               `json:"type"`
-	Path        string               `json:"path"`
-	ChunkID     string               `json:"chunk_id"`
-	Ordinal     int                  `json:"ordinal"`
-	HeadingPath string               `json:"heading_path,omitempty"`
-	Body        string               `json:"body"`
-	StartLine   int                  `json:"start_line"`
-	EndLine     int                  `json:"end_line"`
-	Score       float64              `json:"score"`
-	ContentHash string               `json:"content_hash"`
-	FileHash    string               `json:"file_hash"`
-	Sources     []document.SourceRef `json:"sources"`
-	Metadata    document.Metadata    `json:"metadata"`
+	KnowledgeID   string               `json:"knowledge_id"`
+	Title         string               `json:"title"`
+	Type          string               `json:"type"`
+	Path          string               `json:"path"`
+	ChunkID       string               `json:"chunk_id"`
+	Ordinal       int                  `json:"ordinal"`
+	HeadingPath   string               `json:"heading_path,omitempty"`
+	Body          string               `json:"body"`
+	StartLine     int                  `json:"start_line"`
+	EndLine       int                  `json:"end_line"`
+	Score         float64              `json:"score"`
+	RetrievalMode string               `json:"retrieval_mode"`
+	ContentHash   string               `json:"content_hash"`
+	FileHash      string               `json:"file_hash"`
+	Sources       []document.SourceRef `json:"sources"`
+	Metadata      document.Metadata    `json:"metadata"`
 }
 
 type loadedQueryDocument struct {
@@ -125,17 +126,20 @@ func newQueryCommand(rt *Runtime) *cobra.Command {
 				recoveryErr.Details = map[string]any{"operations": pending}
 				return recoveryErr
 			}
-			candidates, err := indexstore.SearchCandidates(cfg, args[0], limit)
+			searchResult, err := indexstore.Search(cfg, args[0], limit)
 			if errors.Is(err, os.ErrNotExist) {
 				return E("INDEX_NOT_FOUND", "index does not exist; run llm-wiki index rebuild", ExitIndex, err)
 			}
 			if errors.Is(err, indexstore.ErrStale) {
 				return E("INDEX_STALE", "index metadata does not match this wiki; run llm-wiki index update", ExitConflict, err)
 			}
+			if errors.Is(err, indexstore.ErrNoSearchTerms) {
+				return E("QUERY_INVALID", "query contains no searchable terms", ExitValidation, err)
+			}
 			if err != nil {
 				return E("QUERY_FAILED", "cannot query index", ExitIndex, err)
 			}
-			items, err := hydrateQueryCandidates(cfg, candidates)
+			items, err := hydrateQueryCandidates(cfg, searchResult.Candidates)
 			if errors.Is(err, errQueryIndexStale) {
 				return E("INDEX_STALE", "index candidates do not match published knowledge; run llm-wiki index update", ExitConflict, err)
 			}
@@ -143,7 +147,9 @@ func newQueryCommand(rt *Runtime) *cobra.Command {
 				return E("KNOWLEDGE_READ_FAILED", "cannot load published knowledge selected by the index", ExitIO, err)
 			}
 			return rt.Success("query", ref, map[string]any{
-				"query": args[0], "evidence": items, "count": len(items),
+				"query": args[0], "normalized_query": searchResult.NormalizedQuery,
+				"retrieval_modes": searchResult.RetrievalModes,
+				"evidence":        items, "count": len(items),
 				"answer_generated": false, "facts_from": "knowledge_markdown",
 			}, nil, nil)
 		},
@@ -173,21 +179,22 @@ func hydrateQueryCandidates(cfg *config.Instance, candidates []indexstore.Candid
 			return nil, err
 		}
 		items = append(items, queryEvidence{
-			KnowledgeID: loaded.doc.Metadata.ID,
-			Title:       loaded.doc.Metadata.Title,
-			Type:        loaded.doc.Metadata.Type,
-			Path:        loaded.path,
-			ChunkID:     candidate.ChunkID,
-			Ordinal:     candidate.Ordinal,
-			HeadingPath: heading,
-			Body:        body,
-			StartLine:   candidate.StartLine,
-			EndLine:     candidate.EndLine,
-			Score:       candidate.Score,
-			ContentHash: loaded.doc.Metadata.ContentHash,
-			FileHash:    loaded.fileHash,
-			Sources:     loaded.doc.Metadata.Sources,
-			Metadata:    loaded.doc.Metadata,
+			KnowledgeID:   loaded.doc.Metadata.ID,
+			Title:         loaded.doc.Metadata.Title,
+			Type:          loaded.doc.Metadata.Type,
+			Path:          loaded.path,
+			ChunkID:       candidate.ChunkID,
+			Ordinal:       candidate.Ordinal,
+			HeadingPath:   heading,
+			Body:          body,
+			StartLine:     candidate.StartLine,
+			EndLine:       candidate.EndLine,
+			Score:         candidate.Score,
+			RetrievalMode: candidate.RetrievalMode,
+			ContentHash:   loaded.doc.Metadata.ContentHash,
+			FileHash:      loaded.fileHash,
+			Sources:       loaded.doc.Metadata.Sources,
+			Metadata:      loaded.doc.Metadata,
 		})
 	}
 	return items, nil
@@ -240,7 +247,7 @@ func candidateExcerpt(lines []string, candidate indexstore.Candidate) (string, s
 		return "", "", fmt.Errorf("%w: chunk locator changed for %s", errQueryIndexStale, candidate.ChunkID)
 	}
 	heading := ""
-	for _, line := range selected {
+	for _, line := range lines[:candidate.EndLine] {
 		if value := markdownHeading(line); value != "" {
 			heading = value
 		}

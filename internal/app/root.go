@@ -417,9 +417,19 @@ func newDoctorCommand(rt *Runtime) *cobra.Command {
 				checks = append(checks, check{Name: "index", OK: false, Message: indexErr.Error() + "; run index rebuild"})
 			} else {
 				expectedCounts := map[string]int{"raw": len(rawDocs), "knowledge": len(knowledgeDocs), "derived": len(derivedDocs)}
-				indexOK := indexStatus.Exists && indexStatus.SchemaVersion == indexstore.SchemaVersion
+				indexOK := indexStatus.Exists && indexStatus.SchemaVersion == indexstore.SchemaVersion &&
+					indexStatus.Tokenizer == "simple" &&
+					indexStatus.TokenizerVersion != "" && indexStatus.TokenizerCommit != "" &&
+					indexStatus.QueryPlannerVersion == indexstore.QueryPlannerVersion
+				message := "index schema, tokenizer, and document counts match files"
 				for layer, expected := range expectedCounts {
 					indexOK = indexOK && indexStatus.Documents[layer] == expected
+				}
+				if indexOK {
+					if probeErr := indexstore.ProbeTokenizer(cfg); probeErr != nil {
+						indexOK = false
+						message = "simple tokenizer probe failed: " + probeErr.Error() + "; run index rebuild"
+					}
 				}
 				if indexOK {
 					updatePlan, planErr := indexstore.Update(cfg, true)
@@ -429,9 +439,10 @@ func newDoctorCommand(rt *Runtime) *cobra.Command {
 						indexOK = !updatePlan.FullRebuild && updatePlan.Added == 0 && updatePlan.Changed == 0 && updatePlan.Deleted == 0
 					}
 				}
-				message := "index schema and document counts match files"
 				if !indexOK {
-					message = "index is missing, outdated, or stale; run index rebuild"
+					if !strings.HasPrefix(message, "simple tokenizer probe failed:") {
+						message = "index is missing, outdated, or stale; run index rebuild"
+					}
 				}
 				checks = append(checks, check{Name: "index", OK: indexOK, Message: message})
 			}

@@ -5,14 +5,19 @@ project_name: llm-wiki
 before:
   hooks:
     - go mod verify
-    - go test ./...
+    - make test
 
 builds:
   - id: llm-wiki
     main: ./cmd/llm-wiki
     binary: llm-wiki
     env:
-      - CGO_ENABLED=0
+      - CGO_ENABLED=1
+      - CC=clang
+      - CXX=clang++
+    tags:
+      - fts5
+      - sqlite_omit_load_extension
     goos:
       - darwin
     goarch:

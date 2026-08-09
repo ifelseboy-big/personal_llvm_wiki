@@ -1,0 +1,219 @@
+package index
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"llm-wiki/internal/config"
+	"llm-wiki/internal/publish"
+	"llm-wiki/internal/raw"
+	"llm-wiki/internal/vault"
+)
+
+func TestQueryNormalizationAndRelaxedBigrams(t *testing.T) {
+	normalized := normalizeQuery("请问：LLVM 的核心结论是什么？")
+	if normalized != "llvm 核心结论" {
+		t.Fatalf("unexpected normalized query %q", normalized)
+	}
+	if got := relaxedQuery(normalized); got != `"llvm" OR "核心" OR "心结" OR "结论"` {
+		t.Fatalf("unexpected relaxed query %q", got)
+	}
+	for _, query := range []string{"的", "是什么", "请问，是否？"} {
+		if got := normalizeQuery(query); got != "" {
+			t.Fatalf("wrapper-only query %q normalized to %q", query, got)
+		}
+	}
+}
+
+func TestMakeChunksInheritsHeading(t *testing.T) {
+	body := []byte("# Inherited heading\n\nfirst line fills the first chunk\nsecond line starts later\nthird line remains under the heading\n")
+	chunks := makeChunks("know_01arz3ndektsv4rrffq69g5faw", body, 48, 0)
+	if len(chunks) < 2 {
+		t.Fatalf("expected multiple chunks, got %#v", chunks)
+	}
+	for i, chunk := range chunks {
+		if chunk.HeadingPath != "Inherited heading" {
+			t.Fatalf("chunk %d lost inherited heading: %#v", i, chunk)
+		}
+	}
+}
+
+func TestSimpleChineseRetrievalRankingAndFallback(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "search-wiki")
+	initialized, err := vault.Init(vault.InitOptions{Path: root, Name: "search", Template: "personal"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := initialized.Config
+	cfg.Index.ChunkMaxChars = 256
+	cfg.Index.ChunkOverlapChars = 0
+
+	base := time.Date(2026, 8, 9, 8, 0, 0, 0, time.UTC)
+	llvmID := publishSearchFixture(t, cfg, 0, base,
+		"LLVM 核心结论", []string{"模块化编译框架"},
+		"# LLVM 核心结论\n\nLLVM 使用稳定 IR 连接前端、优化器和后端，实现组件解耦。\n")
+	unrelatedID := publishSearchFixture(t, cfg, 1, base,
+		"团队会议记录", nil,
+		"# 团队会议记录\n\n核心结论用于记录下周的会议室安排，与编译器无关。\n")
+	titleID := publishSearchFixture(t, cfg, 2, base,
+		"TitlePriorityZXQ", nil,
+		"# 精确标题\n\n普通正文。\n")
+	publishSearchFixture(t, cfg, 3, base,
+		"正文命中文档", nil,
+		"# 正文命中文档\n\nTitlePriorityZXQ 只在正文出现。\n"+strings.Repeat("填充内容用于降低正文密度。\n", 20))
+
+	var longBody strings.Builder
+	longBody.WriteString("# 多块文档\n\n")
+	for i := 0; i < 16; i++ {
+		fmt.Fprintf(&longBody, "ChunkCapZXQ section %02d repeats across chunks with deterministic filler text.\n", i)
+	}
+	chunkedID := publishSearchFixture(t, cfg, 4, base, "多块文档", nil, longBody.String())
+	strictID := publishSearchFixture(t, cfg, 5, base, "火星协议说明", nil, "# 火星协议说明\n\n完整严格命中。\n")
+	publishSearchFixture(t, cfg, 6, base, "火星观测", nil, "# 火星观测\n\n只有连续二字片段。\n")
+	publishSearchFixture(t, cfg, 7, base, "网络协议", nil, "# 网络协议\n\n只有另一个连续二字片段。\n")
+
+	if _, err := Rebuild(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := ProbeTokenizer(cfg); err != nil {
+		t.Fatalf("simple tokenizer probe failed: %v", err)
+	}
+
+	assertFirstKnowledge(t, cfg, "LLVM 的核心结论", llvmID)
+	assertFirstKnowledge(t, cfg, "稳定 IR", llvmID)
+	assertFirstKnowledge(t, cfg, "核心结论", llvmID)
+	assertFirstKnowledge(t, cfg, "模块化编译框架", llvmID)
+	assertFirstKnowledge(t, cfg, "TitlePriorityZXQ", titleID)
+
+	for _, query := range []string{"的", "是什么"} {
+		if _, err := Search(cfg, query, 8); err != ErrNoSearchTerms {
+			t.Fatalf("query %q returned %v, expected ErrNoSearchTerms", query, err)
+		}
+	}
+
+	chunkMatches, err := SearchCandidates(cfg, "ChunkCapZXQ", 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, candidate := range chunkMatches {
+		if candidate.KnowledgeID == chunkedID {
+			count++
+		}
+	}
+	if count != 2 {
+		t.Fatalf("same document returned %d chunks, expected 2: %#v", count, chunkMatches)
+	}
+
+	fallback, err := Search(cfg, "火星协议", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fallback.Candidates) != 3 || fallback.Candidates[0].KnowledgeID != strictID ||
+		fallback.Candidates[0].RetrievalMode != "strict" {
+		t.Fatalf("strict candidate did not stay ahead of relaxed candidates: %#v", fallback)
+	}
+	if len(fallback.RetrievalModes) != 2 || fallback.RetrievalModes[0] != "strict" || fallback.RetrievalModes[1] != "relaxed" {
+		t.Fatalf("unexpected retrieval modes: %#v", fallback.RetrievalModes)
+	}
+	for _, candidate := range fallback.Candidates[1:] {
+		if candidate.RetrievalMode != "relaxed" {
+			t.Fatalf("fallback candidate has mode %q: %#v", candidate.RetrievalMode, fallback.Candidates)
+		}
+	}
+
+	llvmMatches, err := SearchCandidates(cfg, "LLVM 的核心结论", 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	llvmPosition, unrelatedPosition := -1, -1
+	for i, candidate := range llvmMatches {
+		if candidate.KnowledgeID == llvmID && llvmPosition < 0 {
+			llvmPosition = i
+		}
+		if candidate.KnowledgeID == unrelatedID && unrelatedPosition < 0 {
+			unrelatedPosition = i
+		}
+	}
+	if llvmPosition < 0 || unrelatedPosition < 0 || llvmPosition >= unrelatedPosition {
+		t.Fatalf("LLVM result did not rank ahead of unrelated Chinese result: %#v", llvmMatches)
+	}
+
+	db, err := openDB(DBPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE meta SET value='tampered' WHERE key='tokenizer_version'`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Search(cfg, "稳定 IR", 8); !errors.Is(err, ErrStale) {
+		t.Fatalf("tokenizer metadata mismatch returned %v, expected ErrStale", err)
+	}
+	updated, err := Update(cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.FullRebuild {
+		t.Fatalf("tokenizer metadata mismatch did not force a full rebuild: %#v", updated)
+	}
+}
+
+func assertFirstKnowledge(t *testing.T, cfg *config.Instance, query, expectedID string) {
+	t.Helper()
+	matches, err := SearchCandidates(cfg, query, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) == 0 || matches[0].KnowledgeID != expectedID {
+		t.Fatalf("query %q first result = %#v, expected %s", query, matches, expectedID)
+	}
+}
+
+func publishSearchFixture(t *testing.T, cfg *config.Instance, ordinal int, base time.Time, title string, aliases []string, body string) string {
+	t.Helper()
+	added, err := raw.Add(cfg, raw.AddOptions{
+		Input: "-", Name: fmt.Sprintf("source-%02d.md", ordinal),
+		Stdin: bytes.NewBufferString(body), Now: base.Add(time.Duration(ordinal) * time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := filepath.Join(t.TempDir(), fmt.Sprintf("draft-%02d.md", ordinal))
+	frontmatter := "---\ntype: concept\ntitle: " + title + "\n"
+	if len(aliases) > 0 {
+		frontmatter += "aliases:\n"
+		for _, alias := range aliases {
+			frontmatter += "  - " + alias + "\n"
+		}
+	}
+	frontmatter += "---\n"
+	if err := os.WriteFile(draft, []byte(frontmatter+body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := publish.Propose(cfg, publish.ProposeOptions{
+		SourceIDs: []string{added[0].ID}, DraftPath: draft,
+		Now: base.Add(time.Duration(ordinal)*time.Minute + time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	applied, err := publish.Apply(cfg, proposal.Proposal.ID, false,
+		base.Add(time.Duration(ordinal)*time.Minute+2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := publish.CompleteOperation(cfg, applied.OperationID); err != nil {
+		t.Fatal(err)
+	}
+	return proposal.Proposal.KnowledgeID
+}

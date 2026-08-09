@@ -13,6 +13,7 @@ import (
 	"llm-wiki/internal/config"
 	"llm-wiki/internal/document"
 	indexstore "llm-wiki/internal/index"
+	"llm-wiki/internal/sqlite3simple"
 )
 
 func TestCompleteCLIWorkflow(t *testing.T) {
@@ -35,6 +36,15 @@ func TestCompleteCLIWorkflow(t *testing.T) {
 	if count := nestedFloat(t, query.Data, "count"); count < 1 {
 		t.Fatalf("expected query evidence, got %#v", query.Data)
 	}
+	if normalized := nestedString(t, query.Data, "normalized_query"); normalized != "稳定 ir" {
+		t.Fatalf("unexpected normalized query %q", normalized)
+	}
+	if factsFrom := nestedString(t, query.Data, "facts_from"); factsFrom != "knowledge_markdown" {
+		t.Fatalf("query facts came from %q", factsFrom)
+	}
+	if mode := nestedString(t, query.Data, "evidence", 0, "retrieval_mode"); mode != "strict" {
+		t.Fatalf("unexpected evidence retrieval mode %q", mode)
+	}
 	trace := runCLI(t, "", "trace", knowledgeID, "--wiki", root, "--json", "--no-interactive")
 	if valid, ok := trace.Data.(map[string]any)["valid"].(bool); !ok || !valid {
 		t.Fatalf("invalid trace %#v", trace.Data)
@@ -43,6 +53,18 @@ func TestCompleteCLIWorkflow(t *testing.T) {
 	doctor := runCLI(t, "", "doctor", "--wiki", root, "--json", "--no-interactive")
 	if healthy, ok := doctor.Data.(map[string]any)["healthy"].(bool); !ok || !healthy {
 		t.Fatalf("doctor failed after complete workflow: %#v", doctor.Data)
+	}
+}
+
+func TestQueryRejectsWrapperOnlyChinese(t *testing.T) {
+	t.Setenv("LLM_WIKI_CONFIG", filepath.Join(t.TempDir(), "user-config.toml"))
+	root := filepath.Join(t.TempDir(), "wiki")
+	runCLI(t, "", "init", root, "--name", "empty-query", "--json", "--no-interactive")
+	for _, query := range []string{"的", "是什么"} {
+		response := runCLIFailure(t, "", "query", query, "--wiki", root, "--json", "--no-interactive")
+		if response.Error == nil || response.Error.Code != "QUERY_INVALID" {
+			t.Fatalf("query %q returned %#v", query, response)
+		}
 	}
 }
 
@@ -103,7 +125,7 @@ func TestQueryUsesIndexForCandidatesAndKnowledgeForFacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	db, err := sql.Open("sqlite", indexstore.DBPath(cfg))
+	db, err := sql.Open(sqlite3simple.DriverName, indexstore.DBPath(cfg))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,15 +137,34 @@ func TestQueryUsesIndexForCandidatesAndKnowledgeForFacts(t *testing.T) {
 		db.Close()
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`UPDATE chunks_fts SET body=body || ' Poisoned SQLite FTS body',title='Poisoned SQLite FTS title' WHERE document_id=?`, knowledgeID); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
 	query := runCLI(t, "", "query", "Original evidence", "--wiki", root, "--json", "--no-interactive")
-	if body := nestedString(t, query.Data, "evidence", 0, "body"); !strings.Contains(body, "Original evidence.") || strings.Contains(body, "Poisoned") {
-		t.Fatalf("query returned cached SQLite body instead of published Markdown: %q", body)
+	bodyBeforeRebuild := nestedString(t, query.Data, "evidence", 0, "body")
+	if !strings.Contains(bodyBeforeRebuild, "Original evidence.") || strings.Contains(bodyBeforeRebuild, "Poisoned") {
+		t.Fatalf("query returned cached SQLite body instead of published Markdown: %q", bodyBeforeRebuild)
 	}
-	if title := nestedString(t, query.Data, "evidence", 0, "title"); title != "File facts" {
-		t.Fatalf("query returned cached SQLite metadata instead of published Markdown: %q", title)
+	titleBeforeRebuild := nestedString(t, query.Data, "evidence", 0, "title")
+	if titleBeforeRebuild != "File facts" {
+		t.Fatalf("query returned cached SQLite metadata instead of published Markdown: %q", titleBeforeRebuild)
+	}
+	if err := os.Remove(indexstore.DBPath(cfg)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := indexstore.Rebuild(cfg); err != nil {
+		t.Fatal(err)
+	}
+	rebuiltQuery := runCLI(t, "", "query", "Original evidence", "--wiki", root, "--json", "--no-interactive")
+	if body := nestedString(t, rebuiltQuery.Data, "evidence", 0, "body"); body != bodyBeforeRebuild {
+		t.Fatalf("evidence changed after deleting and rebuilding SQLite: before=%q after=%q", bodyBeforeRebuild, body)
+	}
+	if title := nestedString(t, rebuiltQuery.Data, "evidence", 0, "title"); title != titleBeforeRebuild {
+		t.Fatalf("title changed after deleting and rebuilding SQLite: before=%q after=%q", titleBeforeRebuild, title)
 	}
 
 	knowledge.Body = append(knowledge.Body, []byte("\nUniqueFileFactToken\n")...)

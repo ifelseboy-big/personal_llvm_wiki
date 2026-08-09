@@ -80,7 +80,7 @@ func DefaultInstance(name, id string, now time.Time) *Instance {
 			Templates: "templates", Rules: "rules", Runtime: ".llm-wiki",
 		},
 		Publish:  PublishConfig{RequireSources: true},
-		Index:    IndexConfig{ChunkMaxChars: 1800, ChunkOverlapChars: 180, ChineseTokenizer: "unicode-han"},
+		Index:    IndexConfig{ChunkMaxChars: 1800, ChunkOverlapChars: 180, ChineseTokenizer: "simple"},
 		Security: SecurityConfig{MaxInputBytes: 50 * 1024 * 1024, BlockSensitiveFiles: true},
 	}
 }
@@ -197,7 +197,7 @@ func (c *Instance) Validate() error {
 	if c.Index.ChunkMaxChars < 256 || c.Index.ChunkOverlapChars < 0 || c.Index.ChunkOverlapChars >= c.Index.ChunkMaxChars {
 		return errors.New("invalid index chunk configuration")
 	}
-	if c.Index.ChineseTokenizer != "unicode-han" {
+	if c.Index.ChineseTokenizer != "simple" {
 		return errors.New("unsupported index tokenizer")
 	}
 	if !c.Publish.RequireSources {

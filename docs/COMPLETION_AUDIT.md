@@ -15,7 +15,7 @@
 | 采集 | `raw add/list/show`，stdin、文件、目录、二进制 sidecar | raw 单元测试、目录预检、敏感文件与大小限制测试 |
 | 发布 | `propose/diff/apply/reject`，不可变 proposal、独立 state | 发布恢复测试、更新冲突与来源变化端到端测试 |
 | 事实校验 | frontmatter Schema、ULID、正文/附件 SHA-256、来源哈希 | document、publish、doctor 和 trace 测试 |
-| 检索 | SQLite FTS5、中文 Han 字分词、英文词元、证据/行号/来源返回 | 中英文端到端查询、索引删除重建等价测试 |
+| 检索 | SQLite FTS5、`simple` 中文 tokenizer、严格/宽松两级召回、证据/行号/来源返回 | 中文/英文/混合查询、排序、索引删除重建等价测试 |
 | 展示溯源 | `show` 校验可信文件与来源，`trace` 比较实际字节哈希 | 实际 raw 篡改测试 |
 | 派生层 | 增量 `build`、`--full`、`build status`、manifest 校验 | 删除派生目录、字节与指纹重建等价测试 |
 | 索引 | `status/update/rebuild`，临时数据库原子替换，查询前文件同步 | SQLite 删除重建与 frontmatter-only 增量测试 |
@@ -58,9 +58,9 @@
 以下检查均已通过：
 
 ```text
-go test ./...
-go test -race ./...
-go vet ./...
+make test
+make test-race
+CGO_ENABLED=1 CC=clang CXX=clang++ go vet -tags "fts5 sqlite_omit_load_extension" ./...
 go mod verify
 gofmt clean
 jq empty schemas/*.json
