@@ -10,14 +10,14 @@
 
 - 面向个人知识管理，但设计不能阻塞后续扩展。
 - 不使用 MCP，不依赖常驻服务。
-- CLI 是唯一稳定的操作接口和规则执行者。
+- CLI 是唯一稳定的操作接口和可信层写入通道，负责机械不变量，不负责解释知识语义。
 - 所有新知识先进入 `raw/`。
 - `knowledge/` 保存经过整理和发布的最终可信知识，是唯一事实来源。
 - `llm-wiki/` 保存面向 AI 的派生知识，只能由 `knowledge/` 生成，可以随时重建。
 - 人看的可信知识和 AI 使用的派生知识是两个独立层。
 - 支持内置知识库模板及知识库内的自定义模板。
-- 支持可选安装 Skill，Skill 只指导 AI 调用 CLI，不承载业务逻辑。
-- `AGENTS.md` 保存当前知识库的维护规则，不保存具体知识元数据。
+- 支持可选安装 Skill；Skill 只负责定位目标知识库、读取其 `AGENTS.md` 并调用 CLI，不复制治理规则。
+- `AGENTS.md` 是当前知识库的语义治理入口和规则路由，不保存具体知识事实或元数据。
 - SQLite 只做索引和运行状态，不成为事实来源。
 
 ## 3. 三层结构
@@ -235,7 +235,7 @@ llm-wiki show <knowledge-id>
 llm-wiki trace <knowledge-id>
 ```
 
-`query` 负责检索并返回证据、知识 ID、来源和引用，不要求 CLI 自身生成最终自然语言答案。最终归纳由 Codex 或其他 AI 完成。
+`query` 先使用 SQLite 检索候选 knowledge ID、路径、位置和分数，再打开并验证对应 `knowledge/` Markdown，从发布文档返回正文、元数据与来源。SQLite 中的 chunk 和 metadata 不能直接作为最终证据。CLI 不生成最终自然语言答案，归纳由 Codex 或其他 AI 完成。
 
 ### 7.6 索引
 
@@ -284,15 +284,15 @@ llm-wiki skill uninstall <client>
 
 | 组件 | 作用 |
 |---|---|
-| CLI | 执行命令、验证规则、维护变更集和索引，是强约束层 |
-| `AGENTS.md` | 描述当前知识库的维护政策和内容边界 |
-| Skill | 教 AI 发现知识库并正确调用 CLI，是客户端适配层 |
+| CLI | 执行命令，强制来源、哈希、事务、路径和索引等机械不变量 |
+| `AGENTS.md` | 当前知识库唯一语义治理入口，负责规则路由和内容边界 |
+| Skill | 定位目标知识库、读取其 `AGENTS.md` 并正确调用 CLI |
 
-Skill 中不得包含知识库绝对路径，也不得复制 CLI 的实现逻辑。Skill 至少说明：
+Skill 中不得包含知识库绝对路径，也不得复制 Vault 的知识治理规则或 CLI 实现逻辑。Skill 至少说明：
 
-- 所有输入先调用 `raw add`。
-- 查询优先使用 `query --json`。
-- 整理结果先创建发布提案。
+- 每次工作流先 `locate --json` 并读取目标根目录的 `AGENTS.md`。
+- 按 `AGENTS.md` 路由读取本次操作需要的 rules/templates。
+- `knowledge/` 是唯一最终事实源，SQLite 只选择候选。
 - 不直接修改派生层或绕过发布流程。
 - 如何处理 CLI 的结构化错误和引用信息。
 
@@ -379,4 +379,3 @@ llm-wiki index rebuild --wiki /tmp/personal-wiki
 - 第一批内置知识库模板清单。
 - 除 Codex 外首批支持哪些 AI CLI。
 - 发布审批是纯 CLI 交互、Obsidian 内操作，还是两者都支持。
-

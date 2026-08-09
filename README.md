@@ -5,7 +5,7 @@
 ## 事实边界
 
 - `raw/`：原始证据，内容变化可检测。
-- `knowledge/`：经 `publish apply` 明确确认的可信知识，最终事实依据。
+- `knowledge/`：经 `publish apply` 明确确认的可信知识，唯一最终事实源。
 - `llm-wiki/`：从可信知识确定性构建的 AI 派生视图，可删除重建。
 - `.llm-wiki/index.sqlite`：可删除、可重建的全文检索索引，不是知识或元数据来源。
 
@@ -33,7 +33,9 @@ llm-wiki query "文章的核心结论" --wiki personal --json --no-interactive
 llm-wiki trace <knowledge-id> --wiki personal --json --no-interactive
 ```
 
-AI 调用应始终添加 `--json --no-interactive`，并只依赖版本化 JSON 字段与错误码。
+AI 调用应先通过 `locate --json --no-interactive` 定位知识库，读取该知识库根目录的 `AGENTS.md`，再按其路由加载相关规则。后续命令始终添加 `--json --no-interactive`，并只依赖版本化 JSON 字段与错误码。
+
+`query` 只使用 SQLite 选择候选知识和排序，返回 evidence 前会重新读取并验证对应 `knowledge/` Markdown。索引与发布文件不一致时返回 `INDEX_STALE`，不会使用 SQLite 缓存冒充事实。
 
 ## 命令面
 
@@ -54,8 +56,8 @@ skill status|install|update|uninstall
 
 内置 `personal` 模板会生成：
 
-- `AGENTS.md`：AI 和维护者必须遵守的事实层级及命令流程。
-- `rules/`：采集、元数据、发布、派生层和质量规则。
+- `AGENTS.md`：AI 和维护者必须先读取的知识库治理入口及操作路由。
+- `rules/`：采集、元数据、生命周期、发布、派生层和质量规则。
 - `templates/raw/`：人工记录和文件来源模板。
 - `templates/knowledge/`：concept、guide、reference、decision、project 模板。
 

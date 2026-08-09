@@ -8,7 +8,7 @@
 2. `raw/` 保存原始证据。可信知识必须记录来源 ID 与发布时的来源内容哈希。
 3. `llm-wiki/` 是 `knowledge/` 的确定性派生视图，禁止反向写入可信层。
 4. `.llm-wiki/index.sqlite` 只保存可重建索引和运行状态。删除数据库不得导致知识、元数据或溯源关系丢失。
-5. CLI 是唯一稳定写入接口；Skill、模板和 `AGENTS.md` 不实现或绕过业务规则。
+5. `AGENTS.md` 和 `rules/` 是语义治理依据；CLI 是唯一稳定写入接口，只强制来源、哈希、事务、路径与索引等机械不变量。
 6. 不依赖 MCP、常驻服务、外部数据库、解释器或网络服务。
 
 ## 2. 技术选型
@@ -72,7 +72,7 @@ created_at = "2026-08-08T10:00:00+08:00"
 
 [template]
 name = "personal"
-version = "1.1.0"
+version = "1.1.1"
 
 [paths]
 raw = "raw"
@@ -316,7 +316,7 @@ chunks_fts(document_id UNINDEXED, chunk_id UNINDEXED, title, headings, propertie
 operations(id PRIMARY KEY, kind, state, started_at, finished_at, detail_json)
 ```
 
-`metadata_json` 是解析缓存，不是元数据事实源。`properties` 由 `tags`、`aliases` 和用户自定义 Properties 确定性生成，仅用于全文检索。完整重建必须先扫描文件、校验所有文档和引用，在临时数据库完成后原子替换旧数据库。
+`metadata_json`、`chunks.body` 和 FTS 内容都是解析缓存，不是事实源。`properties` 由 `tags`、`aliases` 和用户自定义 Properties 确定性生成，仅用于全文检索。完整重建必须先扫描文件、校验所有文档和引用，在临时数据库完成后原子替换旧数据库。
 
 增量更新仍对候选文件计算内容哈希，不能只依赖 mtime/size。删除、重命名和来源关系均从本次文件扫描推导。
 
@@ -326,7 +326,11 @@ operations(id PRIMARY KEY, kind, state, started_at, finished_at, detail_json)
 - 中文文本和查询使用内置 Unicode Han 字符分词；英文使用 Unicode token。算法版本写入索引元数据，避免外部词典导致重建漂移。
 - FTS 查询始终参数化并转义；不默认暴露 FTS5 查询语法。
 - 按 BM25、文档 ID、chunk ordinal 进行确定性排序。
-- 返回 chunk 证据、相对路径、行号、knowledge ID、source ID/hash 和索引版本。
+- SQLite 只返回候选 knowledge ID、路径、行号、chunk hash、文件 hash 和相关性分数。
+- CLI 根据候选路径重新读取 `knowledge/` Markdown，校验 ID、完整文件 hash 和正文 hash，再从 Markdown 提取 evidence。
+- 查询不自动同步索引，也不修改知识库；索引与发布文件不一致时返回 `INDEX_STALE`，由调用方显式执行 `index update`。
+- evidence 的正文、metadata 和 sources 只能来自已验证的 `knowledge/` 文件；SQLite 只影响召回与排序。
+- `raw/` 的来源完整性只由 `trace` 报告，不阻断 `query` 或 `show` 读取已经发布的事实。
 
 首个正式版本不内置 embedding 模型或 SQLite 向量扩展。预留检索后端和 embedding 版本字段，但任何未来向量索引仍必须可从文件和显式模型配置重建。
 
@@ -348,6 +352,7 @@ resources/vault-templates/personal/
   AGENTS.md
   rules/capture.md
   rules/metadata.md
+  rules/lifecycle.md
   rules/publish.md
   rules/derived.md
   templates/raw/note.md
@@ -371,7 +376,7 @@ resources/vault-templates/personal/
 
 Codex 用户目标目录为 `$HOME/.agents/skills/llm-wiki`。安装前显示规范绝对路径，安装目录内写入 llm-wiki 所有权 manifest。升级只替换 manifest 声明的文件；发现未知用户文件时保留。卸载只删除本工具拥有且 hash 匹配的文件。
 
-Skill 只包含调用策略：输入先 `raw add`、查询使用 `--json`、发布先 propose、禁止直接修改可信层或派生层、结构化错误处理和引用格式。
+Skill 只负责启动和调用约束：先 `locate`，再读取目标知识库根目录的 `AGENTS.md`，按其中的操作路由加载规则。知识类型、采集细节和生命周期等语义不得复制到 Skill；切换 wiki 或规则变化后必须重新读取。
 
 ## 14. 安全边界
 

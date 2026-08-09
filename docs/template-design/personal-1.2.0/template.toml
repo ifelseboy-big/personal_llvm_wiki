@@ -1,21 +1,29 @@
 name = "personal"
-version = "1.1.1"
+version = "1.2.0"
 schema_version = 1
-description = "个人可信知识库：原始证据、发布知识和 AI 派生内容严格分层"
+description = "可信个人知识库：可执行模板、生命周期、稳定关联、结论级引用与 Obsidian Bases"
 
 managed_files = [
   "AGENTS.md",
+  "LLM-WIKI.md",
   "rules/capture.md",
   "rules/metadata.md",
+  "rules/types.md",
   "rules/lifecycle.md",
+  "rules/citations.md",
   "rules/publish.md",
   "rules/derived.md",
   "rules/quality.md",
   "templates/raw/note.md",
   "templates/raw/source.md",
+  "templates/knowledge/claim.md",
   "templates/knowledge/concept.md",
   "templates/knowledge/guide.md",
+  "templates/knowledge/tutorial.md",
   "templates/knowledge/reference.md",
   "templates/knowledge/decision.md",
   "templates/knowledge/project.md",
+  "views/knowledge.base",
+  "views/review.base",
+  "views/raw.base",
 ]

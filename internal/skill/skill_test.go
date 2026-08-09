@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -16,6 +17,15 @@ func TestInstallUpdateAndUninstallOwnedFiles(t *testing.T) {
 	}
 	if result.Target != filepath.Join(root, "llm-wiki") {
 		t.Fatalf("unexpected target %s", result.Target)
+	}
+	skillBytes, err := os.ReadFile(filepath.Join(result.Target, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	skillText := string(skillBytes)
+	if !strings.Contains(skillText, "读取目标知识库根目录下的 `AGENTS.md`") ||
+		!strings.Contains(skillText, "`knowledge/` 中已发布 Markdown 是唯一最终事实源") {
+		t.Fatalf("installed skill omitted the Vault bootstrap or fact boundary: %s", skillText)
 	}
 	status, err := GetStatus("codex")
 	if err != nil || !status.Installed || len(status.Modified) != 0 {

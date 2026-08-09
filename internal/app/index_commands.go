@@ -2,15 +2,49 @@ package app
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
+	"llm-wiki/internal/config"
 	"llm-wiki/internal/document"
+	"llm-wiki/internal/fsutil"
 	indexstore "llm-wiki/internal/index"
+	"llm-wiki/internal/publish"
 	"llm-wiki/internal/vault"
 )
+
+var (
+	errQueryIndexStale = errors.New("search index does not match published knowledge")
+)
+
+type queryEvidence struct {
+	KnowledgeID string               `json:"knowledge_id"`
+	Title       string               `json:"title"`
+	Type        string               `json:"type"`
+	Path        string               `json:"path"`
+	ChunkID     string               `json:"chunk_id"`
+	Ordinal     int                  `json:"ordinal"`
+	HeadingPath string               `json:"heading_path,omitempty"`
+	Body        string               `json:"body"`
+	StartLine   int                  `json:"start_line"`
+	EndLine     int                  `json:"end_line"`
+	Score       float64              `json:"score"`
+	ContentHash string               `json:"content_hash"`
+	FileHash    string               `json:"file_hash"`
+	Sources     []document.SourceRef `json:"sources"`
+	Metadata    document.Metadata    `json:"metadata"`
+}
+
+type loadedQueryDocument struct {
+	doc      *document.Document
+	path     string
+	fileHash string
+	lines    []string
+}
 
 func newIndexCommand(rt *Runtime) *cobra.Command {
 	cmd := &cobra.Command{Use: "index", Short: "Inspect and rebuild the disposable SQLite search index"}
@@ -82,40 +116,151 @@ func newQueryCommand(rt *Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			recoveryWarnings, err := recoverIfNeeded(cfg, rt.DryRun)
+			pending, err := publish.PendingOperations(cfg)
 			if err != nil {
-				return err
+				return E("RECOVERY_INSPECTION_FAILED", "cannot inspect interrupted wiki transactions", ExitIO, err)
 			}
-			syncResult, err := indexstore.Update(cfg, rt.DryRun)
-			if err != nil {
-				if errors.Is(err, vault.ErrLocked) {
-					return E("WIKI_LOCKED", "wiki is locked by another writer", ExitLock, err)
-				}
-				return E("INDEX_SYNC_FAILED", "cannot synchronize index from file facts", ExitIndex, err)
+			if len(pending) > 0 {
+				recoveryErr := E("RECOVERY_REQUIRED", "query is read-only and cannot continue while publication recovery is required", ExitConflict, nil)
+				recoveryErr.Details = map[string]any{"operations": pending}
+				return recoveryErr
 			}
-			if rt.DryRun && (syncResult.FullRebuild || syncResult.Added > 0 || syncResult.Changed > 0 || syncResult.Deleted > 0) {
-				err := E("INDEX_SYNC_REQUIRED", "query dry-run found an index that requires synchronization", ExitConflict, nil)
-				err.Details = map[string]any{"index_plan": syncResult}
-				return err
-			}
-			if syncResult.FullRebuild || syncResult.Added > 0 || syncResult.Changed > 0 || syncResult.Deleted > 0 {
-				recoveryWarnings = append(recoveryWarnings, "search index was synchronized from knowledge files before querying")
-			}
-			items, err := indexstore.Query(cfg, args[0], limit)
+			candidates, err := indexstore.SearchCandidates(cfg, args[0], limit)
 			if errors.Is(err, os.ErrNotExist) {
 				return E("INDEX_NOT_FOUND", "index does not exist; run llm-wiki index rebuild", ExitIndex, err)
+			}
+			if errors.Is(err, indexstore.ErrStale) {
+				return E("INDEX_STALE", "index metadata does not match this wiki; run llm-wiki index update", ExitConflict, err)
 			}
 			if err != nil {
 				return E("QUERY_FAILED", "cannot query index", ExitIndex, err)
 			}
+			items, err := hydrateQueryCandidates(cfg, candidates)
+			if errors.Is(err, errQueryIndexStale) {
+				return E("INDEX_STALE", "index candidates do not match published knowledge; run llm-wiki index update", ExitConflict, err)
+			}
+			if err != nil {
+				return E("KNOWLEDGE_READ_FAILED", "cannot load published knowledge selected by the index", ExitIO, err)
+			}
 			return rt.Success("query", ref, map[string]any{
 				"query": args[0], "evidence": items, "count": len(items),
-				"answer_generated": false,
-			}, recoveryWarnings, nil)
+				"answer_generated": false, "facts_from": "knowledge_markdown",
+			}, nil, nil)
 		},
 	}
 	cmd.Flags().IntVar(&limit, "limit", 8, "maximum evidence chunks")
 	return cmd
+}
+
+func hydrateQueryCandidates(cfg *config.Instance, candidates []indexstore.Candidate) ([]queryEvidence, error) {
+	cache := map[string]*loadedQueryDocument{}
+	items := make([]queryEvidence, 0, len(candidates))
+	for _, candidate := range candidates {
+		loaded := cache[candidate.KnowledgeID]
+		if loaded == nil {
+			var err error
+			loaded, err = loadIndexedKnowledge(cfg, candidate)
+			if err != nil {
+				return nil, err
+			}
+			cache[candidate.KnowledgeID] = loaded
+		} else if loaded.path != candidate.Path || loaded.fileHash != candidate.IndexedFileHash ||
+			loaded.doc.Metadata.ContentHash != candidate.IndexedContentHash {
+			return nil, fmt.Errorf("%w: inconsistent candidates for %s", errQueryIndexStale, candidate.KnowledgeID)
+		}
+		body, heading, err := candidateExcerpt(loaded.lines, candidate)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, queryEvidence{
+			KnowledgeID: loaded.doc.Metadata.ID,
+			Title:       loaded.doc.Metadata.Title,
+			Type:        loaded.doc.Metadata.Type,
+			Path:        loaded.path,
+			ChunkID:     candidate.ChunkID,
+			Ordinal:     candidate.Ordinal,
+			HeadingPath: heading,
+			Body:        body,
+			StartLine:   candidate.StartLine,
+			EndLine:     candidate.EndLine,
+			Score:       candidate.Score,
+			ContentHash: loaded.doc.Metadata.ContentHash,
+			FileHash:    loaded.fileHash,
+			Sources:     loaded.doc.Metadata.Sources,
+			Metadata:    loaded.doc.Metadata,
+		})
+	}
+	return items, nil
+}
+
+func loadIndexedKnowledge(cfg *config.Instance, candidate indexstore.Candidate) (*loadedQueryDocument, error) {
+	cleanPath := filepath.ToSlash(filepath.Clean(filepath.FromSlash(candidate.Path)))
+	knowledgeRoot := filepath.ToSlash(filepath.Clean(cfg.Paths.Knowledge))
+	if cleanPath != candidate.Path || !strings.HasPrefix(cleanPath, knowledgeRoot+"/") {
+		return nil, fmt.Errorf("%w: candidate path %q is outside knowledge", errQueryIndexStale, candidate.Path)
+	}
+	target := filepath.Join(cfg.Root, filepath.FromSlash(cleanPath))
+	if err := vault.EnsureInside(cfg.KnowledgeDir(), target); err != nil {
+		return nil, fmt.Errorf("%w: %v", errQueryIndexStale, err)
+	}
+	if err := fsutil.EnsureNoSymlinkPath(cfg.Root, target); err != nil {
+		return nil, fmt.Errorf("%w: %v", errQueryIndexStale, err)
+	}
+	doc, err := document.Read(target)
+	if err != nil {
+		return nil, fmt.Errorf("%w: cannot read %s: %v", errQueryIndexStale, cleanPath, err)
+	}
+	if err := doc.Validate("knowledge", cfg.Publish.RequireSources); err != nil {
+		return nil, fmt.Errorf("%w: %s is invalid: %v", errQueryIndexStale, cleanPath, err)
+	}
+	if doc.Metadata.ID != candidate.KnowledgeID || doc.Metadata.ContentHash != candidate.IndexedContentHash {
+		return nil, fmt.Errorf("%w: identity or content hash changed for %s", errQueryIndexStale, cleanPath)
+	}
+	b, err := os.ReadFile(target)
+	if err != nil {
+		return nil, err
+	}
+	fileHash := document.HashBytes(b)
+	if fileHash != candidate.IndexedFileHash {
+		return nil, fmt.Errorf("%w: file hash changed for %s", errQueryIndexStale, cleanPath)
+	}
+	return &loadedQueryDocument{
+		doc: doc, path: cleanPath, fileHash: fileHash,
+		lines: strings.Split(string(document.NormalizeMarkdownBody(doc.Body)), "\n"),
+	}, nil
+}
+
+func candidateExcerpt(lines []string, candidate indexstore.Candidate) (string, string, error) {
+	if candidate.StartLine < 1 || candidate.EndLine < candidate.StartLine || candidate.EndLine > len(lines) {
+		return "", "", fmt.Errorf("%w: invalid line range for %s", errQueryIndexStale, candidate.ChunkID)
+	}
+	selected := lines[candidate.StartLine-1 : candidate.EndLine]
+	body := strings.TrimSpace(strings.Join(selected, "\n"))
+	if document.HashBytes([]byte(body)) != candidate.BodyHash {
+		return "", "", fmt.Errorf("%w: chunk locator changed for %s", errQueryIndexStale, candidate.ChunkID)
+	}
+	heading := ""
+	for _, line := range selected {
+		if value := markdownHeading(line); value != "" {
+			heading = value
+		}
+	}
+	return body, heading, nil
+}
+
+func markdownHeading(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "#") {
+		return ""
+	}
+	i := 0
+	for i < len(trimmed) && trimmed[i] == '#' {
+		i++
+	}
+	if i > 6 || i >= len(trimmed) || trimmed[i] != ' ' {
+		return ""
+	}
+	return strings.TrimSpace(trimmed[i:])
 }
 
 func newShowCommand(rt *Runtime) *cobra.Command {
@@ -136,19 +281,10 @@ func newShowCommand(rt *Runtime) *cobra.Command {
 			if err := doc.Validate("knowledge", cfg.Publish.RequireSources); err != nil {
 				return E("KNOWLEDGE_INVALID", "published knowledge failed file validation", ExitValidation, err)
 			}
-			for _, source := range doc.Metadata.Sources {
-				rawDoc, sourceErr := document.FindByID(cfg.RawDir(), source.ID)
-				if sourceErr != nil {
-					return E("KNOWLEDGE_SOURCE_INVALID", "published knowledge source is missing", ExitValidation, sourceErr)
-				}
-				actual, sourceErr := rawDoc.ActualContentHash()
-				if sourceErr != nil || actual != source.ContentHash || rawDoc.Metadata.ContentHash != actual {
-					return E("KNOWLEDGE_SOURCE_INVALID", "published knowledge source changed", ExitValidation, sourceErr)
-				}
-			}
 			rel, _ := filepath.Rel(cfg.Root, doc.Path)
 			return rt.Success("show", ref, map[string]any{
 				"path": filepath.ToSlash(rel), "metadata": doc.Metadata, "body": string(doc.Body),
+				"facts_from": "knowledge_markdown",
 			}, nil, nil)
 		},
 	}

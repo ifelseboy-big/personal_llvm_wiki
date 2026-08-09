@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 
 	"llm-wiki/internal/config"
 	"llm-wiki/internal/document"
+	indexstore "llm-wiki/internal/index"
 )
 
 func TestCompleteCLIWorkflow(t *testing.T) {
@@ -77,7 +79,7 @@ func TestAuxiliaryCLICommandSurface(t *testing.T) {
 	runCLI(t, "", "skill", "uninstall", "codex", "--yes", "--json", "--no-interactive")
 }
 
-func TestQuerySynchronizesFromFilesAndTraceHashesActualEvidence(t *testing.T) {
+func TestQueryUsesIndexForCandidatesAndKnowledgeForFacts(t *testing.T) {
 	t.Setenv("LLM_WIKI_CONFIG", filepath.Join(t.TempDir(), "user-config.toml"))
 	root := filepath.Join(t.TempDir(), "wiki")
 	runCLI(t, "", "init", root, "--name", "facts", "--json", "--no-interactive")
@@ -101,14 +103,42 @@ func TestQuerySynchronizesFromFilesAndTraceHashesActualEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	db, err := sql.Open("sqlite", indexstore.DBPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE chunks SET body='Poisoned SQLite body' WHERE document_id=?`, knowledgeID); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE documents SET title='Poisoned SQLite title',metadata_json='{}' WHERE id=?`, knowledgeID); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	query := runCLI(t, "", "query", "Original evidence", "--wiki", root, "--json", "--no-interactive")
+	if body := nestedString(t, query.Data, "evidence", 0, "body"); !strings.Contains(body, "Original evidence.") || strings.Contains(body, "Poisoned") {
+		t.Fatalf("query returned cached SQLite body instead of published Markdown: %q", body)
+	}
+	if title := nestedString(t, query.Data, "evidence", 0, "title"); title != "File facts" {
+		t.Fatalf("query returned cached SQLite metadata instead of published Markdown: %q", title)
+	}
+
 	knowledge.Body = append(knowledge.Body, []byte("\nUniqueFileFactToken\n")...)
 	knowledge.Metadata.ContentHash = document.HashBytes(document.NormalizeMarkdownBody(knowledge.Body))
 	if err := document.Write(knowledge.Path, knowledge.Metadata, knowledge.Body); err != nil {
 		t.Fatal(err)
 	}
-	query := runCLI(t, "", "query", "UniqueFileFactToken", "--wiki", root, "--json", "--no-interactive")
-	if nestedFloat(t, query.Data, "count") < 1 || len(query.Warnings) == 0 {
-		t.Fatalf("query did not synchronize from file facts: %#v", query)
+	stale := runCLIFailure(t, "", "query", "Original evidence", "--wiki", root, "--json", "--no-interactive")
+	if stale.Error == nil || stale.Error.Code != "INDEX_STALE" {
+		t.Fatalf("query trusted a stale index: %#v", stale)
+	}
+	runCLI(t, "", "index", "update", "--wiki", root, "--json", "--no-interactive")
+	query = runCLI(t, "", "query", "UniqueFileFactToken", "--wiki", root, "--json", "--no-interactive")
+	if nestedFloat(t, query.Data, "count") < 1 {
+		t.Fatalf("query did not use the explicitly updated index: %#v", query)
 	}
 
 	path := filepath.Join(root, filepath.FromSlash(rawPath))
@@ -119,6 +149,10 @@ func TestQuerySynchronizesFromFilesAndTraceHashesActualEvidence(t *testing.T) {
 	b = bytes.Replace(b, []byte("Original evidence."), []byte("Tampered evidence."), 1)
 	if err := os.WriteFile(path, b, 0o600); err != nil {
 		t.Fatal(err)
+	}
+	query = runCLI(t, "", "query", "UniqueFileFactToken", "--wiki", root, "--json", "--no-interactive")
+	if body := nestedString(t, query.Data, "evidence", 0, "body"); !strings.Contains(body, "UniqueFileFactToken") {
+		t.Fatalf("raw drift incorrectly prevented reading the published knowledge fact: %#v", query)
 	}
 	trace := runCLI(t, "", "trace", knowledgeID, "--wiki", root, "--json", "--no-interactive")
 	data := trace.Data.(map[string]any)
@@ -146,6 +180,28 @@ func runCLI(t *testing.T, stdin string, args ...string) Response {
 	b, _ := json.Marshal(response.Data)
 	_ = json.Unmarshal(b, &generic)
 	response.Data = generic
+	return response
+}
+
+func runCLIFailure(t *testing.T, stdin string, args ...string) Response {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	root := NewRootCommandWithIO(strings.NewReader(stdin), &stdout, &stderr)
+	root.SetArgs(args)
+	err := root.Execute()
+	if err == nil {
+		t.Fatalf("command %v unexpectedly succeeded stdout=%s", args, stdout.String())
+	}
+	if code := RenderFailure(root, err); code == ExitOK {
+		t.Fatalf("command %v returned a zero failure code", args)
+	}
+	var response Response
+	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
+		t.Fatalf("decode %v failure output %q: %v stderr=%s", args, stdout.String(), err, stderr.String())
+	}
+	if response.OK || response.Error == nil {
+		t.Fatalf("command %v returned invalid failure %#v", args, response)
+	}
 	return response
 }
 

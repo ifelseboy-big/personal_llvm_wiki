@@ -17,4 +17,4 @@
 
 草稿中的系统属性不能覆盖工具生成值。`sources` 保存 raw ID 与发布时内容哈希的绑定，虽然 Obsidian Properties 界面不能直接编辑其嵌套结构，但不得拍平、删除或转存到 SQLite。需要查看或修改时使用源码模式和受控发布流程。
 
-SQLite 中的元数据只是文件解析缓存；Markdown frontmatter 始终是元数据事实来源。
+SQLite 中的 `metadata_json`、全文字段和 chunk 正文只是文件解析缓存；查询只用它们选择候选。最终元数据必须重新读取 `knowledge/` Markdown frontmatter，不能从 SQLite、raw 或派生文件补写事实。

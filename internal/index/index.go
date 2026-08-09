@@ -52,20 +52,20 @@ type UpdateResult struct {
 	FullRebuild bool   `json:"full_rebuild"`
 }
 
-type Evidence struct {
-	KnowledgeID string               `json:"knowledge_id"`
-	Title       string               `json:"title"`
-	Type        string               `json:"type"`
-	Path        string               `json:"path"`
-	ChunkID     string               `json:"chunk_id"`
-	Ordinal     int                  `json:"ordinal"`
-	HeadingPath string               `json:"heading_path,omitempty"`
-	Body        string               `json:"body"`
-	StartLine   int                  `json:"start_line"`
-	EndLine     int                  `json:"end_line"`
-	Score       float64              `json:"score"`
-	Sources     []document.SourceRef `json:"sources"`
+type Candidate struct {
+	KnowledgeID        string  `json:"knowledge_id"`
+	Path               string  `json:"path"`
+	ChunkID            string  `json:"chunk_id"`
+	Ordinal            int     `json:"ordinal"`
+	StartLine          int     `json:"start_line"`
+	EndLine            int     `json:"end_line"`
+	BodyHash           string  `json:"body_hash"`
+	IndexedFileHash    string  `json:"indexed_file_hash"`
+	IndexedContentHash string  `json:"indexed_content_hash"`
+	Score              float64 `json:"score"`
 }
+
+var ErrStale = errors.New("search index is stale")
 
 type chunk struct {
 	ID          string
@@ -614,7 +614,7 @@ func totalDocuments(items map[string]int) int {
 	return total
 }
 
-func Query(cfg *config.Instance, question string, limit int) ([]Evidence, error) {
+func SearchCandidates(cfg *config.Instance, question string, limit int) ([]Candidate, error) {
 	if strings.TrimSpace(question) == "" {
 		return nil, errors.New("query must not be empty")
 	}
@@ -630,36 +630,43 @@ func Query(cfg *config.Instance, question string, limit int) ([]Evidence, error)
 		return nil, err
 	}
 	defer db.Close()
+	var schemaVersion, wikiID string
+	if err := db.QueryRow(`SELECT value FROM meta WHERE key='schema_version'`).Scan(&schemaVersion); err != nil {
+		return nil, fmt.Errorf("%w: index schema metadata is missing", ErrStale)
+	}
+	if err := db.QueryRow(`SELECT value FROM meta WHERE key='wiki_id'`).Scan(&wikiID); err != nil {
+		return nil, fmt.Errorf("%w: index wiki metadata is missing", ErrStale)
+	}
+	if schemaVersion != fmt.Sprintf("%d", SchemaVersion) || wikiID != cfg.InstanceID {
+		return nil, fmt.Errorf("%w: schema or wiki identity does not match", ErrStale)
+	}
 	match := matchQuery(question)
 	if match == "" {
 		return nil, errors.New("query contains no searchable characters")
 	}
 	rows, err := db.Query(`
-		SELECT d.id,d.title,d.type,d.path,c.id,c.ordinal,c.heading_path,c.body,c.start_line,c.end_line,
-		       bm25(chunks_fts,0.0,0.0,8.0,4.0,6.0,1.0) AS rank,d.metadata_json
+		SELECT d.id,d.path,c.id,c.ordinal,c.start_line,c.end_line,c.body_hash,
+		       f.file_hash,d.content_hash,
+		       bm25(chunks_fts,0.0,0.0,8.0,4.0,6.0,1.0) AS rank
 		FROM chunks_fts
 		JOIN chunks c ON c.id=chunks_fts.chunk_id
 		JOIN documents d ON d.id=c.document_id
+		JOIN files f ON f.document_id=d.id AND f.path=d.path
 		WHERE chunks_fts MATCH ? AND d.layer='knowledge'
 		ORDER BY rank ASC,d.id ASC,c.ordinal ASC LIMIT ?`, match, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []Evidence
+	var out []Candidate
 	for rows.Next() {
-		var item Evidence
+		var item Candidate
 		var rank float64
-		var metadataJSON string
-		if err := rows.Scan(&item.KnowledgeID, &item.Title, &item.Type, &item.Path, &item.ChunkID, &item.Ordinal,
-			&item.HeadingPath, &item.Body, &item.StartLine, &item.EndLine, &rank, &metadataJSON); err != nil {
+		if err := rows.Scan(&item.KnowledgeID, &item.Path, &item.ChunkID, &item.Ordinal,
+			&item.StartLine, &item.EndLine, &item.BodyHash,
+			&item.IndexedFileHash, &item.IndexedContentHash, &rank); err != nil {
 			return nil, err
 		}
-		var meta document.Metadata
-		if err := json.Unmarshal([]byte(metadataJSON), &meta); err != nil {
-			return nil, err
-		}
-		item.Sources = meta.Sources
 		item.Score = -rank
 		out = append(out, item)
 	}

@@ -85,7 +85,7 @@ func TestFileFirstFullWorkflowAndRebuildEquivalence(t *testing.T) {
 	if metadataUpdate.Changed != 1 {
 		t.Fatalf("frontmatter-only change was not incrementally indexed: %#v", metadataUpdate)
 	}
-	tagged, err := indexstore.Query(cfg, "独有检索标签", 8)
+	tagged, err := indexstore.SearchCandidates(cfg, "独有检索标签", 8)
 	if err != nil || len(tagged) != 1 || tagged[0].KnowledgeID != proposal.Proposal.KnowledgeID {
 		t.Fatalf("updated tag is not searchable: %#v %v", tagged, err)
 	}
@@ -106,12 +106,12 @@ func TestFileFirstFullWorkflowAndRebuildEquivalence(t *testing.T) {
 	if err := publish.CompleteOperation(cfg, freshApply.OperationID); err != nil {
 		t.Fatal(err)
 	}
-	before, err := indexstore.Query(cfg, "LLVM 的核心结论", 8)
+	before, err := indexstore.SearchCandidates(cfg, "LLVM 的核心结论", 8)
 	if err != nil || len(before) == 0 {
 		t.Fatalf("query before rebuild: %v %#v", err, before)
 	}
-	if before[0].KnowledgeID != proposal.Proposal.KnowledgeID || before[0].Sources[0].ID != added[0].ID {
-		t.Fatalf("query lost provenance: %#v", before[0])
+	if before[0].KnowledgeID != proposal.Proposal.KnowledgeID || knowledgeDoc.Metadata.Sources[0].ID != added[0].ID {
+		t.Fatalf("candidate lookup or published provenance was lost: %#v %#v", before[0], knowledgeDoc.Metadata.Sources)
 	}
 	if err := os.Remove(indexstore.DBPath(cfg)); err != nil {
 		t.Fatal(err)
@@ -119,7 +119,7 @@ func TestFileFirstFullWorkflowAndRebuildEquivalence(t *testing.T) {
 	if _, err := indexstore.Rebuild(cfg); err != nil {
 		t.Fatal(err)
 	}
-	after, err := indexstore.Query(cfg, "LLVM 的核心结论", 8)
+	after, err := indexstore.SearchCandidates(cfg, "LLVM 的核心结论", 8)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +244,7 @@ Property-backed knowledge.
 		t.Fatal(err)
 	}
 	for _, query := range []string{"AliasOnlyZXQ", "DescriptionOnlyZXQ", "RelatedOnlyZXQ"} {
-		matches, err := indexstore.Query(cfg, query, 8)
+		matches, err := indexstore.SearchCandidates(cfg, query, 8)
 		if err != nil || len(matches) != 1 || matches[0].KnowledgeID != proposal.Proposal.KnowledgeID {
 			t.Fatalf("property %q is not searchable: %#v %v", query, matches, err)
 		}
@@ -296,11 +296,11 @@ Property-backed knowledge.
 	if _, err := indexstore.Update(cfg, false); err != nil {
 		t.Fatal(err)
 	}
-	updatedMatches, err := indexstore.Query(cfg, "DescriptionUpdatedZXQ", 8)
+	updatedMatches, err := indexstore.SearchCandidates(cfg, "DescriptionUpdatedZXQ", 8)
 	if err != nil || len(updatedMatches) != 1 {
 		t.Fatalf("updated property is not searchable: %#v %v", updatedMatches, err)
 	}
-	oldMatches, err := indexstore.Query(cfg, "DescriptionOnlyZXQ", 8)
+	oldMatches, err := indexstore.SearchCandidates(cfg, "DescriptionOnlyZXQ", 8)
 	if err != nil || len(oldMatches) != 0 {
 		t.Fatalf("deleted property value remains searchable: %#v %v", oldMatches, err)
 	}

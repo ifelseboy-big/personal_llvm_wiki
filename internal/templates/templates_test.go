@@ -3,6 +3,7 @@ package templates_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"llm-wiki/internal/document"
@@ -15,8 +16,19 @@ func TestPersonalTemplatesExposeObsidianProperties(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Version != "1.1.0" {
+	if manifest.Version != "1.1.1" {
 		t.Fatalf("unexpected personal template version %s", manifest.Version)
+	}
+	agents, err := templates.ReadFile("personal", "AGENTS.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(agents), "`knowledge/` 中经过发布的 Markdown 是唯一最终事实源") ||
+		!strings.Contains(string(agents), "| `raw add` | [[rules/capture|采集规则]]") {
+		t.Fatalf("personal AGENTS.md omitted the fact boundary or operation routing: %s", agents)
+	}
+	if _, err := templates.ReadFile("personal", "rules/lifecycle.md"); err != nil {
+		t.Fatalf("personal template omitted lifecycle routing target: %v", err)
 	}
 	for _, name := range []string{"concept", "guide", "reference", "decision", "project"} {
 		item, err := templates.ReadContent(nil, "knowledge", name)

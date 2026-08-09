@@ -20,7 +20,7 @@ import (
 	resourcebundle "llm-wiki/resources"
 )
 
-const SkillVersion = "1.0.0"
+const SkillVersion = "1.1.0"
 
 type OwnedFile struct {
 	Path string `json:"path"`
