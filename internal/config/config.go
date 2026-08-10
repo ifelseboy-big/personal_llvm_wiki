@@ -32,7 +32,6 @@ type TemplateConfig struct {
 type PathsConfig struct {
 	Raw       string `toml:"raw" json:"raw"`
 	Knowledge string `toml:"knowledge" json:"knowledge"`
-	Derived   string `toml:"derived" json:"derived"`
 	Templates string `toml:"templates" json:"templates"`
 	Rules     string `toml:"rules" json:"rules"`
 	Runtime   string `toml:"runtime" json:"runtime"`
@@ -74,9 +73,9 @@ func DefaultInstance(name, id string, now time.Time) *Instance {
 		InstanceID:    id,
 		Name:          name,
 		CreatedAt:     now.Format(time.RFC3339),
-		Template:      TemplateConfig{Name: "personal", Version: "1.3.0"},
+		Template:      TemplateConfig{Name: "personal", Version: "1.4.0"},
 		Paths: PathsConfig{
-			Raw: "raw", Knowledge: "knowledge", Derived: "llm-wiki",
+			Raw: "raw", Knowledge: "knowledge",
 			Templates: "templates", Rules: "rules", Runtime: ".llm-wiki",
 		},
 		Publish:  PublishConfig{RequireSources: true},
@@ -169,7 +168,7 @@ func (c *Instance) Validate() error {
 	if c.Template.Name == "" || !validTemplateVersion.MatchString(c.Template.Version) {
 		return errors.New("template name or semantic version is invalid")
 	}
-	paths := []string{c.Paths.Raw, c.Paths.Knowledge, c.Paths.Derived, c.Paths.Templates, c.Paths.Rules, c.Paths.Runtime}
+	paths := []string{c.Paths.Raw, c.Paths.Knowledge, c.Paths.Templates, c.Paths.Rules, c.Paths.Runtime}
 	cleanPaths := make([]string, 0, len(paths))
 	seen := map[string]bool{}
 	for _, p := range paths {
@@ -238,7 +237,6 @@ func pathsOverlap(a, b string) bool {
 func (c *Instance) Path(relative string) string { return filepath.Join(c.Root, relative) }
 func (c *Instance) RawDir() string              { return c.Path(c.Paths.Raw) }
 func (c *Instance) KnowledgeDir() string        { return c.Path(c.Paths.Knowledge) }
-func (c *Instance) DerivedDir() string          { return c.Path(c.Paths.Derived) }
 func (c *Instance) TemplatesDir() string        { return c.Path(c.Paths.Templates) }
 func (c *Instance) RulesDir() string            { return c.Path(c.Paths.Rules) }
 func (c *Instance) RuntimeDir() string          { return c.Path(c.Paths.Runtime) }

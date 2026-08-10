@@ -183,11 +183,10 @@ func hydrateQueryCandidates(cfg *config.Instance, candidates []indexstore.Candid
 				return nil, nil, err
 			}
 			cache[candidate.KnowledgeID] = loaded
-			legacy, governanceErr := governance.ValidateStored(cfg, loaded.doc, time.Now())
-			if governanceErr != nil {
+			if governanceErr := governance.ValidateStored(cfg, loaded.doc, time.Now()); governanceErr != nil {
 				return nil, nil, fmt.Errorf("%w: %s: %v", errKnowledgeGovernance, candidate.KnowledgeID, governanceErr)
 			}
-			assessment, assessmentErr := governance.AssessStoredLifecycle(cfg, loaded.doc.Metadata, time.Now(), legacy)
+			assessment, assessmentErr := governance.AssessStoredLifecycle(cfg, loaded.doc.Metadata, time.Now())
 			if assessmentErr != nil {
 				return nil, nil, fmt.Errorf("%w: %s: %v", errKnowledgeGovernance, candidate.KnowledgeID, assessmentErr)
 			}
@@ -312,11 +311,10 @@ func newShowCommand(rt *Runtime) *cobra.Command {
 			if err := doc.Validate("knowledge", cfg.Publish.RequireSources); err != nil {
 				return E("KNOWLEDGE_INVALID", "published knowledge failed file validation", ExitValidation, err)
 			}
-			legacy, governanceErr := governance.ValidateStored(cfg, doc, time.Now())
-			if governanceErr != nil {
+			if governanceErr := governance.ValidateStored(cfg, doc, time.Now()); governanceErr != nil {
 				return E("KNOWLEDGE_INVALID", "published knowledge failed governance validation", ExitValidation, governanceErr)
 			}
-			assessment, assessmentErr := governance.AssessStoredLifecycle(cfg, doc.Metadata, time.Now(), legacy)
+			assessment, assessmentErr := governance.AssessStoredLifecycle(cfg, doc.Metadata, time.Now())
 			if assessmentErr != nil {
 				return E("KNOWLEDGE_INVALID", "published knowledge has invalid lifecycle metadata", ExitValidation, assessmentErr)
 			}

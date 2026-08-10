@@ -12,7 +12,6 @@ import (
 
 	"llm-wiki/internal/config"
 	"llm-wiki/internal/document"
-	"llm-wiki/internal/governance"
 	"llm-wiki/internal/publish"
 	"llm-wiki/internal/raw"
 	"llm-wiki/internal/vault"
@@ -217,66 +216,6 @@ func TestSimpleChineseRetrievalRankingAndFallback(t *testing.T) {
 	}
 	if !foundInactive {
 		t.Fatal("include-inactive did not return superseded knowledge")
-	}
-
-	legacyRaw, err := raw.Add(cfg, raw.AddOptions{
-		Input: "-", Name: "legacy-source.md", Stdin: bytes.NewBufferString("# Legacy source\n"), Now: base.Add(24 * time.Hour),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacyBody := []byte("# LegacyCustomLifecycleZXQ\n\nLegacy searchable body.\n")
-	legacyMeta := document.Metadata{
-		ID: "know_01arz3ndektsv4rrffq69g5fay", Type: "concept", Title: "LegacyCustomLifecycleZXQ", Status: "published",
-		PublishedAt: base.Format(time.RFC3339), UpdatedAt: base.Format(time.RFC3339), ContentHash: document.HashBytes(legacyBody),
-		Sources:           []document.SourceRef{{ID: legacyRaw[0].ID, ContentHash: legacyRaw[0].ContentHash}},
-		GovernanceVersion: "pre-1.2-user-property",
-		Extra:             map[string]any{"lifecycle": "retracted"},
-	}
-	legacyPath := filepath.Join(cfg.KnowledgeDir(), "concept", "legacy-custom--"+legacyMeta.ID+".md")
-	if err := document.Write(legacyPath, legacyMeta, legacyBody); err != nil {
-		t.Fatal(err)
-	}
-	cfg.Template.Version = "1.1.1"
-	if _, err := Update(cfg, false); err != nil {
-		t.Fatal(err)
-	}
-	preUpgradeMatches, err := Search(cfg, "LegacyCustomLifecycleZXQ", 8)
-	if err != nil {
-		t.Fatal(err)
-	}
-	foundPreUpgrade := false
-	for _, candidate := range preUpgradeMatches.Candidates {
-		foundPreUpgrade = foundPreUpgrade || candidate.KnowledgeID == legacyMeta.ID
-	}
-	if !foundPreUpgrade {
-		t.Fatal("new binary applied personal 1.2 lifecycle filtering before explicit template upgrade")
-	}
-	cfg.Template.Version = "1.2.0"
-	legacyMeta.GovernanceVersion = ""
-	if err := document.Write(legacyPath, legacyMeta, legacyBody); err != nil {
-		t.Fatal(err)
-	}
-	legacyBytes, err := os.ReadFile(legacyPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := governance.WriteLegacyBaseline(cfg, map[string]string{legacyMeta.ID: document.HashBytes(legacyBytes)}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Update(cfg, false); err != nil {
-		t.Fatal(err)
-	}
-	legacyMatches, err := Search(cfg, "LegacyCustomLifecycleZXQ", 8)
-	if err != nil {
-		t.Fatal(err)
-	}
-	foundLegacy := false
-	for _, candidate := range legacyMatches.Candidates {
-		foundLegacy = foundLegacy || candidate.KnowledgeID == legacyMeta.ID
-	}
-	if !foundLegacy {
-		t.Fatal("default query hid upgrade-baselined legacy knowledge because of a pre-1.2 lifecycle property")
 	}
 
 	db, err := openDB(DBPath(cfg))

@@ -3,6 +3,7 @@ package templates_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,9 +13,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"llm-wiki/internal/config"
 	"llm-wiki/internal/document"
-	"llm-wiki/internal/governance"
 	"llm-wiki/internal/templates"
 	"llm-wiki/internal/vault"
 )
@@ -50,7 +49,7 @@ func TestPersonalTemplatesExposeObsidianProperties(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Version != "1.3.0" {
+	if manifest.Version != "1.4.0" {
 		t.Fatalf("unexpected personal template version %s", manifest.Version)
 	}
 	agents, err := templates.ReadFile("personal", "AGENTS.md")
@@ -105,9 +104,6 @@ func TestCreateDraftRendersSafelyAndProtectsManagedPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := initialized.Config
-	if err := os.RemoveAll(cfg.DerivedDir()); err != nil {
-		t.Fatal(err)
-	}
 	title := `Use "foo" \\ path`
 	output := filepath.Join(t.TempDir(), "draft.md")
 	result, err := templates.CreateDraft(cfg, templates.CreateOptions{
@@ -118,7 +114,7 @@ func TestCreateDraftRendersSafelyAndProtectsManagedPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.TemplateVersion != "1.3.0" || !strings.Contains(result.NextCommandHint, "publish propose") {
+	if result.TemplateVersion != "1.4.0" || !strings.Contains(result.NextCommandHint, "publish propose") {
 		t.Fatalf("unexpected result: %#v", result)
 	}
 	b, err := os.ReadFile(output)
@@ -189,25 +185,18 @@ func TestTemplateUpgradePreservesUserChanges(t *testing.T) {
 	}
 }
 
-func TestTemplateUpgradeBaselinesLegacyKnowledgeWithLifecycle(t *testing.T) {
+func TestTemplateUpgradeRemovesUnmodifiedObsoleteFile(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "wiki")
-	initialized, err := vault.Init(vault.InitOptions{Path: root, Name: "legacy-upgrade", Template: "personal"})
+	initialized, err := vault.Init(vault.InitOptions{Path: root, Name: "obsolete-template", Template: "personal"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := initialized.Config
-	body := []byte("# Legacy with lifecycle\n\nLegacy body.\n")
-	legacy := document.Metadata{
-		ID: "know_01arz3ndektsv4rrffq69g5faw", Type: "concept", Title: "Legacy with lifecycle", Status: "published",
-		PublishedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z", ContentHash: document.HashBytes(body),
-		Sources: []document.SourceRef{{ID: "raw_01arz3ndektsv4rrffq69g5fav", ContentHash: document.HashBytes([]byte("raw"))}},
-		Extra:   map[string]any{"lifecycle": "archived", "valid_until": "legacy-custom-value"},
-	}
-	legacyPath := filepath.Join(cfg.KnowledgeDir(), "concept", "legacy--"+legacy.ID+".md")
-	if err := document.Write(legacyPath, legacy, body); err != nil {
+	obsoletePath := filepath.Join(root, "rules", "derived.md")
+	obsoleteContent := []byte("# Legacy derived rule\n")
+	if err := os.WriteFile(obsoletePath, obsoleteContent, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	statePath := filepath.Join(cfg.RuntimeDir(), "template-state.json")
+	statePath := filepath.Join(initialized.Config.RuntimeDir(), "template-state.json")
 	stateBytes, err := os.ReadFile(statePath)
 	if err != nil {
 		t.Fatal(err)
@@ -216,7 +205,7 @@ func TestTemplateUpgradeBaselinesLegacyKnowledgeWithLifecycle(t *testing.T) {
 	if err := json.Unmarshal(stateBytes, &state); err != nil {
 		t.Fatal(err)
 	}
-	state.TemplateVersion = "1.1.1"
+	state.Files = append(state.Files, templates.FileState{Path: "rules/derived.md", Hash: document.HashBytes(obsoleteContent)})
 	stateBytes, err = json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -224,34 +213,20 @@ func TestTemplateUpgradeBaselinesLegacyKnowledgeWithLifecycle(t *testing.T) {
 	if err := os.WriteFile(statePath, append(stateBytes, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg.Template.Version = "1.1.1"
-	if err := config.Save(cfg); err != nil {
-		t.Fatal(err)
-	}
-	_, affected, err := templates.ApplyUpgrade(cfg, false, false)
+	plan, _, err := templates.ApplyUpgrade(initialized.Config, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	foundBaseline := false
-	for _, path := range affected {
-		foundBaseline = foundBaseline || path == governance.StateFileName
+	foundRemoval := false
+	for _, action := range plan.Actions {
+		if action.Path == "rules/derived.md" && action.Action == "remove" {
+			foundRemoval = true
+		}
 	}
-	if !foundBaseline {
-		t.Fatalf("upgrade did not report the durable governance baseline: %#v", affected)
+	if !foundRemoval {
+		t.Fatalf("obsolete unmodified file was not planned for removal: %#v", plan.Actions)
 	}
-	legacyDoc, err := document.Read(legacyPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	strict, isLegacy, err := governance.GovernanceMode(cfg, legacyDoc)
-	if err != nil || strict || !isLegacy {
-		t.Fatalf("legacy document with lifecycle was not recognized: strict=%v legacy=%v err=%v", strict, isLegacy, err)
-	}
-	assessment, err := governance.AssessStoredLifecycle(cfg, legacyDoc.Metadata, time.Now(), isLegacy)
-	if err != nil || assessment.Lifecycle != "current" || len(assessment.Warnings) != 1 {
-		t.Fatalf("legacy custom lifecycle was interpreted: %#v %v", assessment, err)
-	}
-	if _, err := os.Stat(filepath.Join(root, governance.StateFileName)); err != nil {
-		t.Fatalf("durable governance baseline is missing: %v", err)
+	if _, err := os.Stat(obsoletePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("obsolete unmodified file remains after upgrade: %v", err)
 	}
 }

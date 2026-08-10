@@ -1,4 +1,4 @@
-.PHONY: build test test-race vet fmt-check schema-check mod-verify goreleaser-check verify eval benchmark-index release-build release-snapshot release clean
+.PHONY: build test test-race vet fmt-check schema-check agents-check mod-verify goreleaser-check verify eval benchmark-index release-build release-snapshot release clean
 
 GO_TAGS := fts5 sqlite_omit_load_extension
 CGO_ENV := CGO_ENABLED=1 CC=clang CXX=clang++
@@ -21,13 +21,18 @@ fmt-check:
 schema-check:
 	jq empty schemas/*.json
 
+agents-check:
+	$(CGO_ENV) go test -tags "$(GO_TAGS)" ./tests/architecture
+	$(CGO_ENV) go test -tags "$(GO_TAGS)" ./internal/templates -run '^TestPersonalTemplateMatchesVersionedDesignBaseline$$'
+	git diff --check
+
 mod-verify:
 	go mod verify
 
 goreleaser-check:
 	goreleaser check
 
-verify: fmt-check schema-check mod-verify vet test test-race goreleaser-check
+verify: fmt-check schema-check agents-check mod-verify vet test test-race goreleaser-check
 	git diff --check
 
 eval:

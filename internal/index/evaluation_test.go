@@ -132,7 +132,7 @@ func createBenchmarkWiki(tb testing.TB, count int) *config.Instance {
 			Sources:     []document.SourceRef{{ID: added[0].ID, ContentHash: added[0].ContentHash}},
 			PublishedAt: base.Format(time.RFC3339), UpdatedAt: base.Format(time.RFC3339),
 			ContentHash:       document.HashBytes(document.NormalizeMarkdownBody(body)),
-			GovernanceVersion: governance.PersonalV12Version,
+			GovernanceVersion: governance.PersonalGovernanceVersion,
 			Extra:             map[string]any{"description": "Retrieval benchmark fixture", "lifecycle": "current"},
 		}
 		data, err := document.Render(meta, body)
@@ -179,7 +179,7 @@ func createRetrievalEvaluationWiki(tb testing.TB, documents []retrievalEvalDocum
 			Sources:     []document.SourceRef{{ID: added[0].ID, ContentHash: added[0].ContentHash}},
 			PublishedAt: base.Format(time.RFC3339), UpdatedAt: base.Format(time.RFC3339),
 			ContentHash: document.HashBytes(document.NormalizeMarkdownBody(body)), Tags: item.Tags, Aliases: item.Aliases,
-			GovernanceVersion: governance.PersonalV12Version,
+			GovernanceVersion: governance.PersonalGovernanceVersion,
 			Extra:             map[string]any{"description": "Retrieval evaluation fixture", "lifecycle": "current"},
 		}
 		path := filepath.Join(cfg.KnowledgeDir(), "concept", fmt.Sprintf("%05d--%s.md", i, id))

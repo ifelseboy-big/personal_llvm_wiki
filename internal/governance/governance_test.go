@@ -1,7 +1,6 @@
 package governance
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -47,22 +46,9 @@ func TestAssessLifecycleUsesLocalCalendarDatesAndDSTSafeEndOfDay(t *testing.T) {
 	if _, err := AssessLifecycle(meta, time.Date(2026, 3, 9, 0, 1, 0, 0, losAngeles)); err == nil {
 		t.Fatal("RFC3339 lifecycle timestamp was accepted even though the contract requires YYYY-MM-DD")
 	}
-}
-
-func TestStoredLifecycleIgnoresPreV12AndLegacyCustomProperties(t *testing.T) {
-	cfg := config.DefaultInstance("test", "wiki_01arz3ndektsv4rrffq69g5fav", time.Now())
-	meta := document.Metadata{ID: "know_01arz3ndektsv4rrffq69g5faw", Extra: map[string]any{
-		"lifecycle": []any{"archived"}, "valid_until": "not-a-date",
-	}}
-	cfg.Template.Version = "1.1.1"
-	assessment, err := AssessStoredLifecycle(cfg, meta, time.Now(), false)
-	if err != nil || assessment.Lifecycle != "current" || len(assessment.Warnings) != 0 {
-		t.Fatalf("pre-1.2 custom lifecycle changed behavior: %#v %v", assessment, err)
-	}
-	cfg.Template.Version = "1.2.0"
-	assessment, err = AssessStoredLifecycle(cfg, meta, time.Now(), true)
-	if err != nil || assessment.Lifecycle != "current" || len(assessment.Warnings) != 1 {
-		t.Fatalf("upgrade-baselined legacy lifecycle was interpreted: %#v %v", assessment, err)
+	delete(meta.Extra, "lifecycle")
+	if _, err := AssessLifecycle(meta, time.Now()); err == nil {
+		t.Fatal("missing lifecycle was defaulted instead of rejected")
 	}
 }
 
@@ -85,18 +71,18 @@ func TestParsedStringListsAndCodeExamplesAreHandledMechanically(t *testing.T) {
 	}
 }
 
-func TestValidateForPublishEnforcesPersonalV12Structure(t *testing.T) {
+func TestValidateForPublishEnforcesCurrentPersonalStructure(t *testing.T) {
 	cfg := config.DefaultInstance("test", "wiki_01arz3ndektsv4rrffq69g5fav", time.Now())
 	cfg.Root = t.TempDir()
 	body := []byte("# Valid knowledge\n\nSupported fact.[^" + testRawID + "-1]\n\n```md\n{{example}} llm-wiki:prompt [^fake]\n```\n\n[^" + testRawID + "-1]: locator: section 2\n")
 	valid := &document.Document{Metadata: document.Metadata{
 		ID: "know_01arz3ndektsv4rrffq69g5faw", Type: "concept", Title: "Valid knowledge",
-		GovernanceVersion: PersonalV12Version,
+		GovernanceVersion: PersonalGovernanceVersion,
 		Sources:           []document.SourceRef{{ID: testRawID}},
 		Extra:             map[string]any{"description": "A complete fixture", "lifecycle": "current"},
 	}, Body: body}
 	if err := ValidateForPublish(cfg, valid, time.Now()); err != nil {
-		t.Fatalf("valid personal 1.2 knowledge was rejected: %v", err)
+		t.Fatalf("valid personal 1.3 knowledge was rejected: %v", err)
 	}
 
 	tests := []struct {
@@ -104,6 +90,7 @@ func TestValidateForPublishEnforcesPersonalV12Structure(t *testing.T) {
 		mutate func(*document.Document)
 	}{
 		{"missing marker", func(doc *document.Document) { doc.Metadata.GovernanceVersion = "" }},
+		{"unsupported marker", func(doc *document.Document) { doc.Metadata.GovernanceVersion = "unsupported" }},
 		{"missing description", func(doc *document.Document) { delete(doc.Metadata.Extra, "description") }},
 		{"noncanonical lifecycle", func(doc *document.Document) { doc.Metadata.Extra["lifecycle"] = " current " }},
 		{"title mismatch", func(doc *document.Document) { doc.Metadata.Title = "Different" }},
@@ -125,55 +112,9 @@ func TestValidateForPublishEnforcesPersonalV12Structure(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestGovernanceModeRequiresMarkerOrExactUpgradeBaseline(t *testing.T) {
-	root := t.TempDir()
-	cfg := config.DefaultInstance("test", "wiki_01arz3ndektsv4rrffq69g5fav", time.Now())
-	cfg.Root = root
-	if err := os.MkdirAll(cfg.KnowledgeDir(), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	body := []byte("# Legacy\n")
-	doc := &document.Document{Path: filepath.Join(cfg.KnowledgeDir(), "legacy.md"), Metadata: document.Metadata{
-		ID: "know_01arz3ndektsv4rrffq69g5faw", Type: "concept", Title: "Legacy", Status: "published",
-		PublishedAt: time.Now().Format(time.RFC3339), UpdatedAt: time.Now().Format(time.RFC3339),
-		ContentHash: document.HashBytes(body), Sources: []document.SourceRef{{ID: testRawID, ContentHash: document.HashBytes([]byte("raw"))}},
-	}, Body: body}
-	if err := document.Write(doc.Path, doc.Metadata, doc.Body); err != nil {
-		t.Fatal(err)
-	}
-	doc, err := document.Read(doc.Path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := GovernanceMode(cfg, doc); err == nil {
-		t.Fatal("markerless 1.2 document was accepted without an upgrade baseline")
-	}
-	b, err := os.ReadFile(doc.Path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := WriteLegacyBaseline(cfg, map[string]string{doc.Metadata.ID: document.HashBytes(b)}); err != nil {
-		t.Fatal(err)
-	}
-	if err := WriteLegacyBaseline(cfg, map[string]string{doc.Metadata.ID: document.HashBytes([]byte("different"))}); err == nil {
-		t.Fatal("a different pre-existing governance baseline was overwritten")
-	}
-	strict, legacy, err := GovernanceMode(cfg, doc)
-	if err != nil || strict || !legacy {
-		t.Fatalf("exact legacy baseline was not recognized: strict=%v legacy=%v err=%v", strict, legacy, err)
-	}
-	doc.Metadata.Extra = map[string]any{"description": "tampered metadata"}
-	if err := document.Write(doc.Path, doc.Metadata, doc.Body); err != nil {
-		t.Fatal(err)
-	}
-	doc, err = document.Read(doc.Path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := GovernanceMode(cfg, doc); err == nil {
-		t.Fatal("changed legacy metadata still matched the upgrade baseline")
+	cfg.Template.Version = "0.0.0"
+	if err := ValidateForPublish(cfg, valid, time.Now()); err == nil {
+		t.Fatal("unsupported personal template version was accepted")
 	}
 }
 

@@ -64,6 +64,42 @@ func TestSavePreservesUnknownConfigurationFields(t *testing.T) {
 	}
 }
 
+func TestLegacyDerivedPathIsIgnoredAndPreserved(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultInstance("test", "wiki_01arz3ndektsv4rrffq69g5fav", time.Unix(0, 0).UTC())
+	cfg.Root = root
+	if err := Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, FileName)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const marker = "[paths]\n"
+	if !strings.Contains(string(b), marker) {
+		t.Fatalf("saved config omitted paths table:\n%s", b)
+	}
+	b = []byte(strings.Replace(string(b), marker, marker+"derived = 'llm-wiki'\n", 1))
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(root)
+	if err != nil {
+		t.Fatalf("legacy paths.derived must remain loadable: %v", err)
+	}
+	if err := Save(loaded); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(after), "derived = 'llm-wiki'") {
+		t.Fatalf("legacy unknown field was not preserved:\n%s", after)
+	}
+}
+
 func TestRejectEscapingManagedPath(t *testing.T) {
 	cfg := DefaultInstance("test", "wiki_01arz3ndektsv4rrffq69g5fav", time.Now())
 	cfg.Paths.Raw = "../outside"

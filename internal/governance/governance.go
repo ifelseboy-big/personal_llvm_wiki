@@ -1,7 +1,6 @@
 package governance
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,18 +30,19 @@ var (
 	citationLabelPattern    = regexp.MustCompile(`^(raw_[0-9a-hjkmnp-tv-z]{26})(?:-[1-9][0-9]*)?$`)
 )
 
-const PersonalV12Version = "personal-1.2"
-const StateFileName = ".llm-wiki-governance.json"
+const (
+	PersonalGovernanceVersion = "personal-1.3"
+	PersonalTemplateVersion   = "1.4.0"
+)
 
 type LifecycleAssessment struct {
-	Lifecycle       string   `json:"lifecycle"`
-	LegacyDefaulted bool     `json:"legacy_defaulted"`
-	Inactive        bool     `json:"inactive"`
-	Disputed        bool     `json:"disputed"`
-	NotYetValid     bool     `json:"not_yet_valid"`
-	Expired         bool     `json:"expired"`
-	ReviewDue       bool     `json:"review_due"`
-	Warnings        []string `json:"warnings"`
+	Lifecycle   string   `json:"lifecycle"`
+	Inactive    bool     `json:"inactive"`
+	Disputed    bool     `json:"disputed"`
+	NotYetValid bool     `json:"not_yet_valid"`
+	Expired     bool     `json:"expired"`
+	ReviewDue   bool     `json:"review_due"`
+	Warnings    []string `json:"warnings"`
 }
 
 type Relation struct {
@@ -55,30 +55,33 @@ func ValidateForPublish(cfg *config.Instance, doc *document.Document, now time.T
 	if cfg == nil || doc == nil {
 		return errors.New("knowledge governance validation requires a wiki and document")
 	}
-	if !UsesPersonalV12(cfg) {
+	if !UsesPersonalGovernance(cfg) {
 		return nil
+	}
+	if cfg.Template.Version != PersonalTemplateVersion {
+		return fmt.Errorf("personal template version must be %s", PersonalTemplateVersion)
 	}
 	if now.IsZero() {
 		now = time.Now()
 	}
 	var problems []error
-	if doc.Metadata.GovernanceVersion != PersonalV12Version {
-		problems = append(problems, fmt.Errorf("knowledge governance_version must be %q", PersonalV12Version))
+	if doc.Metadata.GovernanceVersion != PersonalGovernanceVersion {
+		problems = append(problems, fmt.Errorf("knowledge governance_version must be %q", PersonalGovernanceVersion))
 	}
 	if !knowledgeTypes[doc.Metadata.Type] {
-		problems = append(problems, fmt.Errorf("knowledge type %q is not supported by personal 1.2.0", doc.Metadata.Type))
+		problems = append(problems, fmt.Errorf("knowledge type %q is not supported by personal 1.4.0", doc.Metadata.Type))
 	}
 	description, ok, err := ExtraString(doc.Metadata, "description")
 	if err != nil {
 		problems = append(problems, err)
 	} else if !ok || strings.TrimSpace(description) == "" {
-		problems = append(problems, errors.New("knowledge description is required by personal 1.2.0"))
+		problems = append(problems, errors.New("knowledge description is required by personal 1.4.0"))
 	}
 	lifecycle, lifecycleExists, lifecycleErr := ExtraString(doc.Metadata, "lifecycle")
 	if lifecycleErr != nil {
 		problems = append(problems, lifecycleErr)
 	} else if !lifecycleExists || strings.TrimSpace(lifecycle) == "" {
-		problems = append(problems, errors.New("knowledge lifecycle is required by personal 1.2.0"))
+		problems = append(problems, errors.New("knowledge lifecycle is required by personal 1.4.0"))
 	} else if _, err := AssessLifecycle(doc.Metadata, now); err != nil {
 		problems = append(problems, err)
 	}
@@ -107,90 +110,12 @@ func ValidateForPublish(cfg *config.Instance, doc *document.Document, now time.T
 	return errors.Join(problems...)
 }
 
-// GovernanceMode distinguishes documents published under the executable 1.2
-// contract from byte-identical legacy documents recorded during an upgrade.
-func GovernanceMode(cfg *config.Instance, doc *document.Document) (strict bool, legacy bool, err error) {
-	if !UsesPersonalV12(cfg) || doc == nil {
-		return false, false, nil
-	}
-	if doc.Metadata.GovernanceVersion == PersonalV12Version {
-		return true, false, nil
-	}
-	if doc.Metadata.GovernanceVersion != "" {
-		return false, false, fmt.Errorf("knowledge %s uses unsupported governance_version %q", doc.Metadata.ID, doc.Metadata.GovernanceVersion)
-	}
-	var state struct {
-		SchemaVersion int               `json:"schema_version"`
-		Template      string            `json:"template"`
-		Documents     map[string]string `json:"documents"`
-	}
-	b, readErr := os.ReadFile(filepath.Join(cfg.Root, StateFileName))
-	if readErr != nil {
-		return false, false, fmt.Errorf("knowledge %s has no governance_version and the upgrade baseline cannot be read: %w", doc.Metadata.ID, readErr)
-	}
-	if decodeErr := json.Unmarshal(b, &state); decodeErr != nil {
-		return false, false, fmt.Errorf("parse governance upgrade baseline: %w", decodeErr)
-	}
-	if state.SchemaVersion != 1 || state.Template != PersonalV12Version {
-		return false, false, errors.New("governance upgrade baseline has an unsupported format")
-	}
-	expected, ok := state.Documents[doc.Metadata.ID]
-	if !ok {
-		return false, false, fmt.Errorf("knowledge %s has no governance_version and is not registered as legacy", doc.Metadata.ID)
-	}
-	current, readErr := os.ReadFile(doc.Path)
-	if readErr != nil {
-		return false, false, readErr
-	}
-	if document.HashBytes(current) != expected {
-		return false, false, fmt.Errorf("legacy knowledge %s changed after the 1.2 upgrade; republish it through a proposal", doc.Metadata.ID)
-	}
-	return false, true, nil
+func ValidateStored(cfg *config.Instance, doc *document.Document, now time.Time) error {
+	return ValidateForPublish(cfg, doc, now)
 }
 
-func WriteLegacyBaseline(cfg *config.Instance, documents map[string]string) error {
-	if cfg == nil {
-		return errors.New("a wiki is required to write the governance upgrade baseline")
-	}
-	state := struct {
-		SchemaVersion int               `json:"schema_version"`
-		Template      string            `json:"template"`
-		Documents     map[string]string `json:"documents"`
-	}{SchemaVersion: 1, Template: PersonalV12Version, Documents: documents}
-	b, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return err
-	}
-	b = append(b, '\n')
-	target := filepath.Join(cfg.Root, StateFileName)
-	if current, readErr := os.ReadFile(target); readErr == nil {
-		if !bytes.Equal(current, b) {
-			return fmt.Errorf("governance baseline path already contains different content: %s", target)
-		}
-		return nil
-	} else if !errors.Is(readErr, os.ErrNotExist) {
-		return readErr
-	}
-	return fsutil.AtomicWrite(target, b, 0o600)
-}
-
-func ValidateStored(cfg *config.Instance, doc *document.Document, now time.Time) (legacy bool, err error) {
-	strict, legacy, err := GovernanceMode(cfg, doc)
-	if err != nil || !strict {
-		return legacy, err
-	}
-	return false, ValidateForPublish(cfg, doc, now)
-}
-
-func UsesPersonalV12(cfg *config.Instance) bool {
-	if cfg == nil || cfg.Template.Name != "personal" {
-		return false
-	}
-	var major, minor, patch int
-	if _, err := fmt.Sscanf(cfg.Template.Version, "%d.%d.%d", &major, &minor, &patch); err != nil {
-		return false
-	}
-	return major > 1 || (major == 1 && minor >= 2)
+func UsesPersonalGovernance(cfg *config.Instance) bool {
+	return cfg != nil && cfg.Template.Name == "personal"
 }
 
 func AssessLifecycle(meta document.Metadata, now time.Time) (LifecycleAssessment, error) {
@@ -201,12 +126,8 @@ func AssessLifecycle(meta document.Metadata, now time.Time) (LifecycleAssessment
 	if err != nil {
 		return LifecycleAssessment{}, err
 	}
-	legacyDefaulted := false
-	warnings := []string{}
 	if !ok || strings.TrimSpace(value) == "" {
-		value = "current"
-		legacyDefaulted = true
-		warnings = append(warnings, fmt.Sprintf("knowledge %s has no lifecycle; treated as current until it is republished with personal 1.2.0 metadata", meta.ID))
+		return LifecycleAssessment{}, errors.New("knowledge lifecycle is required")
 	}
 	value = strings.TrimSpace(value)
 	if !lifecycleValues[value] {
@@ -216,9 +137,9 @@ func AssessLifecycle(meta document.Metadata, now time.Time) (LifecycleAssessment
 		return LifecycleAssessment{}, errors.New("knowledge lifecycle must not contain surrounding whitespace")
 	}
 	assessment := LifecycleAssessment{
-		Lifecycle: value, LegacyDefaulted: legacyDefaulted,
-		Inactive: value == "superseded" || value == "retracted",
-		Disputed: value == "disputed", Warnings: warnings,
+		Lifecycle: value,
+		Inactive:  value == "superseded" || value == "retracted",
+		Disputed:  value == "disputed",
 	}
 	if assessment.Disputed {
 		assessment.Warnings = append(assessment.Warnings, fmt.Sprintf("knowledge %s is disputed", meta.ID))
@@ -247,15 +168,12 @@ func AssessLifecycle(meta document.Metadata, now time.Time) (LifecycleAssessment
 	return assessment, nil
 }
 
-func AssessStoredLifecycle(cfg *config.Instance, meta document.Metadata, now time.Time, legacy bool) (LifecycleAssessment, error) {
-	if !UsesPersonalV12(cfg) {
+func AssessStoredLifecycle(cfg *config.Instance, meta document.Metadata, now time.Time) (LifecycleAssessment, error) {
+	if !UsesPersonalGovernance(cfg) {
 		return LifecycleAssessment{Lifecycle: "current"}, nil
 	}
-	if legacy {
-		return LifecycleAssessment{
-			Lifecycle: "current", LegacyDefaulted: true,
-			Warnings: []string{fmt.Sprintf("knowledge %s uses the upgrade-baselined legacy contract; legacy lifecycle and date properties are not interpreted until it is republished", meta.ID)},
-		}, nil
+	if cfg.Template.Version != PersonalTemplateVersion {
+		return LifecycleAssessment{}, fmt.Errorf("personal template version must be %s", PersonalTemplateVersion)
 	}
 	return AssessLifecycle(meta, now)
 }

@@ -13,7 +13,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	buildlayer "llm-wiki/internal/build"
 	"llm-wiki/internal/config"
 	"llm-wiki/internal/document"
 	"llm-wiki/internal/governance"
@@ -70,7 +69,6 @@ func newRootCommand(rt *Runtime) *cobra.Command {
 	root.AddCommand(newLocateCommand(rt))
 	root.AddCommand(newStatusCommand(rt))
 	root.AddCommand(newDoctorCommand(rt))
-	root.AddCommand(newMigrateCommand(rt))
 	root.AddCommand(newTemplateCommand(rt))
 	root.AddCommand(newRawCommand(rt))
 	root.AddCommand(newIndexCommand(rt))
@@ -78,7 +76,6 @@ func newRootCommand(rt *Runtime) *cobra.Command {
 	root.AddCommand(newShowCommand(rt))
 	root.AddCommand(newTraceCommand(rt))
 	root.AddCommand(newPublishCommand(rt))
-	root.AddCommand(newBuildCommand(rt))
 	root.AddCommand(newSkillCommand(rt))
 	return root
 }
@@ -317,7 +314,7 @@ func newLocateCommand(rt *Runtime) *cobra.Command {
 func newStatusCommand(rt *Runtime) *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
-		Short: "Show wiki file and derived-state status",
+		Short: "Show wiki file and index status",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			cfg, ref, err := resolveWiki(rt)
@@ -326,7 +323,7 @@ func newStatusCommand(rt *Runtime) *cobra.Command {
 			}
 			counts := map[string]int{}
 			problems := []string{}
-			for layer, root := range map[string]string{"raw": cfg.RawDir(), "knowledge": cfg.KnowledgeDir(), "derived": cfg.DerivedDir()} {
+			for layer, root := range map[string]string{"raw": cfg.RawDir(), "knowledge": cfg.KnowledgeDir()} {
 				docs, errs := document.ScanMarkdown(root)
 				counts[layer] = len(docs)
 				for _, problem := range errs {
@@ -393,28 +390,20 @@ func newDoctorCommand(rt *Runtime) *cobra.Command {
 					}
 				}
 				checks = append(checks, check{Name: "knowledge:" + doc.Metadata.ID, OK: err == nil, Message: errorMessage(err, "valid")})
-				if err == nil && governance.UsesPersonalV12(cfg) {
-					legacy, governanceErr := governance.ValidateStored(cfg, doc, time.Now())
-					if governanceErr != nil {
+				if err == nil && governance.UsesPersonalGovernance(cfg) {
+					if governanceErr := governance.ValidateStored(cfg, doc, time.Now()); governanceErr != nil {
 						checks = append(checks, check{Name: "knowledge-governance:" + doc.Metadata.ID, OK: false, Message: governanceErr.Error()})
 						continue
 					}
-					assessment, assessmentErr := governance.AssessStoredLifecycle(cfg, doc.Metadata, time.Now(), legacy)
+					assessment, assessmentErr := governance.AssessStoredLifecycle(cfg, doc.Metadata, time.Now())
 					if assessmentErr != nil {
 						checks = append(checks, check{Name: "knowledge-lifecycle:" + doc.Metadata.ID, OK: false, Message: assessmentErr.Error()})
 						continue
 					}
 					attention = append(attention, assessment.Warnings...)
-					if legacy {
-						checks = append(checks, check{
-							Name: "knowledge-governance:" + doc.Metadata.ID, OK: true,
-							Message: "upgrade-baselined legacy knowledge remains valid; republish when convenient to adopt personal 1.2 governance",
-						})
-						continue
-					}
 					checks = append(checks, check{
 						Name: "knowledge-governance:" + doc.Metadata.ID, OK: true,
-						Message: "personal 1.2.0 metadata, citations, and links are valid",
+						Message: "personal 1.4.0 metadata, citations, and links are valid",
 					})
 					if reciprocalErr := governance.ValidateReciprocalRelations(cfg, doc); reciprocalErr != nil {
 						checks = append(checks, check{Name: "knowledge-relations:" + doc.Metadata.ID, OK: false, Message: reciprocalErr.Error()})
@@ -424,32 +413,11 @@ func newDoctorCommand(rt *Runtime) *cobra.Command {
 			for _, problem := range knowledgeProblems {
 				checks = append(checks, check{Name: "knowledge:parse", OK: false, Message: problem.Error()})
 			}
-			derivedDocs, derivedProblems := document.ScanMarkdown(cfg.DerivedDir())
-			derivedIDs := map[string]bool{}
-			for _, doc := range derivedDocs {
-				err := doc.Validate("derived", false)
-				if derivedIDs[doc.Metadata.ID] {
-					err = fmt.Errorf("duplicate derived id %s", doc.Metadata.ID)
-				}
-				derivedIDs[doc.Metadata.ID] = true
-				checks = append(checks, check{Name: "derived:" + doc.Metadata.ID, OK: err == nil, Message: errorMessage(err, "valid")})
-			}
-			for _, problem := range derivedProblems {
-				checks = append(checks, check{Name: "derived:parse", OK: false, Message: problem.Error()})
-			}
-			buildStatus, buildErr := buildlayer.GetStatus(cfg)
-			if buildErr != nil {
-				checks = append(checks, check{Name: "build", OK: false, Message: buildErr.Error()})
-			} else if len(knowledgeDocs) == 0 && !buildStatus.Manifest {
-				checks = append(checks, check{Name: "build", OK: true, Message: "no published knowledge requires a derived build"})
-			} else {
-				checks = append(checks, check{Name: "build", OK: buildStatus.Fresh, Message: errorMessage(boolError(buildStatus.Fresh, "derived layer is stale, missing, or drifted"), "derived layer is fresh")})
-			}
 			indexStatus, indexErr := indexstore.GetStatus(cfg)
 			if indexErr != nil {
 				checks = append(checks, check{Name: "index", OK: false, Message: indexErr.Error() + "; run index rebuild"})
 			} else {
-				expectedCounts := map[string]int{"raw": len(rawDocs), "knowledge": len(knowledgeDocs), "derived": len(derivedDocs)}
+				expectedCounts := map[string]int{"raw": len(rawDocs), "knowledge": len(knowledgeDocs)}
 				indexOK := indexStatus.Exists && indexStatus.SchemaVersion == indexstore.SchemaVersion &&
 					indexStatus.Tokenizer == "simple" &&
 					indexStatus.TokenizerVersion != "" && indexStatus.TokenizerCommit != "" &&
@@ -500,61 +468,6 @@ func errorMessage(err error, success string) string {
 		return success
 	}
 	return err.Error()
-}
-
-func boolError(ok bool, message string) error {
-	if ok {
-		return nil
-	}
-	return fmt.Errorf("%s", message)
-}
-
-func newMigrateCommand(rt *Runtime) *cobra.Command {
-	var planFlag, applyFlag bool
-	cmd := &cobra.Command{
-		Use: "migrate", Short: "Plan or apply explicit instance migrations",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			if planFlag == applyFlag {
-				return E("MIGRATION_MODE_REQUIRED", "specify exactly one of --plan or --apply", ExitUsage, nil)
-			}
-			cfg, ref, err := resolveWiki(rt)
-			if err != nil {
-				return err
-			}
-			if planFlag {
-				return rt.Success("migrate.plan", ref, map[string]any{
-					"current_schema": cfg.SchemaVersion, "target_schema": config.CurrentSchema, "operations": []any{},
-				}, nil, nil)
-			}
-			return rt.Success("migrate.apply", ref, map[string]any{"applied": []any{}, "changed": false}, nil, nil)
-		},
-	}
-	cmd.Flags().BoolVar(&planFlag, "plan", false, "preview required migrations")
-	cmd.Flags().BoolVar(&applyFlag, "apply", false, "apply planned migrations")
-	plan := &cobra.Command{
-		Use: "plan", Args: cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			cfg, ref, err := resolveWiki(rt)
-			if err != nil {
-				return err
-			}
-			return rt.Success("migrate.plan", ref, map[string]any{
-				"current_schema": cfg.SchemaVersion, "target_schema": config.CurrentSchema, "operations": []any{},
-			}, nil, nil)
-		},
-	}
-	apply := &cobra.Command{
-		Use: "apply", Args: cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			_, ref, err := resolveWiki(rt)
-			if err != nil {
-				return err
-			}
-			return rt.Success("migrate.apply", ref, map[string]any{"applied": []any{}, "changed": false}, nil, nil)
-		},
-	}
-	cmd.AddCommand(plan, apply)
-	return cmd
 }
 
 func newTemplateCommand(rt *Runtime) *cobra.Command {

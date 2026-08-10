@@ -3,7 +3,7 @@ filters:
     - 'file.inFolder("knowledge")'
     - 'file.ext == "md"'
 formulas:
-  attention: 'if(governance_version != "personal-1.2", "legacy", if(lifecycle == "disputed", "disputed", if(valid_from && date(valid_from) > today(), "not yet valid", if(valid_until && date(valid_until) < today(), "expired", if(review_after && date(review_after) <= today(), "review due", "")))))'
+  attention: 'if(lifecycle == "disputed", "disputed", if(valid_from && date(valid_from) > today(), "not yet valid", if(valid_until && date(valid_until) < today(), "expired", if(review_after && date(review_after) <= today(), "review due", ""))))'
 properties:
   file.name:
     displayName: File
@@ -26,7 +26,7 @@ views:
     name: Needs review
     filters:
       and:
-        - 'governance_version == "personal-1.2"'
+        - 'governance_version == "personal-1.3"'
         - or:
             - 'lifecycle == "disputed"'
             - 'valid_from && date(valid_from) > today()'
@@ -49,7 +49,7 @@ views:
     name: Inactive knowledge
     filters:
       and:
-        - 'governance_version == "personal-1.2"'
+        - 'governance_version == "personal-1.3"'
         - or:
             - 'lifecycle == "superseded"'
             - 'lifecycle == "retracted"'

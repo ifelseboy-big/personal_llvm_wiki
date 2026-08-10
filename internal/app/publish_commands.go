@@ -9,7 +9,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	buildlayer "llm-wiki/internal/build"
 	indexstore "llm-wiki/internal/index"
 	"llm-wiki/internal/publish"
 	"llm-wiki/internal/vault"
@@ -17,8 +16,7 @@ import (
 
 type publishApplyCommandResult struct {
 	*publish.ApplyResult
-	Derived *buildlayer.Result       `json:"derived,omitempty"`
-	Index   *indexstore.UpdateResult `json:"index,omitempty"`
+	Index *indexstore.UpdateResult `json:"index,omitempty"`
 }
 
 func newPublishCommand(rt *Runtime) *cobra.Command {
@@ -120,13 +118,6 @@ func newPublishApplyCommand(rt *Runtime) *cobra.Command {
 			commandResult := &publishApplyCommandResult{ApplyResult: result}
 			if !rt.DryRun {
 				files = append(files, result.TargetPath)
-				buildResult, buildErr := buildlayer.Build(cfg, false, false)
-				if buildErr != nil {
-					warnings = append(warnings, "knowledge was committed but the AI-derived layer was not refreshed: "+buildErr.Error())
-				} else {
-					commandResult.Derived = buildResult
-					files = append(files, buildResult.Files...)
-				}
 				indexResult, indexErr := indexstore.Update(cfg, false)
 				if indexErr != nil {
 					warnings = append(warnings, "knowledge was committed but index rebuild failed: "+indexErr.Error())

@@ -50,9 +50,7 @@ var (
 		"schema_version": true, "id": true, "status": true, "sources": true,
 		"captured_at": true, "published_at": true, "updated_at": true,
 		"content_hash": true, "media_type": true, "original_name": true,
-		"asset": true, "derived_from": true, "compiler": true,
-		"compiler_version": true, "build_fingerprint": true, "generated_at": true,
-		"governance_version": true,
+		"asset": true, "governance_version": true,
 	}
 )
 
@@ -138,7 +136,7 @@ func CreateDraft(cfg *config.Instance, opts CreateOptions) (*CreateResult, error
 	if err != nil {
 		return nil, err
 	}
-	for _, managed := range []string{cfg.RawDir(), cfg.KnowledgeDir(), cfg.DerivedDir(), cfg.RuntimeDir()} {
+	for _, managed := range []string{cfg.RawDir(), cfg.KnowledgeDir(), cfg.RuntimeDir()} {
 		_, resolvedManaged, resolveErr := resolvedOutputPath(managed)
 		if resolveErr != nil {
 			return nil, resolveErr

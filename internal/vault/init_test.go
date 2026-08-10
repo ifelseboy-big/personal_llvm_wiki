@@ -30,8 +30,21 @@ func TestInitConfiguresGitIgnoreAndKeepsChangesTracked(t *testing.T) {
 			t.Errorf("missing gitignore pattern %q in:\n%s", pattern, b)
 		}
 	}
+	if lines["llm-wiki/"] {
+		t.Fatalf("obsolete derived directory must not be added to gitignore:\n%s", b)
+	}
 	if lines[".llm-wiki/"] || lines[".llm-wiki/changes/"] {
 		t.Fatalf("changes audit records must remain tracked:\n%s", b)
+	}
+	if _, err := os.Stat(filepath.Join(root, "llm-wiki")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("initialization created obsolete derived directory: %v", err)
+	}
+	configBytes, err := os.ReadFile(filepath.Join(root, "llm-wiki.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(configBytes), "derived =") {
+		t.Fatalf("initialization wrote obsolete paths.derived setting:\n%s", configBytes)
 	}
 }
 

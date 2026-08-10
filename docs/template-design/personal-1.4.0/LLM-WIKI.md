@@ -10,7 +10,7 @@ cssclasses:
 
 # LLM Wiki 使用入口
 
-这个 Vault 将原始证据、可信知识、AI 派生内容和搜索索引严格分开。`knowledge/` 中已发布 Markdown 是唯一最终事实源，SQLite 只选择检索候选。
+这个 Vault 将原始证据、可信知识和搜索索引严格分开。`knowledge/` 中已发布 Markdown 是唯一最终事实源，SQLite 只选择检索候选。
 
 ## 目录说明
 
@@ -18,12 +18,10 @@ cssclasses:
 |---|---|---|
 | `raw/` | 原始文件、摘录、会议记录和人工记录 | 原始证据，不是整理结论 |
 | `knowledge/` | 经过 `publish apply` 审批的知识 | 是，唯一权威层 |
-| `llm-wiki/` | 从 knowledge 构建的 AI 视图 | 否，可删除重建 |
 | `templates/` | raw 与 knowledge 草稿模板 | 否 |
 | `rules/` | 采集、发布、引用和质量规则 | 否 |
 | `views/` | Obsidian Bases 视图 | 否，只读取 Properties |
 | `.llm-wiki/` | 索引、变更集和运行状态 | 否 |
-| `.llm-wiki-governance.json` | 仅升级旧库时生成的 legacy knowledge 完整文件基线 | 否，但必须备份或提交 |
 
 ## 第一次使用
 
@@ -55,9 +53,9 @@ llm-wiki publish diff <change-id> --wiki <alias>
 llm-wiki publish apply <change-id> --wiki <alias>
 ```
 
-草稿可以放在 Vault 中任意非受管工作目录或 Vault 外部，但不能直接放入 `knowledge/`、`raw/` 或 `llm-wiki/`。事实陈述应使用 [[rules/citations|raw ID 命名脚注]]。
+草稿可以放在 Vault 中任意非受管工作目录或 Vault 外部，但不能直接放入 `knowledge/` 或 `raw/`。事实陈述应使用 [[rules/citations|raw ID 命名脚注]]。
 
-`publish apply` 会自动刷新 AI 派生层和索引；若响应带刷新 warning，再显式运行 `build` 或 `index update` 修复可重建层。
+`publish apply` 会自动刷新索引；若响应带刷新 warning，再显式运行 `index update` 修复索引。
 
 `query` 只检索已发布 knowledge，并根据 SQLite 候选重新打开受管 Markdown。命中后可用 `show <knowledge-id>` 返回完整的原始 knowledge；SQLite 中的元数据和片段不能独立作为事实。收到 `INDEX_STALE` 时显式运行 `llm-wiki index update`，不能继续使用旧缓存。
 
@@ -100,4 +98,4 @@ llm-wiki template upgrade --plan --wiki <alias>
 llm-wiki template upgrade --apply --wiki <alias>
 ```
 
-升级使用安装基线、用户文件和新模板进行三方判断，不会静默覆盖用户修改。从 1.1.x 升级时会在 Vault 根目录创建 `.llm-wiki-governance.json`；旧 knowledge 只有保持与该文件记录的完整哈希一致才可按 legacy 读取。legacy 一律作为 current 候选并提示迁移，不解释升级前可能同名的 lifecycle 或日期自定义属性。该文件不是索引或缓存，不得删除，必须与 Vault 一起备份或提交。旧知识下一次通过提案发布后会写入 `governance_version: personal-1.2` 并进入严格校验。
+升级使用安装基线、用户文件和新模板进行三方判断，不会静默覆盖用户修改，也不会改写 `raw/` 或 `knowledge/`。

@@ -18,7 +18,6 @@ const (
 
 var gitIgnorePatterns = []string{
 	".DS_Store",
-	"llm-wiki/",
 	".llm-wiki/index.sqlite*",
 	".llm-wiki/locks/",
 	".llm-wiki/logs/",

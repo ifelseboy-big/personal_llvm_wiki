@@ -1,14 +1,15 @@
-# personal 1.2.0 模板设计稿
+# personal 1.4.0 模板设计稿
 
-状态：已落地。此目录保留 personal 1.2.0 的设计基线；同版本资源已编译进当前二进制。旧 Vault 仍需显式执行 `template upgrade --apply`，不会被安装新二进制静默改写。
+状态：已落地。此目录是 personal 1.4.0 的唯一设计基线；同版本资源已编译进当前二进制。安装新二进制不会静默改写现有 Vault，模板变更必须显式执行 `template upgrade --apply`。
 
 ## 设计目标
 
 1. 同一份内容模板可以被 Obsidian 核心 Templates 插件和 `llm-wiki template create` 使用。
-2. `knowledge/` 中已发布 Markdown 是唯一最终事实源；`raw/`、`llm-wiki/` 和 SQLite 均不能替代它。
+2. `knowledge/` 中已发布 Markdown 是唯一最终事实源；`raw/` 和 SQLite 均不能替代它。
 3. 知识具备明确类型、生命周期、稳定关联、来源元数据和结论级引用。
 4. 初始化后同时为人和 AI 提供入口，不依赖 Obsidian 社区插件，不写入 `.obsidian/`。
-5. Skill 每次工作流先定位并读取目标 Vault 的 `AGENTS.md`；CLI 不复制或解释语义治理规则。
+5. Vault 的 `AGENTS.md` 只定义知识库管理规则；外部 AI 通过按 query、add、publish、maintain 拆分的 Skill 调用 CLI。
+6. raw 不进入全文检索；人工确认发布后的 knowledge 才写入 SQLite，AI 命中候选后必须回读原始 knowledge。
 
 ## 参考设计及取舍
 
@@ -24,7 +25,7 @@
 ## 最终目录
 
 ```text
-personal-1.2.0/
+personal-1.4.0/
 ├── AGENTS.md
 ├── LLM-WIKI.md
 ├── rules/
@@ -34,7 +35,7 @@ personal-1.2.0/
 │   ├── lifecycle.md
 │   ├── citations.md
 │   ├── publish.md
-│   ├── derived.md
+│   ├── index.md
 │   └── quality.md
 ├── templates/
 │   ├── raw/

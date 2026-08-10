@@ -7,10 +7,9 @@
 - `knowledge/` 中经过人工确认发布的 Markdown 是唯一可信事实源；正文、Properties、关系和来源绑定均以这些文件为准。
 - `raw/` 只保存原始证据，不是知识结论，也不进入全文检索。只有明确 raw ID 时才可读取对应材料用于整理或审计。
 - `.llm-wiki/index.sqlite` 的全文检索只包含已发布 knowledge，用于快速选择候选。命中后必须回读对应的原始 knowledge Markdown；SQLite 片段不能单独作为事实。
-- `llm-wiki/` 是从 knowledge 确定性生成的 AI 派生视图，可以删除重建，冲突时无条件以 knowledge 为准。
 - `templates/`、`rules/`、`views/`、`AGENTS.md` 和 `LLM-WIKI.md` 是治理材料，不是用户事实。
 
-不得直接创建、修改或移动已发布 knowledge，不得直接编辑派生层，也不得根据 SQLite 或派生内容反向恢复事实。
+不得直接创建、修改或移动已发布 knowledge，也不得根据 SQLite 反向恢复事实。
 
 ## 管理路由
 
@@ -21,7 +20,7 @@
 | 使用非当前、过期、有争议或被替代的知识 | [[rules/lifecycle|生命周期规则]] |
 | 整理并提出发布 | [[rules/types|类型规则]]、[[rules/metadata|元数据规则]]、[[rules/citations|引用规则]]、[[rules/publish|发布规则]]、[[rules/quality|质量规则]]及选用模板 |
 | 审查、批准、拒绝发布 | [[rules/publish|发布规则]]；批准必须针对已经展示的具体差异 |
-| 维护派生视图或索引 | [[rules/derived|派生层规则]] |
+| 维护检索索引 | [[rules/index|索引规则]] |
 
 ## 状态与授权
 
@@ -38,8 +37,8 @@
 3. 按规则和模板生成候选内容、发布提案与可审查差异。
 4. 向用户展示具体差异并等待明确批准。
 5. 只有批准后才能写入 knowledge。
-6. 发布成功后刷新派生视图与全文检索只包含 knowledge 的 SQLite 索引；刷新失败不撤销已发布事实，但必须明确报告并修复可重建层。
+6. 发布成功后刷新全文检索只包含 knowledge 的 SQLite 索引；刷新失败不撤销已发布事实，但必须明确报告并修复索引。
 
-回答个人知识问题时只能引用回读后的 knowledge，标明知识 ID 与路径。没有已发布 knowledge 时应明确说明，不得以 raw、SQLite 或派生层补成事实。
+回答个人知识问题时只能引用回读后的 knowledge，标明知识 ID 与路径。没有已发布 knowledge 时应明确说明，不得以 raw 或 SQLite 补成事实。
 
 面向人的知识库说明见 [[LLM-WIKI]]。

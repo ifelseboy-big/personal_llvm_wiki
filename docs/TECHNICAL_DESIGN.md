@@ -6,10 +6,9 @@
 
 1. `knowledge/` 中通过发布流程产生的 Markdown 是最终可信知识和唯一事实依据。
 2. `raw/` 保存原始证据。可信知识必须记录来源 ID 与发布时的来源内容哈希。
-3. `llm-wiki/` 是 `knowledge/` 的确定性派生视图，禁止反向写入可信层。
-4. `.llm-wiki/index.sqlite` 只保存可重建索引和运行状态。删除数据库不得导致知识、元数据或溯源关系丢失。
-5. `AGENTS.md` 和 `rules/` 是语义治理依据；CLI 是唯一稳定写入接口，只强制来源、哈希、事务、路径与索引等机械不变量。
-6. 不依赖 MCP、常驻服务、外部数据库、解释器或网络服务。
+3. `.llm-wiki/index.sqlite` 只保存可重建索引和运行状态。删除数据库不得导致知识、元数据或溯源关系丢失。
+4. `AGENTS.md` 和 `rules/` 是语义治理依据；CLI 是唯一稳定写入接口，只强制来源、哈希、事务、路径与索引等机械不变量。
+5. 不依赖 MCP、常驻服务、外部数据库、解释器或网络服务。
 
 ## 2. 技术选型
 
@@ -48,7 +47,6 @@ internal/
   raw/                     原始资料导入
   publish/                 变更集、diff、apply/reject
   index/                   SQLite、FTS5、增量更新、重建
-  build/                   AI 派生层编译
   templates/               模板发现、渲染、版本
   skill/                   AI CLI 适配器
 resources/
@@ -72,12 +70,11 @@ created_at = "2026-08-08T10:00:00+08:00"
 
 [template]
 name = "personal"
-version = "1.3.0"
+version = "1.4.0"
 
 [paths]
 raw = "raw"
 knowledge = "knowledge"
-derived = "llm-wiki"
 templates = "templates"
 rules = "rules"
 runtime = ".llm-wiki"
@@ -98,7 +95,9 @@ block_sensitive_files = true
 
 路径必须是相对知识库根目录的规范路径，不能为空，不能包含 `..`，不能互相重叠，不能指向符号链接。运行时解析后的真实路径必须仍位于知识库根目录。
 
-未知字段保留以便前向兼容；未知的更高 `schema_version` 拒绝写入，只允许安全的只读诊断。
+未知字段往返保留，避免损坏用户扩展；`schema_version` 必须等于当前值，其他版本直接拒绝加载和写入。
+
+旧实例中的 `paths.derived` 作为兼容未知字段保留，但不参与路径校验、初始化、发布、索引或其他命令；旧 `llm-wiki/` 目录可由用户直接删除。
 
 ### 4.2 用户注册表
 
@@ -119,7 +118,7 @@ path = "/absolute/path/to/personal"
 
 ### 5.1 ID
 
-使用 Crockford Base32 ULID，并增加固定前缀：`wiki_`、`raw_`、`know_`、`chg_`、`drv_`、`op_`。ID 创建后不可修改，文件移动不改变 ID。
+使用 Crockford Base32 ULID，并增加固定前缀：`wiki_`、`raw_`、`know_`、`chg_`、`op_`。ID 创建后不可修改，文件移动不改变 ID。
 
 ### 5.2 哈希
 
@@ -168,7 +167,7 @@ sources:
 published_at: 2026-08-08T11:00:00+08:00
 updated_at: 2026-08-08T11:00:00+08:00
 content_hash: sha256:...
-governance_version: personal-1.2
+governance_version: personal-1.3
 tags: []
 aliases: []
 cssclasses: []
@@ -179,35 +178,16 @@ superseded_by: []
 
 `sources` 至少一个且全部可解析。缺失来源、来源哈希变化或正文哈希不匹配均使文档失去可发布状态，`doctor` 和 `index update` 必须报告，不得静默修复。
 
-frontmatter 同时兼容 Obsidian Properties。系统属性由 CLI 重建，草稿值不能覆盖；personal 1.2 发布会写入 `governance_version: personal-1.2`，供 doctor、query、build 和 index 区分严格治理文档与升级前文档。用户属性允许扩展并在发布时无损保留。更新时省略用户属性表示保持原值，同名值表示覆盖，`null` 表示删除；`tags: []` 和 `aliases: []` 表示明确清空。Obsidian 不支持在 Properties 界面编辑嵌套对象，因此 `sources` 只允许由 CLI 管理，不能为适配界面而拍平或迁移到 SQLite。
-
-### 5.5 Derived frontmatter
-
-```yaml
-schema_version: 1
-id: drv_01...
-derived_from:
-  id: know_01...
-  content_hash: sha256:...
-compiler: standard
-compiler_version: 3
-build_fingerprint: sha256:...
-generated_at: 2026-08-08T11:00:00+08:00
-```
-
-`generated_at` 是运行信息，不参与 `build_fingerprint`。指纹包含 knowledge 完整文件哈希、确定性编译器版本、构建配置和当前 effective lifecycle 状态，因此修改用户 Properties、跨过有效期或到达复核日期都会使派生层变为 stale。派生正文只由可信正文生成，用户 Properties 确定性复制到派生 frontmatter。
+frontmatter 同时兼容 Obsidian Properties。系统属性由 CLI 重建，草稿值不能覆盖；personal 1.3 发布会写入 `governance_version: personal-1.3`，doctor、query 和 index 只接受该当前治理契约。用户属性允许扩展并在发布时无损保留。更新时省略用户属性表示保持原值，同名值表示覆盖，`null` 表示删除；`tags: []` 和 `aliases: []` 表示明确清空。Obsidian 不支持在 Properties 界面编辑嵌套对象，因此 `sources` 只允许由 CLI 管理，不能为适配界面而拍平或写入 SQLite。
 
 ## 6. 文件布局
 
 ```text
 raw/YYYY/MM/<raw-id>/...
 knowledge/<type>/<slug>--<knowledge-id>.md
-llm-wiki/documents/<knowledge-id>.md
-llm-wiki/manifest.json
 templates/raw/*.md
 templates/knowledge/*.md
 rules/*.md
-.llm-wiki-governance.json
 .llm-wiki/
   index.sqlite
   changes/<change-id>/
@@ -217,11 +197,9 @@ rules/*.md
   cache/
 ```
 
-Slug 只用于可读路径，所有关系依赖稳定 ID。扫描器忽略不在三个管理根目录中的已有 Obsidian 文档；它们必须通过 `raw add` 显式导入。
+Slug 只用于可读路径，所有关系依赖稳定 ID。扫描器忽略不在 raw 和 knowledge 管理根目录中的已有 Obsidian 文档；它们必须通过 `raw add` 显式导入。
 
-`init` 创建或增量补全根目录 `.gitignore`，忽略 `llm-wiki/`、SQLite 索引、锁、日志、缓存和事务暂存目录。它不忽略 `.llm-wiki/changes/`、`template-state.json` 或 `template-base/`，因此变更审计和模板升级基线可以随知识库提交。已有规则和文件权限保持不变。
-
-从 personal 1.1.x 升级时还会创建根目录 `.llm-wiki-governance.json`，记录升级前 knowledge 的完整文件哈希。它不在 `.llm-wiki/` 运行目录内，必须随 Vault 备份或提交；删除该文件不会丢失正文，但旧文档在重新发布前会被拒绝读取，避免把后来改动误判为 legacy。
+`init` 创建或增量补全根目录 `.gitignore`，忽略 SQLite 索引、锁、日志、缓存和事务暂存目录。它不忽略 `.llm-wiki/changes/`、`template-state.json` 或 `template-base/`，因此变更审计和模板升级基线可以随知识库提交。已有规则和文件权限保持不变。
 
 ## 7. 命令与全局协议
 
@@ -271,9 +249,9 @@ Slug 只用于可读路径，所有关系依赖稳定 ID。扫描器忽略不在
 }
 ```
 
-退出码：`0` 成功；`2` 参数；`3` 配置/定位；`4` 不存在；`5` 冲突；`6` 内容校验；`7` 安全拒绝；`8` 锁冲突；`9` I/O；`10` 索引；`11` 迁移；`12` 不支持；`70` 内部错误。
+退出码：`0` 成功；`2` 参数；`3` 配置/定位；`4` 不存在；`5` 冲突；`6` 内容校验；`7` 安全拒绝；`8` 锁冲突；`9` I/O；`10` 索引；`12` 不支持；`70` 内部错误。
 
-字符串错误码和 JSON Schema 在同一 major 版本内只增不改。人类文案不属于机器契约。
+字符串错误码和 JSON Schema 是当前机器契约，变更时必须同步实现、Schema、文档与测试。人类文案不属于机器契约。
 
 ## 8. 发布状态机
 
@@ -281,7 +259,6 @@ Slug 只用于可读路径，所有关系依赖稳定 ID。扫描器忽略不在
 raw(captured) -> change(proposed) -> change(applied) -> knowledge(published)
                               \-> change(rejected)
                               \-> change(stale/conflict)
-knowledge(published) -> derived(fresh|stale|missing)
 ```
 
 Change set：
@@ -296,7 +273,7 @@ Change set：
 
 `propose` 不写 `knowledge/`。`apply` 是唯一审批提交点。若 source hash、base hash、proposal hash 任一变化，进入 `stale` 并以退出码 5 失败。`reject` 不删除审计材料。
 
-`apply` 提交事实文件后，由 app 层自动增量构建派生层并更新索引。派生或索引失败以 warning 返回，不能撤销或降级已经提交的 knowledge 事实；调用方按 warning 修复可重建层。
+`apply` 提交事实文件后，由 app 层自动增量更新索引。索引失败以 warning 返回，不能撤销或降级已经提交的 knowledge 事实；调用方按 warning 修复索引。
 
 ## 9. 锁、事务和恢复
 
@@ -309,7 +286,7 @@ Change set：
 3. `fsync` 文件和目录，写入 `journal.json` 状态 `prepared`。
 4. 保存被替换文件的恢复副本，然后逐个原子替换。
 5. 所有事实文件完成后将 journal 标记为 `files_committed`。
-6. 增量刷新可重建派生层，并在单个 SQLite 事务中更新索引。
+6. 在单个 SQLite 事务中更新索引。
 7. 标记业务状态和 journal 为 `complete`。
 
 启动任何写命令前执行恢复：`prepared` 回滚；`files_committed` 以文件为准补建索引；`complete` 清理缓存。不得用 SQLite 状态反向覆盖文件。
@@ -350,15 +327,7 @@ operations(id PRIMARY KEY, kind, state, started_at, finished_at, detail_json)
 
 首个正式版本不内置 embedding 模型或 SQLite 向量扩展。预留检索后端和 embedding 版本字段，但任何未来向量索引仍必须可从文件和显式模型配置重建。
 
-## 11. 派生构建
-
-标准编译器一对一输出 `llm-wiki/documents/<knowledge-id>.md`，内容包括规范标题、类型、标签、标题层级、正文和来源引用。SQLite chunk 是检索实现细节，不生成海量 chunk 文件。
-
-`build` 只重建指纹变化、缺失或漂移的派生文件；`build --full` 在 staging 中生成完整目录并原子切换。用户手工修改派生文件时，普通 build 报告 drift；`--full` 明确覆盖，因为该层没有事实权威。
-
-`manifest.json` 记录 compiler/version、config hash、每个输入输出 hash。删除整个 `llm-wiki/` 后的完整构建，除 `generated_at` 外必须产生字节等价正文和相同指纹。
-
-## 12. 模板系统
+## 11. 模板系统
 
 内置模板包：
 
@@ -373,7 +342,7 @@ resources/vault-templates/personal/
   rules/lifecycle.md
   rules/citations.md
   rules/publish.md
-  rules/derived.md
+  rules/index.md
   rules/quality.md
   templates/raw/note.md
   templates/raw/source.md
@@ -389,21 +358,21 @@ resources/vault-templates/personal/
   views/raw.base
 ```
 
-模板 manifest 记录模板版本、兼容的实例 Schema、每个受管文件的初始 hash。初始化只复制实例必需规则、用户可编辑模板、使用入口和可选 Bases 视图。`template create` 只向用户显式指定的非受管路径生成草稿，支持属性设置、稳定 related 链接、dry-run 和覆盖确认。
+模板 manifest 记录模板版本、要求的当前实例 Schema、每个受管文件的初始 hash。初始化只复制实例必需规则、用户可编辑模板、使用入口和可选 Bases 视图。`template create` 只向用户显式指定的非受管路径生成草稿，支持属性设置、稳定 related 链接、dry-run 和覆盖确认。
 
-升级时比较“旧内置版本、用户当前文件、新内置版本”：未修改的受管文件可更新；用户修改过的文件只生成三方 diff 和升级提案，绝不静默覆盖。`raw/`、`knowledge/`、`llm-wiki/` 永远不属于模板升级写入目标。
+升级时比较“旧内置版本、用户当前文件、新内置版本”：未修改的受管文件可更新；用户修改过的文件只生成三方 diff 和升级提案，绝不静默覆盖。`raw/` 和 `knowledge/` 永远不属于模板升级写入目标。
 
 Vault 的 `AGENTS.md` 只描述知识库政策和管理规则入口，不承担 CLI 或外部 AI 使用说明；各类知识字段要求放在 `rules/` 与 `templates/`，避免重复和漂移。
 
-## 13. Skill
+## 12. Skill
 
 首批支持 Codex。客户端适配器接口负责 `Detect/ResolveTarget/Install/Status/Update/Uninstall`，后续客户端不能进入核心知识逻辑。
 
-Codex 安装根目录为 `$HOME/.agents/skills`，安装四个同级 Skill：`llm-wiki-query`、`llm-wiki-add`、`llm-wiki-publish`、`llm-wiki-maintain`。查询、采集、受控发布与可重建层维护分别触发，避免单个 Skill 混合读写授权。根目录所有权 manifest 只声明这四个目录中的文件；发现用户修改或未知冲突时拒绝覆盖，卸载只删除 hash 匹配的自有文件。
+Codex 安装根目录为 `$HOME/.agents/skills`，安装四个同级 Skill：`llm-wiki-query`、`llm-wiki-add`、`llm-wiki-publish`、`llm-wiki-maintain`。查询、采集、受控发布与索引维护分别触发，避免单个 Skill 混合读写授权。根目录所有权 manifest 只声明这四个目录中的文件；发现用户修改或未知冲突时拒绝覆盖，卸载只删除 hash 匹配的自有文件。
 
-每个 Skill 只负责自身命令边界：先 `locate`，再读取目标知识库根目录的 `AGENTS.md` 与所需规则。知识类型、生命周期等治理语义不得复制到 Skill。`llm-wiki-query` 用 SQLite 选择 knowledge 候选后必须调用 `show` 回读原始 knowledge；`llm-wiki-add` 只采集 raw；`llm-wiki-publish` 展示 diff 并等待明确批准；`llm-wiki-maintain` 只重建派生层和索引。
+每个 Skill 只负责自身命令边界：先 `locate`，再读取目标知识库根目录的 `AGENTS.md` 与所需规则。知识类型、生命周期等治理语义不得复制到 Skill。`llm-wiki-query` 用 SQLite 选择 knowledge 候选后必须调用 `show` 回读原始 knowledge；`llm-wiki-add` 只采集 raw；`llm-wiki-publish` 展示 diff 并等待明确批准；`llm-wiki-maintain` 只维护索引和运行状态。
 
-## 14. 安全边界
+## 13. 安全边界
 
 - 所有目标路径 canonicalize 后验证位于实例根目录。
 - 默认拒绝管理目录中的符号链接、硬链接逃逸和路径穿越。
@@ -414,22 +383,22 @@ Codex 安装根目录为 `$HOME/.agents/skills`，安装四个同级 Skill：`ll
 - 日志只记录相对路径、ID、hash、错误码和字节数，不记录正文、密钥或用户查询全文。
 - 文件权限：运行目录和 changes 默认仅当前用户可读写；继承限制更严格的现有权限。
 
-## 15. 迁移
+## 14. 版本一致性
 
-版本分为：CLI major、实例 Schema、frontmatter Schema、索引 Schema、模板版本、compiler version、JSON 协议版本。
+版本分为：CLI、实例 Schema、frontmatter Schema、索引 Schema、模板版本、Skill 版本、JSON 协议版本。
 
 - 索引版本不匹配：允许自动 rebuild，因为它不是事实源。
-- 实例/frontmatter 迁移：只允许 `migrate --plan` 后显式 `migrate --apply`。
-- 模板升级：走三方 diff，不与实例 Schema 迁移混合。
-- CLI 不支持更高 Schema 时拒绝写入。
+- 实例、frontmatter 与治理版本只接受当前值；不提供旧版本兼容读取或迁移命令。
+- 模板升级只处理受管模板文件，走三方 diff，不修改事实层。
+- 任一事实契约版本不匹配时拒绝读写，不能猜测或静默修复。
 
-## 16. 测试与完成门槛
+## 15. 测试与完成门槛
 
 1. 单元测试：路径、哈希、frontmatter、ID、配置、排序、错误码。
-2. 属性测试：任意路径输入不能逃逸；序列化/解析保持语义；相同输入构建指纹一致。
+2. 属性测试：任意路径输入不能逃逸；序列化/解析保持语义。
 3. 集成测试：每个命令的人类输出与 JSON 输出、幂等和冲突。
 4. 故障注入：事务每一步中断并验证回滚或续作。
-5. 重建测试：删除 SQLite 后 query/trace 结果与删除前等价；删除派生层后 build 指纹等价。
+5. 重建测试：删除 SQLite 后 query/trace 结果与删除前等价。
 6. 安全测试：symlink、`..`、敏感文件、超大文件、恶意 YAML/FTS 输入。
 7. Golden test：JSON Schema 和模板产物。
 8. 端到端：执行完整 init/raw/propose/diff/apply/query/show/trace/rebuild 场景，并验证 raw 不可检索和发布后自动刷新。

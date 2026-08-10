@@ -276,8 +276,8 @@ func Propose(cfg *config.Instance, opts ProposeOptions) (*ProposeResult, error) 
 		Sources: sources, PublishedAt: publishedAt, UpdatedAt: opts.Now.Format(time.RFC3339),
 		ContentHash: contentHash, Tags: cleanStrings(tags), Aliases: cleanStrings(aliases), Extra: extra,
 	}
-	if governance.UsesPersonalV12(cfg) {
-		knowledgeMeta.GovernanceVersion = governance.PersonalV12Version
+	if governance.UsesPersonalGovernance(cfg) {
+		knowledgeMeta.GovernanceVersion = governance.PersonalGovernanceVersion
 	}
 	if err := governance.ValidateForPublish(cfg, &document.Document{
 		Path: filepath.Join(cfg.Root, filepath.FromSlash(targetPath)), Metadata: knowledgeMeta, Body: body,
@@ -444,7 +444,7 @@ func Apply(cfg *config.Instance, changeID string, dryRun bool, now time.Time) (*
 	if err := governance.ValidateForPublish(cfg, &document.Document{
 		Path: filepath.Join(cfg.Root, filepath.FromSlash(proposal.TargetPath)), Metadata: meta, Body: body,
 	}, now); err != nil {
-		return nil, fmt.Errorf("proposed knowledge no longer satisfies personal 1.2.0 governance: %w", err)
+		return nil, fmt.Errorf("proposed knowledge no longer satisfies personal 1.4.0 governance: %w", err)
 	}
 	result := &ApplyResult{
 		ChangeID: changeID, KnowledgeID: proposal.KnowledgeID, TargetPath: proposal.TargetPath,

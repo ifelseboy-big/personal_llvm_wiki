@@ -24,7 +24,6 @@ const (
 	ExitLock        = 8
 	ExitIO          = 9
 	ExitIndex       = 10
-	ExitMigration   = 11
 	ExitUnsupported = 12
 	ExitInternal    = 70
 )

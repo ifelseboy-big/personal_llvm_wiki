@@ -96,7 +96,7 @@ func Init(opts InitOptions) (*InitResult, error) {
 	cfg.Template.Version = m.Version
 
 	dirs := []string{
-		cfg.Paths.Raw, cfg.Paths.Knowledge, cfg.Paths.Derived,
+		cfg.Paths.Raw, cfg.Paths.Knowledge,
 		cfg.Paths.Templates, cfg.Paths.Rules,
 		filepath.Join(cfg.Paths.Runtime, "changes"),
 		filepath.Join(cfg.Paths.Runtime, "transactions"),

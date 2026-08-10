@@ -1,7 +1,7 @@
 name = "personal"
-version = "1.2.0"
+version = "1.4.0"
 schema_version = 1
-description = "可信个人知识库：可执行模板、生命周期、稳定关联、结论级引用与 Obsidian Bases"
+description = "可信个人知识库：knowledge 可信检索、raw 受控归档、生命周期、稳定关联、结论级引用与 Obsidian Bases"
 
 managed_files = [
   "AGENTS.md",
@@ -12,7 +12,7 @@ managed_files = [
   "rules/lifecycle.md",
   "rules/citations.md",
   "rules/publish.md",
-  "rules/derived.md",
+  "rules/index.md",
   "rules/quality.md",
   "templates/raw/note.md",
   "templates/raw/source.md",

@@ -50,15 +50,8 @@ func TestCompleteCLIWorkflow(t *testing.T) {
 	knowledgeID := nestedString(t, proposalResponse.Data, "knowledge_id")
 	runCLI(t, "", "publish", "diff", changeID, "--wiki", root, "--json", "--no-interactive")
 	apply := runCLI(t, "", "publish", "apply", changeID, "--wiki", root, "--json", "--no-interactive")
-	if _, ok := apply.Data.(map[string]any)["derived"].(map[string]any); !ok {
-		t.Fatalf("publish apply did not refresh the AI-derived layer: %#v", apply.Data)
-	}
 	if _, ok := apply.Data.(map[string]any)["index"].(map[string]any); !ok {
 		t.Fatalf("publish apply did not refresh the knowledge index: %#v", apply.Data)
-	}
-	buildStatus := runCLI(t, "", "build", "status", "--wiki", root, "--json", "--no-interactive")
-	if fresh, ok := buildStatus.Data.(map[string]any)["fresh"].(bool); !ok || !fresh {
-		t.Fatalf("derived layer is stale immediately after publish apply: %#v", buildStatus.Data)
 	}
 	inbox = runCLI(t, "", "raw", "list", "--unreferenced", "--wiki", root, "--json", "--no-interactive")
 	if nestedFloat(t, inbox.Data, "count") != 0 {
@@ -142,15 +135,13 @@ func TestAuxiliaryCLICommandSurface(t *testing.T) {
 	runCLI(t, "", "status", "--wiki", root, "--json", "--no-interactive")
 	runCLI(t, "", "index", "status", "--wiki", root, "--json", "--no-interactive")
 	runCLI(t, "", "index", "update", "--wiki", root, "--json", "--no-interactive")
-	runCLI(t, "", "build", "status", "--wiki", root, "--json", "--no-interactive")
-	runCLI(t, "", "migrate", "--plan", "--wiki", root, "--json", "--no-interactive")
 	runCLI(t, "", "template", "list", "--wiki", root, "--json", "--no-interactive")
 	runCLI(t, "", "template", "show", "concept", "--wiki", root, "--json", "--no-interactive")
 	runCLI(t, "", "template", "upgrade", "--plan", "--wiki", root, "--json", "--no-interactive")
 	templateOutput := filepath.Join(t.TempDir(), "source-template.md")
 	createdTemplate := runCLI(t, "", "template", "create", "source", "--kind", "raw", "--title", `A "quoted" source`,
 		"--output", templateOutput, "--set", "origin=web", "--set", "authors=[Alice, Bob]", "--wiki", root, "--json", "--no-interactive")
-	if version := nestedString(t, createdTemplate.Data, "template_version"); version != "1.3.0" {
+	if version := nestedString(t, createdTemplate.Data, "template_version"); version != "1.4.0" {
 		t.Fatalf("template create returned version %q", version)
 	}
 	templateRaw := runCLI(t, "", "raw", "add", templateOutput, "--wiki", root, "--json", "--no-interactive")

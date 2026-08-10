@@ -39,6 +39,6 @@ llm-wiki publish propose \
 llm-wiki publish apply <proposal-id>
 ```
 
-应用成功后 CLI 自动增量更新 AI 派生物和 SQLite 索引。刷新失败会在成功响应的 warnings 中明确报告；此时 knowledge 已经发布，Agent 应按 warning 运行 `build` 或 `index update` 修复可重建层。禁止绕过提案直接编辑 `knowledge/` 后再把索引当作事实补救。
+应用成功后 CLI 自动增量更新 SQLite 索引。刷新失败会在成功响应的 warnings 中明确报告；此时 knowledge 已经发布，Agent 应按 warning 运行 `index update` 修复索引。禁止绕过提案直接编辑 `knowledge/` 后再把索引当作事实补救。
 
-`publish apply` 成功后，`knowledge/` 中的发布 Markdown 立即成为唯一最终事实。后续派生构建或索引更新失败只能产生运行警告，不能让 SQLite 或 `llm-wiki/` 取代该文件。
+`publish apply` 成功后，`knowledge/` 中的发布 Markdown 立即成为唯一最终事实。后续索引更新失败只能产生运行警告，不能让 SQLite 取代该文件。

@@ -1,4 +1,4 @@
-# personal 1.3.0 模板执行契约
+# personal 1.4.0 模板执行契约
 
 本文定义设计稿落地时 CLI、模板和校验器必须共同遵守的行为。
 
@@ -26,7 +26,7 @@ Agent 在创建提案前必须处理：
 - 模板要求的章节为空；
 - 空白或仍为提示语的 `description`。
 
-CLI 不解析 `AGENTS.md` 的自然语言语义，但 personal 1.3.0 继续执行 `personal-1.2` 治理契约的通用、确定性结构检查：模板残留、title/H1、公共字段类型、raw-ID 脚注完整性和知识链接可解析性。Agent 与审批者仍负责判断关键事实是否真的被附近引用支持、内容是否重复、推断是否越界等语义质量。
+CLI 不解析 `AGENTS.md` 的自然语言语义，但 personal 1.4.0 会执行当前 `personal-1.3` 治理契约的通用、确定性结构检查：模板残留、title/H1、公共字段类型、raw-ID 脚注完整性和知识链接可解析性。Agent 与审批者仍负责判断关键事实是否真的被附近引用支持、内容是否重复、推断是否越界等语义质量。
 
 ## 2. 建议命令
 
@@ -41,7 +41,7 @@ llm-wiki template create <name> \
 
 行为要求：
 
-1. 输出只能写入用户明确指定的文件，不得写入 `knowledge/` 或 `llm-wiki/`。
+1. 输出只能写入用户明确指定的文件，不得写入 `knowledge/`。
 2. 默认拒绝覆盖已有文件；显式覆盖仍需确认并支持 `--dry-run`。
 3. `--related` 根据 knowledge ID 解析真实相对路径，生成带显示标题的 Wikilink。
 4. JSON 输出返回模板版本、输出路径、未填写字段和下一步 `publish propose` 命令提示。
@@ -92,8 +92,7 @@ superseded_by: []
 schema_version, id, status, sources,
 captured_at, published_at, updated_at,
 content_hash, media_type, original_name, asset,
-derived_from, compiler, compiler_version,
-build_fingerprint, generated_at, governance_version
+governance_version
 ```
 
 `id` 只允许在更新草稿中用来定位既有 knowledge；最终值仍由 CLI 决定。
@@ -107,7 +106,7 @@ build_fingerprint, generated_at, governance_version
 | `superseded` | 已被新知识替代 | 默认排除，可显式包含 |
 | `retracted` | 已确认不应继续使用 | 默认排除，可显式包含并强警告 |
 
-`valid_until` 已过、`valid_from` 尚未到达或 `review_after` 到期时，查询结果必须携带 warning。升级到 1.2.0 时，CLI 在根目录 `.llm-wiki-governance.json` 记录既有 knowledge 的完整文件哈希；只有与该基线完全一致且没有 `governance_version` 的文档按 legacy 读取。legacy 文档一律作为 `current` 候选并给迁移 warning，不解释升级前可能同名的 lifecycle 和日期自定义属性；重新发布后写入受保护的 `governance_version: personal-1.2` 并执行严格检查。该基线必须随知识库备份或提交。SQLite 只执行候选过滤，最终判断依据仍是 Markdown Properties。
+`valid_until` 已过、`valid_from` 尚未到达或 `review_after` 到期时，查询结果必须携带 warning。已发布 knowledge 必须带 `governance_version: personal-1.3` 和合法 lifecycle；缺失或其他版本直接拒绝。SQLite 只执行候选过滤，最终判断依据仍是 Markdown Properties。
 
 ## 6. 关联格式
 
@@ -123,7 +122,6 @@ related:
 - 目标位于同一 Vault 的 `knowledge/`；
 - 文件名中的 knowledge ID 与目标 frontmatter ID 一致；
 - 不允许只写 `[[标题]]`；
-- 不允许链接 `llm-wiki/` 派生文件作为知识关系。
 
 ## 7. 结论级引用
 

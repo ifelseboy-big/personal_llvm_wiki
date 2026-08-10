@@ -44,8 +44,7 @@
 schema_version, id, status, sources,
 captured_at, published_at, updated_at,
 content_hash, media_type, original_name, asset,
-derived_from, compiler, compiler_version,
-build_fingerprint, generated_at, governance_version
+governance_version
 ```
 
 `sources` 保存 raw ID 与发布时内容哈希的绑定。Obsidian Properties 界面不支持编辑其嵌套结构，因此只在源码模式查看，不手工修改、不拍平、不转存到 SQLite。

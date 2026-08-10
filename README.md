@@ -1,14 +1,12 @@
 # llm-wiki
 
-`llm-wiki` 是一个本地优先、基于 Markdown、兼容 Obsidian 的可信个人知识库 CLI。它允许人和 AI CLI 通过同一套受控协议采集、整理、发布、构建、检索和追溯知识，无需 MCP 或常驻服务。
+`llm-wiki` 是一个本地优先、基于 Markdown、兼容 Obsidian 的可信个人知识库 CLI。它允许人和 AI CLI 通过同一套受控协议采集、整理、发布、检索和追溯知识，无需 MCP 或常驻服务。
 
 ## 事实边界
 
 - `raw/`：原始证据，内容变化可检测。
 - `knowledge/`：经 `publish apply` 明确确认的可信知识，唯一最终事实源。
-- `llm-wiki/`：从可信知识确定性构建的 AI 派生视图，可删除重建。
 - `.llm-wiki/index.sqlite`：可删除、可重建的全文检索索引，不是知识或元数据来源。
-- `.llm-wiki-governance.json`：仅在 1.1.x 升级时创建的旧知识完整文件基线，必须随 Vault 备份或提交。
 
 ## 构建
 
@@ -41,34 +39,33 @@ raw 正文不进入全文检索。人工确认 `publish diff` 并执行 `publish
 ## 命令面
 
 ```text
-init, locate, status, doctor, migrate
+init, locate, status, doctor
 raw add|list|show
 publish propose|diff|apply|reject
-build [--full], build status
 query, show, trace
 index status|update|rebuild
 template list|show|create|upgrade
 skill status|install|update|uninstall
 ```
 
-所有命令支持 `--wiki` 和 `--json`；写命令支持 `--dry-run`。`publish apply` 是唯一可信知识提交点，成功后自动增量刷新 AI 派生层与索引；刷新失败只产生明确 warning，不回滚已经提交的事实。
+所有命令支持 `--wiki` 和 `--json`；写命令支持 `--dry-run`。`publish apply` 是唯一可信知识提交点，成功后自动增量刷新索引；索引刷新失败只产生明确 warning，不回滚已经提交的事实。
 
 ## 初始化模板
 
 内置 `personal` 模板会生成：
 
-- `.gitignore`：自动忽略可重建的 `llm-wiki/`、SQLite 索引和本地运行目录；保留 `.llm-wiki/changes/`、模板状态及模板基线供 Git 追踪。已有 `.gitignore` 时只追加缺失规则，不覆盖用户内容。
+- `.gitignore`：自动忽略 SQLite 索引和本地运行目录；保留 `.llm-wiki/changes/`、模板状态及模板基线供 Git 追踪。已有 `.gitignore` 时只追加缺失规则，不覆盖用户内容。
 - `AGENTS.md`、`LLM-WIKI.md`：AI 治理入口和人的使用首页。
-- `rules/`：采集、类型、元数据、生命周期、引用、发布、派生层和质量规则。
+- `rules/`：采集、类型、元数据、生命周期、引用、发布、索引和质量规则。
 - `templates/raw/`：人工记录和文件来源模板。
 - `templates/knowledge/`：claim、concept、guide、tutorial、reference、decision、project 模板。
 - `views/`：可选的 Obsidian Bases 当前知识、复核和 raw 视图。
 
-personal 1.3.0 模板在 1.2 治理契约上明确 raw 不可检索、knowledge 可信检索、raw 待整理收件箱、“已采集/已提案/已发布”状态和发布后自动刷新流程。frontmatter 继续兼容 Obsidian Properties，并保留 lifecycle、有效期、复核日期、稳定关系和 raw-ID 命名脚注。`template create` 可展开 Obsidian 核心变量并生成可编辑草稿；用户 Properties 在采集、发布和派生构建时保留并可检索，系统字段仍只能由 CLI 管理。
-
-从 personal 1.1.x 升级时，既有 knowledge 不会被直接改写；其完整文件哈希记录在根目录 `.llm-wiki-governance.json`。原文件保持不变时按 legacy 读取并提示迁移，下一次通过提案发布后写入 `governance_version: personal-1.2` 并进入严格校验。
+personal 1.4.0 模板明确 raw 不可检索、knowledge 可信检索、raw 待整理收件箱、“已采集/已提案/已发布”状态和发布后自动刷新流程。frontmatter 兼容 Obsidian Properties，并保留 lifecycle、有效期、复核日期、稳定关系和 raw-ID 命名脚注。`template create` 可展开 Obsidian 核心变量并生成可编辑草稿；用户 Properties 在采集和发布时保留并可检索，系统字段仍只能由 CLI 管理。当前只接受 `personal-1.3` 治理标记，不读取旧治理版本。
 
 `template upgrade --plan` 使用安装时基线、用户当前文件和新内置版本进行三方判断；用户修改的文件不会被静默覆盖。
+
+从 personal 1.3.0 升级时运行 `template upgrade --apply`；未修改的旧 `rules/derived.md` 会被删除并替换为 `rules/index.md`。旧 Vault 中已有的 `llm-wiki/` 目录可直接删除，旧 `paths.derived` 配置会被兼容读取但不再参与任何命令。
 
 ## Codex Skill
 

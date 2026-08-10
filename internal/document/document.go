@@ -32,7 +32,6 @@ var validIDPatterns = map[string]*regexp.Regexp{
 	"wiki": regexp.MustCompile(`^wiki_[0-9a-hjkmnp-tv-z]{26}$`),
 	"raw":  regexp.MustCompile(`^raw_[0-9a-hjkmnp-tv-z]{26}$`),
 	"know": regexp.MustCompile(`^know_[0-9a-hjkmnp-tv-z]{26}$`),
-	"drv":  regexp.MustCompile(`^drv_[0-9a-hjkmnp-tv-z]{26}$`),
 	"chg":  regexp.MustCompile(`^chg_[0-9a-hjkmnp-tv-z]{26}$`),
 	"op":   regexp.MustCompile(`^op_[0-9a-hjkmnp-tv-z]{26}$`),
 }
@@ -43,11 +42,6 @@ func ValidID(prefix, id string) bool {
 }
 
 type SourceRef struct {
-	ID          string `yaml:"id" json:"id"`
-	ContentHash string `yaml:"content_hash" json:"content_hash"`
-}
-
-type DerivedFrom struct {
 	ID          string `yaml:"id" json:"id"`
 	ContentHash string `yaml:"content_hash" json:"content_hash"`
 }
@@ -69,11 +63,6 @@ type Metadata struct {
 	Sources           []SourceRef    `yaml:"sources,omitempty" json:"sources,omitempty"`
 	Tags              []string       `yaml:"tags,omitempty" json:"tags,omitempty"`
 	Aliases           []string       `yaml:"aliases,omitempty" json:"aliases,omitempty"`
-	DerivedFrom       *DerivedFrom   `yaml:"derived_from,omitempty" json:"derived_from,omitempty"`
-	Compiler          string         `yaml:"compiler,omitempty" json:"compiler,omitempty"`
-	CompilerVersion   int            `yaml:"compiler_version,omitempty" json:"compiler_version,omitempty"`
-	BuildFingerprint  string         `yaml:"build_fingerprint,omitempty" json:"build_fingerprint,omitempty"`
-	GeneratedAt       string         `yaml:"generated_at,omitempty" json:"generated_at,omitempty"`
 	GovernanceVersion string         `yaml:"governance_version,omitempty" json:"governance_version,omitempty"`
 	Extra             map[string]any `yaml:",inline" json:"extra,omitempty"`
 }
@@ -90,13 +79,6 @@ func NewID(prefix string, now time.Time) (string, error) {
 		return "", err
 	}
 	return prefix + "_" + strings.ToLower(id.String()), nil
-}
-
-func DerivedID(knowledgeID string) (string, error) {
-	if !ValidID("know", knowledgeID) {
-		return "", fmt.Errorf("invalid knowledge id %q", knowledgeID)
-	}
-	return "drv_" + strings.TrimPrefix(knowledgeID, "know_"), nil
 }
 
 func HashBytes(data []byte) string {
@@ -229,7 +211,7 @@ func (d *Document) Validate(layer string, requireSources bool) error {
 	if d.Metadata.ID == "" || !ValidHash(d.Metadata.ContentHash) {
 		return errors.New("id and content_hash are required")
 	}
-	prefix := map[string]string{"raw": "raw", "knowledge": "know", "derived": "drv"}[layer]
+	prefix := map[string]string{"raw": "raw", "knowledge": "know"}[layer]
 	if prefix == "" || !ValidID(prefix, d.Metadata.ID) {
 		return fmt.Errorf("id %q does not match layer %s", d.Metadata.ID, layer)
 	}
@@ -268,16 +250,6 @@ func (d *Document) Validate(layer string, requireSources bool) error {
 				return errors.New("knowledge source requires raw id and content hash")
 			}
 			seenSources[source.ID] = true
-		}
-	case "derived":
-		if d.Metadata.DerivedFrom == nil || !ValidID("know", d.Metadata.DerivedFrom.ID) || !ValidHash(d.Metadata.DerivedFrom.ContentHash) {
-			return errors.New("derived_from knowledge reference is required")
-		}
-		if strings.TrimSpace(d.Metadata.Compiler) == "" || d.Metadata.CompilerVersion < 1 || !ValidHash(d.Metadata.BuildFingerprint) {
-			return errors.New("derived compiler, compiler_version, and build_fingerprint are required")
-		}
-		if _, err := time.Parse(time.RFC3339, d.Metadata.GeneratedAt); err != nil {
-			return errors.New("derived generated_at must be RFC3339")
 		}
 	}
 	return nil

@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	buildlayer "llm-wiki/internal/build"
 	"llm-wiki/internal/document"
 	"llm-wiki/internal/governance"
 	indexstore "llm-wiki/internal/index"
@@ -138,45 +137,6 @@ func TestFileFirstFullWorkflowAndRebuildEquivalence(t *testing.T) {
 		t.Fatalf("query changed after deleting SQLite\nbefore=%#v\nafter=%#v", before, after)
 	}
 
-	firstBuild, err := buildlayer.Build(cfg, true, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	derivedPath := filepath.Join(cfg.DerivedDir(), "documents", proposal.Proposal.KnowledgeID+".md")
-	firstBytes, err := os.ReadFile(derivedPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.RemoveAll(cfg.DerivedDir()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := indexstore.Update(cfg, false); err != nil {
-		t.Fatalf("missing disposable derived directory blocked incremental indexing: %v", err)
-	}
-	if _, err := indexstore.Rebuild(cfg); err != nil {
-		t.Fatalf("missing disposable derived directory blocked index rebuild: %v", err)
-	}
-	secondBuild, err := buildlayer.Build(cfg, true, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	secondBytes, err := os.ReadFile(derivedPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(firstBytes, secondBytes) {
-		t.Fatal("derived document is not byte-reproducible")
-	}
-	if firstBuild.Manifest.Items[0].Fingerprint != secondBuild.Manifest.Items[0].Fingerprint {
-		t.Fatal("derived fingerprint changed after full rebuild")
-	}
-	noOpBuild, err := buildlayer.Build(cfg, false, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if noOpBuild.Generated != 0 || noOpBuild.Removed != 0 || len(noOpBuild.Files) != 0 {
-		t.Fatalf("unchanged incremental build performed writes: %#v", noOpBuild)
-	}
 	trace, err := document.FindByID(cfg.KnowledgeDir(), proposal.Proposal.KnowledgeID)
 	if err != nil || trace.Metadata.Sources[0].ContentHash != added[0].ContentHash {
 		t.Fatalf("published file is not the provenance authority: %#v %v", trace, err)
@@ -369,33 +329,6 @@ Property-backed knowledge.[^%s-1]
 	oldMatches, err := indexstore.SearchCandidates(cfg, "DescriptionOnlyZXQ", 8)
 	if err != nil || len(oldMatches) != 0 {
 		t.Fatalf("deleted property value remains searchable: %#v %v", oldMatches, err)
-	}
-	if _, err := buildlayer.Build(cfg, false, false); err != nil {
-		t.Fatal(err)
-	}
-	derivedID, err := document.DerivedID(updated.Metadata.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	derived, err := document.FindByID(cfg.DerivedDir(), derivedID)
-	if err != nil || derived.Metadata.Extra["description"] != "DescriptionUpdatedZXQ" {
-		t.Fatalf("derived document lost custom properties: %#v %v", derived, err)
-	}
-	updated.Metadata.Extra["description"] = "MetadataDriftZXQ"
-	if err := document.Write(updated.Path, updated.Metadata, updated.Body); err != nil {
-		t.Fatal(err)
-	}
-	buildStatus, err := buildlayer.GetStatus(cfg)
-	foundMetadataDrift := false
-	if err == nil {
-		for _, item := range buildStatus.Items {
-			if item.KnowledgeID == updated.Metadata.ID && item.Reason == "source knowledge metadata changed" {
-				foundMetadataDrift = true
-			}
-		}
-	}
-	if err != nil || buildStatus.Fresh || !foundMetadataDrift {
-		t.Fatalf("metadata-only knowledge change was not detected: %#v %v", buildStatus, err)
 	}
 }
 

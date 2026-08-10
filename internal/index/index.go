@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	SchemaVersion       = 3
+	SchemaVersion       = 4
 	QueryPlannerVersion = "2"
 )
 
@@ -167,7 +167,7 @@ func rebuildLocked(cfg *config.Instance) (*RebuildResult, error) {
 
 	result := &RebuildResult{
 		Path:      filepath.ToSlash(filepath.Join(cfg.Paths.Runtime, "index.sqlite")),
-		Documents: map[string]int{"raw": 0, "knowledge": 0, "derived": 0},
+		Documents: map[string]int{"raw": 0, "knowledge": 0},
 		RebuiltAt: time.Now().Format(time.RFC3339),
 	}
 	type layerDocs struct {
@@ -178,12 +178,9 @@ func rebuildLocked(cfg *config.Instance) (*RebuildResult, error) {
 	var layers []layerDocs
 	rawHashes := map[string]string{}
 	for _, spec := range []struct{ name, root string }{
-		{"raw", cfg.RawDir()}, {"knowledge", cfg.KnowledgeDir()}, {"derived", cfg.DerivedDir()},
+		{"raw", cfg.RawDir()}, {"knowledge", cfg.KnowledgeDir()},
 	} {
-		if _, err := os.Stat(spec.root); errors.Is(err, os.ErrNotExist) && spec.name == "derived" {
-			layers = append(layers, layerDocs{name: spec.name, root: spec.root})
-			continue
-		} else if err != nil {
+		if _, err := os.Stat(spec.root); err != nil {
 			return nil, err
 		}
 		docs, problems := document.ScanMarkdown(spec.root)
@@ -195,7 +192,7 @@ func rebuildLocked(cfg *config.Instance) (*RebuildResult, error) {
 				return nil, fmt.Errorf("validate %s: %w", doc.Path, err)
 			}
 			if spec.name == "knowledge" {
-				if _, err := governance.ValidateStored(cfg, doc, time.Now()); err != nil {
+				if err := governance.ValidateStored(cfg, doc, time.Now()); err != nil {
 					return nil, fmt.Errorf("validate governance %s: %w", doc.Path, err)
 				}
 			}
@@ -517,11 +514,9 @@ func scanValidated(cfg *config.Instance) ([]*scannedDocument, error) {
 	var scanned []*scannedDocument
 	rawHashes := map[string]string{}
 	for _, spec := range []struct{ layer, root string }{
-		{"raw", cfg.RawDir()}, {"knowledge", cfg.KnowledgeDir()}, {"derived", cfg.DerivedDir()},
+		{"raw", cfg.RawDir()}, {"knowledge", cfg.KnowledgeDir()},
 	} {
-		if _, err := os.Stat(spec.root); errors.Is(err, os.ErrNotExist) && spec.layer == "derived" {
-			continue
-		} else if err != nil {
+		if _, err := os.Stat(spec.root); err != nil {
 			return nil, err
 		}
 		docs, problems := document.ScanMarkdown(spec.root)
@@ -533,7 +528,7 @@ func scanValidated(cfg *config.Instance) ([]*scannedDocument, error) {
 				return nil, fmt.Errorf("validate %s: %w", doc.Path, err)
 			}
 			if spec.layer == "knowledge" {
-				if _, err := governance.ValidateStored(cfg, doc, time.Now()); err != nil {
+				if err := governance.ValidateStored(cfg, doc, time.Now()); err != nil {
 					return nil, fmt.Errorf("validate governance %s: %w", doc.Path, err)
 				}
 			}
@@ -754,7 +749,7 @@ func SearchWithOptions(cfg *config.Instance, question string, opts SearchOptions
 
 	result := &SearchResult{NormalizedQuery: normalized, RetrievalModes: []string{"strict"}}
 	fetchLimit := opts.Limit * 4
-	filterInactive := governance.UsesPersonalV12(cfg) && !opts.IncludeInactive
+	filterInactive := governance.UsesPersonalGovernance(cfg) && !opts.IncludeInactive
 	strict, err := searchLevel(db, normalized, fetchLimit, true, "strict", filterInactive)
 	if err != nil {
 		return nil, err
@@ -870,7 +865,7 @@ func searchLevel(db *sql.DB, query string, limit int, useSimpleQuery bool, mode 
 	}
 	lifecycleFilter := ""
 	if filterInactive {
-		lifecycleFilter = "AND (COALESCE(json_extract(d.metadata_json,'$.governance_version'),'') != 'personal-1.2' OR trim(COALESCE(json_extract(d.metadata_json,'$.extra.lifecycle'),'current')) NOT IN ('superseded','retracted'))"
+		lifecycleFilter = "AND trim(COALESCE(json_extract(d.metadata_json,'$.extra.lifecycle'),'current')) NOT IN ('superseded','retracted')"
 	}
 	rows, err := db.Query(fmt.Sprintf(`
 		SELECT d.id,d.path,c.id,c.ordinal,c.start_line,c.end_line,c.body_hash,
@@ -1096,7 +1091,7 @@ func effectiveUpdatedAt(meta document.Metadata) string {
 	if meta.CapturedAt != "" {
 		return meta.CapturedAt
 	}
-	return meta.GeneratedAt
+	return ""
 }
 
 func swapFile(staged, target string) error {

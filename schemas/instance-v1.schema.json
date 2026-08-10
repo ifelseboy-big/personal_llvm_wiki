@@ -20,11 +20,10 @@
     },
     "paths": {
       "type": "object",
-      "required": ["raw", "knowledge", "derived", "templates", "rules", "runtime"],
+      "required": ["raw", "knowledge", "templates", "rules", "runtime"],
       "properties": {
         "raw": { "$ref": "#/$defs/relativePath" },
         "knowledge": { "$ref": "#/$defs/relativePath" },
-        "derived": { "$ref": "#/$defs/relativePath" },
         "templates": { "$ref": "#/$defs/relativePath" },
         "rules": { "$ref": "#/$defs/relativePath" },
         "runtime": { "$ref": "#/$defs/relativePath" }
