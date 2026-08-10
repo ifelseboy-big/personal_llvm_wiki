@@ -53,7 +53,7 @@ internal/
   skill/                   AI CLI 适配器
 resources/
   vault-templates/personal/
-  skills/llm-wiki/
+  skills/llm-wiki-{query,add,publish,maintain}/
 schemas/                   稳定 JSON Schema
 tests/e2e/                 安装后二进制端到端测试
 ```
@@ -72,7 +72,7 @@ created_at = "2026-08-08T10:00:00+08:00"
 
 [template]
 name = "personal"
-version = "1.2.0"
+version = "1.3.0"
 
 [paths]
 raw = "raw"
@@ -296,6 +296,8 @@ Change set：
 
 `propose` 不写 `knowledge/`。`apply` 是唯一审批提交点。若 source hash、base hash、proposal hash 任一变化，进入 `stale` 并以退出码 5 失败。`reject` 不删除审计材料。
 
+`apply` 提交事实文件后，由 app 层自动增量构建派生层并更新索引。派生或索引失败以 warning 返回，不能撤销或降级已经提交的 knowledge 事实；调用方按 warning 修复可重建层。
+
 ## 9. 锁、事务和恢复
 
 所有会修改实例文件的命令获取 `.llm-wiki/locks/write.lock`。只读命令不持锁，但只读取已经原子提交的文件和 SQLite 事务快照。
@@ -307,7 +309,7 @@ Change set：
 3. `fsync` 文件和目录，写入 `journal.json` 状态 `prepared`。
 4. 保存被替换文件的恢复副本，然后逐个原子替换。
 5. 所有事实文件完成后将 journal 标记为 `files_committed`。
-6. 在单个 SQLite 事务中更新派生索引。
+6. 增量刷新可重建派生层，并在单个 SQLite 事务中更新索引。
 7. 标记业务状态和 journal 为 `complete`。
 
 启动任何写命令前执行恢复：`prepared` 回滚；`files_committed` 以文件为准补建索引；`complete` 清理缓存。不得用 SQLite 状态反向覆盖文件。
@@ -339,7 +341,7 @@ operations(id PRIMARY KEY, kind, state, started_at, finished_at, detail_json)
 - FTS 原始字段直接写入 title、headings、properties 和 body。索引元数据记录 tokenizer 版本/commit 和 query planner 版本，任一不匹配都要求重建。
 - 查询先规范化自然问题并删除确定无检索价值的包装词；默认执行 `simple_query(..., 0)` 严格 AND 检索。结果不足时才以中文连续二字短语和英文完整 token 做宽松 OR 补足，禁止退回中文单字全量 OR。
 - 严格结果始终排在宽松结果前；每级内部按 BM25、文档 ID、chunk ordinal 确定性排序。同一 knowledge 最多返回两个 chunk。
-- SQLite 只返回候选 knowledge ID、路径、行号、chunk hash、文件 hash 和相关性分数。
+- FTS 只接收已发布 knowledge 正文；raw 不生成 searchable chunk。SQLite 只返回候选 knowledge ID、路径、行号、chunk hash、文件 hash 和相关性分数。
 - 每次查询在执行 FTS 前比较完整 `knowledge/` 文件集合的相对路径和文件 SHA-256；新增、删除、改名、命中或未命中文档修改均返回 `INDEX_STALE`。不能用 mtime/size 代替文件 hash。
 - CLI 根据候选路径重新读取 `knowledge/` Markdown，校验 ID、完整文件 hash 和正文 hash，再从 Markdown 提取 evidence。
 - 查询不自动同步索引，也不修改知识库；索引与发布文件不一致时返回 `INDEX_STALE`，由调用方显式执行 `index update`。
@@ -391,15 +393,15 @@ resources/vault-templates/personal/
 
 升级时比较“旧内置版本、用户当前文件、新内置版本”：未修改的受管文件可更新；用户修改过的文件只生成三方 diff 和升级提案，绝不静默覆盖。`raw/`、`knowledge/`、`llm-wiki/` 永远不属于模板升级写入目标。
 
-`AGENTS.md` 只描述政策、命令和规则入口；各类知识字段要求放在 `rules/` 与 `templates/`，避免重复和漂移。
+Vault 的 `AGENTS.md` 只描述知识库政策和管理规则入口，不承担 CLI 或外部 AI 使用说明；各类知识字段要求放在 `rules/` 与 `templates/`，避免重复和漂移。
 
 ## 13. Skill
 
 首批支持 Codex。客户端适配器接口负责 `Detect/ResolveTarget/Install/Status/Update/Uninstall`，后续客户端不能进入核心知识逻辑。
 
-Codex 用户目标目录为 `$HOME/.agents/skills/llm-wiki`。安装前显示规范绝对路径，安装目录内写入 llm-wiki 所有权 manifest。升级只替换 manifest 声明的文件；发现未知用户文件时保留。卸载只删除本工具拥有且 hash 匹配的文件。
+Codex 安装根目录为 `$HOME/.agents/skills`，安装四个同级 Skill：`llm-wiki-query`、`llm-wiki-add`、`llm-wiki-publish`、`llm-wiki-maintain`。查询、采集、受控发布与可重建层维护分别触发，避免单个 Skill 混合读写授权。根目录所有权 manifest 只声明这四个目录中的文件；发现用户修改或未知冲突时拒绝覆盖，卸载只删除 hash 匹配的自有文件。
 
-Skill 只负责启动和调用约束：先 `locate`，再读取目标知识库根目录的 `AGENTS.md`，按其中的操作路由加载规则。知识类型、采集细节和生命周期等语义不得复制到 Skill；切换 wiki 或规则变化后必须重新读取。
+每个 Skill 只负责自身命令边界：先 `locate`，再读取目标知识库根目录的 `AGENTS.md` 与所需规则。知识类型、生命周期等治理语义不得复制到 Skill。`llm-wiki-query` 用 SQLite 选择 knowledge 候选后必须调用 `show` 回读原始 knowledge；`llm-wiki-add` 只采集 raw；`llm-wiki-publish` 展示 diff 并等待明确批准；`llm-wiki-maintain` 只重建派生层和索引。
 
 ## 14. 安全边界
 
@@ -430,7 +432,7 @@ Skill 只负责启动和调用约束：先 `locate`，再读取目标知识库�
 5. 重建测试：删除 SQLite 后 query/trace 结果与删除前等价；删除派生层后 build 指纹等价。
 6. 安全测试：symlink、`..`、敏感文件、超大文件、恶意 YAML/FTS 输入。
 7. Golden test：JSON Schema 和模板产物。
-8. 端到端：执行 `HANDOFF.md` 的完整 init/raw/propose/apply/build/query/trace/rebuild 场景。
+8. 端到端：执行完整 init/raw/propose/diff/apply/query/show/trace/rebuild 场景，并验证 raw 不可检索和发布后自动刷新。
 9. CI 在原生 macOS ARM64 上执行格式、vet、普通测试、race、Schema 和 GoReleaser 检查，并以 snapshot 完整生成归档、校验和及 SBOM。
 10. 检索评测分别记录自然语言与关键词改写查询的 Recall@5、Precision@5、MRR、nDCG@5，并提供 1k/10k 文档显式性能基准。
 

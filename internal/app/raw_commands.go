@@ -8,7 +8,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	indexstore "llm-wiki/internal/index"
 	"llm-wiki/internal/raw"
 	"llm-wiki/internal/vault"
 )
@@ -54,11 +53,6 @@ func newRawAddCommand(rt *Runtime) *cobra.Command {
 			if allowSensitive {
 				warnings = append(warnings, "sensitive-file protection was explicitly overridden; review captured paths before publication")
 			}
-			if !rt.DryRun {
-				if _, indexErr := indexstore.Update(cfg, false); indexErr != nil {
-					warnings = append(warnings, "raw files were committed but index rebuild failed: "+indexErr.Error())
-				}
-			}
 			files := make([]string, 0, len(added)*2)
 			var totalBytes int64
 			for _, item := range added {
@@ -82,7 +76,8 @@ func newRawAddCommand(rt *Runtime) *cobra.Command {
 }
 
 func newRawListCommand(rt *Runtime) *cobra.Command {
-	return &cobra.Command{
+	var unreferenced bool
+	cmd := &cobra.Command{
 		Use: "list", Args: cobra.NoArgs, Short: "List captured raw evidence",
 		RunE: func(_ *cobra.Command, _ []string) error {
 			cfg, ref, err := resolveWiki(rt)
@@ -90,22 +85,46 @@ func newRawListCommand(rt *Runtime) *cobra.Command {
 				return err
 			}
 			docs, problems := raw.List(cfg)
-			items := make([]map[string]any, 0, len(docs))
-			for _, doc := range docs {
-				rel, _ := filepath.Rel(cfg.Root, doc.Path)
-				items = append(items, map[string]any{
-					"id": doc.Metadata.ID, "title": doc.Metadata.Title,
-					"type": doc.Metadata.Type, "path": filepath.ToSlash(rel),
-					"content_hash": doc.Metadata.ContentHash, "captured_at": doc.Metadata.CapturedAt,
-				})
+			references, referenceErr := raw.ReferenceMap(cfg)
+			if referenceErr != nil && unreferenced {
+				return E("RAW_REFERENCE_SCAN_FAILED", "cannot derive raw references from published knowledge", ExitValidation, referenceErr)
 			}
-			warnings := make([]string, 0, len(problems))
+			warnings := make([]string, 0, len(problems)+1)
 			for _, problem := range problems {
 				warnings = append(warnings, problem.Error())
 			}
-			return rt.Success("raw.list", ref, map[string]any{"items": items, "count": len(items)}, warnings, nil)
+			if referenceErr != nil {
+				warnings = append(warnings, "raw reference state is unavailable: "+referenceErr.Error())
+			}
+			items := make([]map[string]any, 0, len(docs))
+			for _, doc := range docs {
+				referencedBy := references[doc.Metadata.ID]
+				if referencedBy == nil {
+					referencedBy = []string{}
+				}
+				if unreferenced && len(referencedBy) > 0 {
+					continue
+				}
+				rel, _ := filepath.Rel(cfg.Root, doc.Path)
+				item := map[string]any{
+					"id": doc.Metadata.ID, "title": doc.Metadata.Title,
+					"type": doc.Metadata.Type, "path": filepath.ToSlash(rel),
+					"content_hash": doc.Metadata.ContentHash, "captured_at": doc.Metadata.CapturedAt,
+				}
+				if referenceErr == nil {
+					item["referenced"] = len(referencedBy) > 0
+					item["referenced_by"] = referencedBy
+				}
+				items = append(items, item)
+			}
+			return rt.Success("raw.list", ref, map[string]any{
+				"items": items, "count": len(items), "unreferenced_only": unreferenced,
+				"references_complete": referenceErr == nil,
+			}, warnings, nil)
 		},
 	}
+	cmd.Flags().BoolVar(&unreferenced, "unreferenced", false, "show only raw evidence not referenced by published knowledge")
+	return cmd
 }
 
 func newRawShowCommand(rt *Runtime) *cobra.Command {

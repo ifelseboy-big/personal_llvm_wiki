@@ -35,6 +35,10 @@ func TestFileFirstFullWorkflowAndRebuildEquivalence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	references, err := raw.ReferenceMap(cfg)
+	if err != nil || len(references[added[0].ID]) != 0 {
+		t.Fatalf("new raw unexpectedly appeared published: %#v %v", references, err)
+	}
 	draft := filepath.Join(t.TempDir(), "draft.md")
 	draftBody := []byte(fmt.Sprintf("---\ntype: concept\ntitle: LLVM 的模块化架构\ndescription: LLVM 模块化架构的稳定知识\nlifecycle: current\ntags: [LLVM, 编译器]\n---\n# LLVM 的模块化架构\n\nLLVM 使用稳定的 IR 解耦前端、优化器和后端。[^%s-1]\n\n## 核心结论\n\n稳定 IR 是跨语言复用的关键边界。\n\n[^%s-1]: locator: 原始内容\n", added[0].ID, added[0].ID))
 	if err := os.WriteFile(draft, draftBody, 0o600); err != nil {
@@ -53,6 +57,10 @@ func TestFileFirstFullWorkflowAndRebuildEquivalence(t *testing.T) {
 	}
 	if err := publish.CompleteOperation(cfg, applyResult.OperationID); err != nil {
 		t.Fatal(err)
+	}
+	references, err = raw.ReferenceMap(cfg)
+	if err != nil || len(references[added[0].ID]) != 1 || references[added[0].ID][0] != proposal.Proposal.KnowledgeID {
+		t.Fatalf("published source relationship was not derived from knowledge files: %#v %v", references, err)
 	}
 	unchangedUpdate, err := indexstore.Update(cfg, false)
 	if err != nil {

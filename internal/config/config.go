@@ -74,7 +74,7 @@ func DefaultInstance(name, id string, now time.Time) *Instance {
 		InstanceID:    id,
 		Name:          name,
 		CreatedAt:     now.Format(time.RFC3339),
-		Template:      TemplateConfig{Name: "personal", Version: "1.2.0"},
+		Template:      TemplateConfig{Name: "personal", Version: "1.3.0"},
 		Paths: PathsConfig{
 			Raw: "raw", Knowledge: "knowledge", Derived: "llm-wiki",
 			Templates: "templates", Rules: "rules", Runtime: ".llm-wiki",

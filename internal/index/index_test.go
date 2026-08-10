@@ -46,6 +46,44 @@ func TestMakeChunksInheritsHeading(t *testing.T) {
 	}
 }
 
+func TestSearchNeverIndexesOrReturnsRawBody(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "raw-not-searchable")
+	initialized, err := vault.Init(vault.InitOptions{Path: root, Name: "raw-not-searchable", Template: "personal"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := initialized.Config
+	if _, err := raw.Add(cfg, raw.AddOptions{
+		Input: "-", Name: "private-source.md",
+		Stdin: bytes.NewBufferString("# RawOnlyNeedleZXQ\n\nThis body must never enter FTS.\n"),
+		Now:   time.Date(2026, 8, 10, 8, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Rebuild(cfg); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Search(cfg, "RawOnlyNeedleZXQ", 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Candidates) != 0 {
+		t.Fatalf("raw body leaked into query candidates: %#v", result.Candidates)
+	}
+	db, err := openDB(DBPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var rawChunks int
+	if err := db.QueryRow(`SELECT count(*) FROM chunks c JOIN documents d ON d.id=c.document_id WHERE d.layer='raw'`).Scan(&rawChunks); err != nil {
+		t.Fatal(err)
+	}
+	if rawChunks != 0 {
+		t.Fatalf("raw documents produced %d searchable chunks", rawChunks)
+	}
+}
+
 func TestSimpleChineseRetrievalRankingAndFallback(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "search-wiki")
 	initialized, err := vault.Init(vault.InitOptions{Path: root, Name: "search", Template: "personal"})

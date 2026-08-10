@@ -13,7 +13,7 @@ import (
 )
 
 func newSkillCommand(rt *Runtime) *cobra.Command {
-	cmd := &cobra.Command{Use: "skill", Short: "Manage the optional AI client skill adapter"}
+	cmd := &cobra.Command{Use: "skill", Short: "Manage the optional AI client skill adapters"}
 	cmd.AddCommand(newSkillStatusCommand(rt))
 	cmd.AddCommand(newSkillMutationCommand(rt, "install"))
 	cmd.AddCommand(newSkillMutationCommand(rt, "update"))
@@ -58,7 +58,7 @@ func newSkillMutationCommand(rt *Runtime, action string) *cobra.Command {
 					err.Details = map[string]any{"target": target, "action": action}
 					return err
 				}
-				confirmed, err := promptConfirmation(rt, fmt.Sprintf("%s llm-wiki skill at %s?", action, target))
+				confirmed, err := promptConfirmation(rt, fmt.Sprintf("%s llm-wiki skill set under %s?", action, target))
 				if err != nil {
 					return E("CONFIRMATION_FAILED", "cannot read confirmation", ExitIO, err)
 				}

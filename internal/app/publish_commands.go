@@ -4,14 +4,22 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	buildlayer "llm-wiki/internal/build"
 	indexstore "llm-wiki/internal/index"
 	"llm-wiki/internal/publish"
 	"llm-wiki/internal/vault"
 )
+
+type publishApplyCommandResult struct {
+	*publish.ApplyResult
+	Derived *buildlayer.Result       `json:"derived,omitempty"`
+	Index   *indexstore.UpdateResult `json:"index,omitempty"`
+}
 
 func newPublishCommand(rt *Runtime) *cobra.Command {
 	cmd := &cobra.Command{Use: "publish", Short: "Propose, review, and explicitly apply trusted knowledge changes"}
@@ -109,15 +117,28 @@ func newPublishApplyCommand(rt *Runtime) *cobra.Command {
 			}
 			warnings := recoveryWarnings
 			files := []string{}
+			commandResult := &publishApplyCommandResult{ApplyResult: result}
 			if !rt.DryRun {
 				files = append(files, result.TargetPath)
-				if _, indexErr := indexstore.Update(cfg, false); indexErr != nil {
+				buildResult, buildErr := buildlayer.Build(cfg, false, false)
+				if buildErr != nil {
+					warnings = append(warnings, "knowledge was committed but the AI-derived layer was not refreshed: "+buildErr.Error())
+				} else {
+					commandResult.Derived = buildResult
+					files = append(files, buildResult.Files...)
+				}
+				indexResult, indexErr := indexstore.Update(cfg, false)
+				if indexErr != nil {
 					warnings = append(warnings, "knowledge was committed but index rebuild failed: "+indexErr.Error())
-				} else if completeErr := publish.CompleteOperation(cfg, result.OperationID); completeErr != nil {
-					warnings = append(warnings, "knowledge and index were committed but transaction finalization failed: "+completeErr.Error())
+				} else {
+					commandResult.Index = indexResult
+					files = append(files, filepath.ToSlash(filepath.Join(cfg.Paths.Runtime, "index.sqlite")))
+					if completeErr := publish.CompleteOperation(cfg, result.OperationID); completeErr != nil {
+						warnings = append(warnings, "knowledge and index were committed but transaction finalization failed: "+completeErr.Error())
+					}
 				}
 			}
-			return rt.Success("publish.apply", ref, result, warnings, files)
+			return rt.Success("publish.apply", ref, commandResult, warnings, files)
 		},
 	}
 }

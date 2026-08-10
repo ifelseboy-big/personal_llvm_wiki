@@ -1,0 +1,4 @@
+interface:
+  display_name: "LLM Wiki Add"
+  short_description: "只把指定内容采集到个人知识库 raw 证据层，不执行发布"
+  default_prompt: "使用 $llm-wiki-add 把这段内容采集到我的知识库，但不要发布。"

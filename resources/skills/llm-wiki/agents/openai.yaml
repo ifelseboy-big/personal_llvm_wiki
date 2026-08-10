@@ -1,4 +1,0 @@
-interface:
-  display_name: "LLM Wiki"
-  short_description: "按照目标 Vault 规则管理、查询、整理和发布可信知识"
-  default_prompt: "使用 $llm-wiki 定位目标知识库，读取其中的 AGENTS.md，再按其规则处理我的知识。"

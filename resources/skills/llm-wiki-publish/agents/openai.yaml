@@ -1,0 +1,4 @@
+interface:
+  display_name: "LLM Wiki Publish"
+  short_description: "整理指定 raw 材料，展示差异并在人工明确批准后发布知识"
+  default_prompt: "使用 $llm-wiki-publish 整理指定 raw 材料，展示差异并等待我批准发布。"

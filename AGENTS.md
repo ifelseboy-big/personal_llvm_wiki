@@ -105,7 +105,7 @@
 
 模板必须同时满足 YAML、Obsidian Properties 和 CLI renderer：`.base` 是合法 YAML 且禁止 TAB；日期使用明确格式；变量必须能由 CLI 或 Obsidian 核心模板确定展开；模板不得执行脚本或依赖社区插件。Schema、Go validator、模板默认值和文档中的字段枚举必须一致。
 
-`resources/skills/llm-wiki/` 只负责定位 Vault、读取该 Vault 的 `AGENTS.md` 并调用 CLI，不复制 knowledge 类型、生命周期或发布语义。修改嵌入 Skill 时同步 `internal/skill` 版本和安装、冲突、更新、卸载、symlink、dry-run 测试。
+`resources/skills/llm-wiki-{query,add,publish,maintain}/` 按查询、采集、受控发布和维护拆分，只负责定位 Vault、读取该 Vault 的 `AGENTS.md` 并调用职责内 CLI，不复制 knowledge 类型、生命周期或发布语义。修改嵌入 Skill 时同步 `internal/skill` 版本和安装、冲突、更新、卸载、symlink、dry-run 测试。
 
 ## 10. 测试规范
 

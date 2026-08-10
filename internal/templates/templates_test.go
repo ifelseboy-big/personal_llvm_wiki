@@ -1,9 +1,11 @@
 package templates_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -17,21 +19,48 @@ import (
 	"llm-wiki/internal/vault"
 )
 
+func TestPersonalTemplateMatchesVersionedDesignBaseline(t *testing.T) {
+	manifest, err := templates.LoadManifest("personal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot locate template test source")
+	}
+	repositoryRoot := filepath.Clean(filepath.Join(filepath.Dir(testFile), "..", ".."))
+	for _, relative := range append([]string{"template.toml"}, manifest.ManagedFiles...) {
+		embedded, err := templates.ReadFile("personal", relative)
+		if err != nil {
+			t.Fatalf("read embedded %s: %v", relative, err)
+		}
+		baselinePath := filepath.Join(repositoryRoot, "docs", "template-design", "personal-"+manifest.Version, filepath.FromSlash(relative))
+		baseline, err := os.ReadFile(baselinePath)
+		if err != nil {
+			t.Fatalf("read design baseline %s: %v", baselinePath, err)
+		}
+		if !bytes.Equal(embedded, baseline) {
+			t.Fatalf("embedded template %s differs from %s", relative, baselinePath)
+		}
+	}
+}
+
 func TestPersonalTemplatesExposeObsidianProperties(t *testing.T) {
 	manifest, err := templates.LoadManifest("personal")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Version != "1.2.0" {
+	if manifest.Version != "1.3.0" {
 		t.Fatalf("unexpected personal template version %s", manifest.Version)
 	}
 	agents, err := templates.ReadFile("personal", "AGENTS.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(agents), "`knowledge/` 中经过发布的 Markdown 是唯一最终事实源") ||
-		!strings.Contains(string(agents), "| `raw add` | [[rules/capture|采集规则]]") {
-		t.Fatalf("personal AGENTS.md omitted the fact boundary or operation routing: %s", agents)
+	if !strings.Contains(string(agents), "`knowledge/` 中经过人工确认发布的 Markdown 是唯一可信事实源") ||
+		!strings.Contains(string(agents), "它不是 CLI 使用手册") ||
+		!strings.Contains(string(agents), "不进入全文检索") {
+		t.Fatalf("personal AGENTS.md omitted its management-only or retrieval boundary: %s", agents)
 	}
 	if _, err := templates.ReadFile("personal", "rules/lifecycle.md"); err != nil {
 		t.Fatalf("personal template omitted lifecycle routing target: %v", err)
@@ -89,7 +118,7 @@ func TestCreateDraftRendersSafelyAndProtectsManagedPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.TemplateVersion != "1.2.0" || !strings.Contains(result.NextCommandHint, "publish propose") {
+	if result.TemplateVersion != "1.3.0" || !strings.Contains(result.NextCommandHint, "publish propose") {
 		t.Fatalf("unexpected result: %#v", result)
 	}
 	b, err := os.ReadFile(output)

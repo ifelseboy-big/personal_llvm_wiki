@@ -181,7 +181,7 @@ func newInitCommand(rt *Runtime) *cobra.Command {
 				if !cmd.Flags().Changed("install-skill") {
 					status, _ := skill.GetStatus("codex")
 					if status != nil && status.Detected && !status.Installed {
-						installSkill, promptErr = promptYesNo(reader, rt, "Install Codex skill at "+status.Target, false)
+						installSkill, promptErr = promptYesNo(reader, rt, "Install Codex skill set under "+status.Target, false)
 						if promptErr != nil {
 							return E("INIT_PROMPT_FAILED", "cannot read skill choice", ExitIO, promptErr)
 						}
@@ -233,7 +233,9 @@ func newInitCommand(rt *Runtime) *cobra.Command {
 				if skillErr != nil {
 					warnings = append(warnings, "wiki initialized but Codex skill was not installed: "+skillErr.Error())
 				} else {
-					result.CreatedFiles = append(result.CreatedFiles, skillResult.Target)
+					for _, file := range skillResult.Files {
+						result.CreatedFiles = append(result.CreatedFiles, filepath.Join(skillResult.Target, filepath.FromSlash(file)))
+					}
 				}
 			}
 			if !rt.DryRun {

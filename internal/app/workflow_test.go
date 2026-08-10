@@ -22,6 +22,25 @@ func TestCompleteCLIWorkflow(t *testing.T) {
 	runCLI(t, "", "init", root, "--name", "workflow", "--json", "--no-interactive")
 	rawResponse := runCLI(t, "# Source\n\n稳定 IR 解耦编译器组件。\n", "raw", "add", "-", "--name", "source.md", "--wiki", root, "--json", "--no-interactive")
 	rawID := nestedString(t, rawResponse.Data, "items", 0, "id")
+	indexAfterCapture := runCLI(t, "", "index", "status", "--wiki", root, "--json", "--no-interactive")
+	if documentsValue, exists := indexAfterCapture.Data.(map[string]any)["documents"]; exists {
+		documents := documentsValue.(map[string]any)
+		if rawCount, exists := documents["raw"]; exists && rawCount.(float64) != 0 {
+			t.Fatalf("raw add updated the searchable index: %#v", indexAfterCapture.Data)
+		}
+	}
+	beforePublish := runCLI(t, "", "query", "稳定 IR", "--wiki", root, "--json", "--no-interactive")
+	beforeData := beforePublish.Data.(map[string]any)
+	if nestedFloat(t, beforePublish.Data, "count") != 0 {
+		t.Fatalf("query returned unpublished raw content: %#v", beforePublish.Data)
+	}
+	if _, exists := beforeData["raw_evidence"]; exists {
+		t.Fatalf("query exposed a raw retrieval channel: %#v", beforePublish.Data)
+	}
+	inbox := runCLI(t, "", "raw", "list", "--unreferenced", "--wiki", root, "--json", "--no-interactive")
+	if nestedFloat(t, inbox.Data, "count") != 1 {
+		t.Fatalf("new raw evidence was not visible in the unreferenced inbox: %#v", inbox.Data)
+	}
 	draft := filepath.Join(t.TempDir(), "draft.md")
 	if err := os.WriteFile(draft, governedDraft("稳定 IR", "稳定 IR 解耦编译器组件。", rawID), 0o600); err != nil {
 		t.Fatal(err)
@@ -30,8 +49,21 @@ func TestCompleteCLIWorkflow(t *testing.T) {
 	changeID := nestedString(t, proposalResponse.Data, "change_id")
 	knowledgeID := nestedString(t, proposalResponse.Data, "knowledge_id")
 	runCLI(t, "", "publish", "diff", changeID, "--wiki", root, "--json", "--no-interactive")
-	runCLI(t, "", "publish", "apply", changeID, "--wiki", root, "--json", "--no-interactive")
-	runCLI(t, "", "build", "--wiki", root, "--json", "--no-interactive")
+	apply := runCLI(t, "", "publish", "apply", changeID, "--wiki", root, "--json", "--no-interactive")
+	if _, ok := apply.Data.(map[string]any)["derived"].(map[string]any); !ok {
+		t.Fatalf("publish apply did not refresh the AI-derived layer: %#v", apply.Data)
+	}
+	if _, ok := apply.Data.(map[string]any)["index"].(map[string]any); !ok {
+		t.Fatalf("publish apply did not refresh the knowledge index: %#v", apply.Data)
+	}
+	buildStatus := runCLI(t, "", "build", "status", "--wiki", root, "--json", "--no-interactive")
+	if fresh, ok := buildStatus.Data.(map[string]any)["fresh"].(bool); !ok || !fresh {
+		t.Fatalf("derived layer is stale immediately after publish apply: %#v", buildStatus.Data)
+	}
+	inbox = runCLI(t, "", "raw", "list", "--unreferenced", "--wiki", root, "--json", "--no-interactive")
+	if nestedFloat(t, inbox.Data, "count") != 0 {
+		t.Fatalf("published raw evidence remained in the unreferenced inbox: %#v", inbox.Data)
+	}
 	query := runCLI(t, "", "query", "稳定 IR", "--wiki", root, "--json", "--no-interactive")
 	if count := nestedFloat(t, query.Data, "count"); count < 1 {
 		t.Fatalf("expected query evidence, got %#v", query.Data)
@@ -102,7 +134,8 @@ func TestPublishApplyConflictUsesStableMachineCode(t *testing.T) {
 
 func TestAuxiliaryCLICommandSurface(t *testing.T) {
 	t.Setenv("LLM_WIKI_CONFIG", filepath.Join(t.TempDir(), "user-config.toml"))
-	t.Setenv("LLM_WIKI_CODEX_SKILLS_DIR", filepath.Join(t.TempDir(), "skills"))
+	skillsRoot := filepath.Join(t.TempDir(), "skills")
+	t.Setenv("LLM_WIKI_CODEX_SKILLS_DIR", skillsRoot)
 	root := filepath.Join(t.TempDir(), "wiki")
 	runCLI(t, "", "init", root, "--name", "surface", "--json", "--no-interactive")
 	runCLI(t, "", "locate", "--wiki", root, "--json", "--no-interactive")
@@ -117,7 +150,7 @@ func TestAuxiliaryCLICommandSurface(t *testing.T) {
 	templateOutput := filepath.Join(t.TempDir(), "source-template.md")
 	createdTemplate := runCLI(t, "", "template", "create", "source", "--kind", "raw", "--title", `A "quoted" source`,
 		"--output", templateOutput, "--set", "origin=web", "--set", "authors=[Alice, Bob]", "--wiki", root, "--json", "--no-interactive")
-	if version := nestedString(t, createdTemplate.Data, "template_version"); version != "1.2.0" {
+	if version := nestedString(t, createdTemplate.Data, "template_version"); version != "1.3.0" {
 		t.Fatalf("template create returned version %q", version)
 	}
 	templateRaw := runCLI(t, "", "raw", "add", templateOutput, "--wiki", root, "--json", "--no-interactive")
@@ -140,9 +173,18 @@ func TestAuxiliaryCLICommandSurface(t *testing.T) {
 	runCLI(t, "", "publish", "reject", changeID, "--reason", "test rejection", "--wiki", root, "--json", "--no-interactive")
 
 	runCLI(t, "", "skill", "status", "codex", "--json", "--no-interactive")
-	runCLI(t, "", "skill", "install", "codex", "--yes", "--json", "--no-interactive")
+	installedSkills := runCLI(t, "", "skill", "install", "codex", "--yes", "--json", "--no-interactive")
+	if skills, ok := installedSkills.Data.(map[string]any)["skills"].([]any); !ok || len(skills) != 4 {
+		t.Fatalf("skill install did not return four independent skills: %#v", installedSkills.Data)
+	}
+	if _, err := os.Stat(filepath.Join(skillsRoot, "llm-wiki-query", "SKILL.md")); err != nil {
+		t.Fatalf("query skill was not installed as a sibling directory: %v", err)
+	}
 	runCLI(t, "", "skill", "update", "codex", "--yes", "--json", "--no-interactive")
 	runCLI(t, "", "skill", "uninstall", "codex", "--yes", "--json", "--no-interactive")
+	if _, err := os.Stat(filepath.Join(skillsRoot, "llm-wiki-query", "SKILL.md")); !os.IsNotExist(err) {
+		t.Fatalf("query skill remains after uninstall: %v", err)
+	}
 }
 
 func TestQueryUsesIndexForCandidatesAndKnowledgeForFacts(t *testing.T) {

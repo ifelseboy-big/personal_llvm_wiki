@@ -427,6 +427,34 @@ func List(cfg *config.Instance) ([]*document.Document, []error) {
 	return docs, problems
 }
 
+// ReferenceMap derives raw-to-knowledge usage only from published Markdown.
+// It deliberately does not use SQLite so a disposable cache cannot decide the
+// capture backlog.
+func ReferenceMap(cfg *config.Instance) (map[string][]string, error) {
+	docs, problems := document.ScanMarkdown(cfg.KnowledgeDir())
+	if len(problems) > 0 {
+		return nil, problems[0]
+	}
+	references := map[string][]string{}
+	seenKnowledge := map[string]bool{}
+	for _, doc := range docs {
+		if err := doc.Validate("knowledge", cfg.Publish.RequireSources); err != nil {
+			return nil, fmt.Errorf("%s: %w", doc.Path, err)
+		}
+		if seenKnowledge[doc.Metadata.ID] {
+			return nil, fmt.Errorf("duplicate knowledge id %s", doc.Metadata.ID)
+		}
+		seenKnowledge[doc.Metadata.ID] = true
+		for _, source := range doc.Metadata.Sources {
+			references[source.ID] = append(references[source.ID], doc.Metadata.ID)
+		}
+	}
+	for id := range references {
+		sort.Strings(references[id])
+	}
+	return references, nil
+}
+
 func Show(cfg *config.Instance, id string) (*document.Document, error) {
 	if !strings.HasPrefix(id, "raw_") {
 		return nil, errors.New("raw id must start with raw_")

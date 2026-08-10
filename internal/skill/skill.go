@@ -20,7 +20,19 @@ import (
 	resourcebundle "llm-wiki/resources"
 )
 
-const SkillVersion = "1.1.0"
+const (
+	SkillVersion    = "2.0.0"
+	manifestSchema  = 2
+	manifestName    = ".llm-wiki-install.json"
+	installLockName = ".llm-wiki-install.lock"
+)
+
+var skillNames = []string{
+	"llm-wiki-add",
+	"llm-wiki-maintain",
+	"llm-wiki-publish",
+	"llm-wiki-query",
+}
 
 type OwnedFile struct {
 	Path string `json:"path"`
@@ -32,6 +44,7 @@ type InstallManifest struct {
 	Client        string      `json:"client"`
 	SkillVersion  string      `json:"skill_version"`
 	InstalledAt   string      `json:"installed_at"`
+	Skills        []string    `json:"skills,omitempty"`
 	Files         []OwnedFile `json:"files"`
 }
 
@@ -42,6 +55,7 @@ type Status struct {
 	Installed       bool     `json:"installed"`
 	Version         string   `json:"version,omitempty"`
 	CurrentVersion  string   `json:"current_version"`
+	Skills          []string `json:"skills"`
 	Modified        []string `json:"modified"`
 	Missing         []string `json:"missing"`
 	UpdateAvailable bool     `json:"update_available"`
@@ -51,12 +65,15 @@ type Result struct {
 	Client    string   `json:"client"`
 	Target    string   `json:"target"`
 	Action    string   `json:"action"`
+	Skills    []string `json:"skills"`
 	Files     []string `json:"files"`
 	Preserved []string `json:"preserved"`
 	DryRun    bool     `json:"dry_run"`
 }
 
 func SupportedClients() []string { return []string{"codex"} }
+
+func SkillNames() []string { return append([]string(nil), skillNames...) }
 
 func ResolveTarget(client string) (string, error) {
 	if client != "codex" {
@@ -67,13 +84,13 @@ func ResolveTarget(client string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return filepath.Join(abs, "llm-wiki"), nil
+		return abs, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".agents", "skills", "llm-wiki"), nil
+	return filepath.Join(home, ".agents", "skills"), nil
 }
 
 func GetStatus(client string) (*Status, error) {
@@ -85,7 +102,10 @@ func GetStatus(client string) (*Status, error) {
 		return nil, err
 	}
 	_, lookErr := exec.LookPath("codex")
-	status := &Status{Client: client, Target: target, Detected: lookErr == nil, CurrentVersion: SkillVersion}
+	status := &Status{
+		Client: client, Target: target, Detected: lookErr == nil,
+		CurrentVersion: SkillVersion, Skills: SkillNames(),
+	}
 	manifest, err := readManifest(target)
 	if errors.Is(err, os.ErrNotExist) {
 		return status, nil
@@ -95,7 +115,7 @@ func GetStatus(client string) (*Status, error) {
 	}
 	status.Installed = true
 	status.Version = manifest.SkillVersion
-	status.UpdateAvailable = manifest.SkillVersion != SkillVersion
+	status.UpdateAvailable = manifest.SkillVersion != SkillVersion || !equalStrings(manifest.Skills, skillNames)
 	for _, owned := range manifest.Files {
 		path, err := managedFilePath(target, owned.Path)
 		if err != nil {
@@ -124,6 +144,9 @@ func GetStatus(client string) (*Status, error) {
 func Install(client string, update, dryRun bool) (*Result, error) {
 	target, err := ResolveTarget(client)
 	if err != nil {
+		return nil, err
+	}
+	if err := ensureTargetSafe(target); err != nil {
 		return nil, err
 	}
 	if !dryRun {
@@ -199,7 +222,9 @@ func Install(client string, update, dryRun bool) (*Result, error) {
 	if update {
 		action = "updated"
 	}
-	result := &Result{Client: client, Target: target, Action: action, DryRun: dryRun}
+	result := &Result{
+		Client: client, Target: target, Action: action, Skills: SkillNames(), DryRun: dryRun,
+	}
 	for _, file := range files {
 		result.Files = append(result.Files, file.Path)
 	}
@@ -210,11 +235,11 @@ func Install(client string, update, dryRun bool) (*Result, error) {
 		return nil, err
 	}
 	manifest := InstallManifest{
-		SchemaVersion: 1, Client: client, SkillVersion: SkillVersion,
-		InstalledAt: time.Now().Format(time.RFC3339), Files: files,
+		SchemaVersion: manifestSchema, Client: client, SkillVersion: SkillVersion,
+		InstalledAt: time.Now().Format(time.RFC3339), Skills: SkillNames(), Files: files,
 	}
 	for _, file := range files {
-		b, err := resourcebundle.FS.ReadFile("skills/llm-wiki/" + file.Path)
+		b, err := resourcebundle.FS.ReadFile("skills/" + file.Path)
 		if err != nil {
 			return nil, err
 		}
@@ -231,8 +256,27 @@ func Install(client string, update, dryRun bool) (*Result, error) {
 		return nil, err
 	}
 	manifestBytes = append(manifestBytes, '\n')
-	if err := document.AtomicWrite(filepath.Join(target, ".llm-wiki-install.json"), manifestBytes, 0o600); err != nil {
+	if err := document.AtomicWrite(filepath.Join(target, manifestName), manifestBytes, 0o600); err != nil {
 		return nil, err
+	}
+	if installed {
+		current := make(map[string]bool, len(files))
+		for _, file := range files {
+			current[file.Path] = true
+		}
+		for _, owned := range existing.Files {
+			if current[owned.Path] {
+				continue
+			}
+			path, pathErr := managedFilePath(target, owned.Path)
+			if pathErr != nil {
+				return nil, pathErr
+			}
+			if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				return nil, removeErr
+			}
+		}
+		removeOwnedEmptyDirs(target, existing.Files)
 	}
 	return result, nil
 }
@@ -254,12 +298,17 @@ func Uninstall(client string, dryRun bool) (*Result, error) {
 			_ = clientLock.Unlock()
 			_ = os.Remove(lockPath)
 		}()
+		if err := ensureTargetSafe(target); err != nil {
+			return nil, err
+		}
 	}
 	manifest, err := readManifest(target)
 	if err != nil {
 		return nil, err
 	}
-	result := &Result{Client: client, Target: target, Action: "uninstalled", DryRun: dryRun}
+	result := &Result{
+		Client: client, Target: target, Action: "uninstalled", Skills: append([]string(nil), manifest.Skills...), DryRun: dryRun,
+	}
 	for _, owned := range manifest.Files {
 		path, err := managedFilePath(target, owned.Path)
 		if err != nil {
@@ -305,51 +354,63 @@ func Uninstall(client string, dryRun bool) (*Result, error) {
 		}
 	}
 	if !dryRun {
-		if err := os.Remove(filepath.Join(target, ".llm-wiki-install.json")); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := os.Remove(filepath.Join(target, manifestName)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
-		removeEmptyParents(target)
+		removeOwnedEmptyDirs(target, manifest.Files)
 	}
 	return result, nil
 }
 
 func sourceFiles() ([]OwnedFile, error) {
 	var out []OwnedFile
-	err := fs.WalkDir(resourcebundle.FS, "skills/llm-wiki", func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
+	for _, name := range skillNames {
+		root := "skills/" + name
+		err := fs.WalkDir(resourcebundle.FS, root, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			rel := strings.TrimPrefix(path, "skills/")
+			b, err := resourcebundle.FS.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			out = append(out, OwnedFile{Path: rel, Hash: document.HashBytes(b)})
 			return nil
-		}
-		rel := strings.TrimPrefix(path, "skills/llm-wiki/")
-		b, err := resourcebundle.FS.ReadFile(path)
+		})
 		if err != nil {
-			return err
+			return nil, err
 		}
-		out = append(out, OwnedFile{Path: rel, Hash: document.HashBytes(b)})
-		return nil
-	})
+	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
-	return out, err
+	return out, nil
 }
 
 func readManifest(target string) (InstallManifest, error) {
 	var manifest InstallManifest
-	b, err := os.ReadFile(filepath.Join(target, ".llm-wiki-install.json"))
+	b, err := os.ReadFile(filepath.Join(target, manifestName))
 	if err != nil {
 		return manifest, err
 	}
 	if err := json.Unmarshal(b, &manifest); err != nil {
 		return manifest, err
 	}
-	if manifest.SchemaVersion != 1 || manifest.Client != "codex" || manifest.SkillVersion == "" {
+	if manifest.SchemaVersion != manifestSchema || manifest.Client != "codex" || manifest.SkillVersion == "" {
 		return manifest, errors.New("invalid skill installation manifest")
+	}
+	if !validManifestSkills(manifest.Skills) {
+		return manifest, errors.New("skill installation manifest has an unexpected skill set")
 	}
 	seen := map[string]bool{}
 	for _, owned := range manifest.Files {
 		if _, err := managedFilePath(target, owned.Path); err != nil {
 			return manifest, fmt.Errorf("invalid owned skill path: %w", err)
+		}
+		if !isManagedSkillPath(owned.Path, manifest.Skills) {
+			return manifest, fmt.Errorf("owned path is outside the llm-wiki skill set: %s", owned.Path)
 		}
 		if !document.ValidHash(owned.Hash) || seen[owned.Path] {
 			return manifest, errors.New("invalid or duplicate owned skill file")
@@ -357,6 +418,44 @@ func readManifest(target string) (InstallManifest, error) {
 		seen[owned.Path] = true
 	}
 	return manifest, nil
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func validManifestSkills(names []string) bool {
+	if len(names) == 0 {
+		return false
+	}
+	allowed := map[string]bool{}
+	for _, name := range skillNames {
+		allowed[name] = true
+	}
+	for i, name := range names {
+		if !allowed[name] || (i > 0 && names[i-1] >= name) {
+			return false
+		}
+	}
+	return true
+}
+
+func isManagedSkillPath(relative string, names []string) bool {
+	clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(relative)))
+	for _, name := range names {
+		if clean == name || strings.HasPrefix(clean, name+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func managedFilePath(target, relative string) (string, error) {
@@ -378,16 +477,34 @@ func ensureTargetSafe(target string) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return fsutil.EnsureNoSymlinkPath(target, filepath.Join(target, ".llm-wiki-install.json"))
+	return fsutil.EnsureNoSymlinkPath(target, filepath.Join(target, manifestName))
 }
 
-func removeEmptyParents(target string) {
-	_ = os.Remove(filepath.Join(target, "agents"))
-	_ = os.Remove(target)
+func removeOwnedEmptyDirs(root string, files []OwnedFile) {
+	dirs := map[string]bool{}
+	for _, owned := range files {
+		path, err := managedFilePath(root, owned.Path)
+		if err != nil {
+			continue
+		}
+		for dir := filepath.Dir(path); dir != root && dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
+			dirs[dir] = true
+		}
+	}
+	ordered := make([]string, 0, len(dirs))
+	for dir := range dirs {
+		ordered = append(ordered, dir)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		return strings.Count(ordered[i], string(filepath.Separator)) > strings.Count(ordered[j], string(filepath.Separator))
+	})
+	for _, dir := range ordered {
+		_ = os.Remove(dir)
+	}
 }
 
 func acquireClientLock(target string) (*flock.Flock, string, error) {
-	path := target + ".lock"
+	path := filepath.Join(target, installLockName)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, path, err
 	}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "LLM Wiki Query"
+  short_description: "只检索并回读个人知识库中已经人工确认发布的可信知识"
+  default_prompt: "使用 $llm-wiki-query 从我的知识库检索并返回已发布的原始知识。"
