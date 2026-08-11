@@ -23,7 +23,7 @@ make install
 llm-wiki --version
 ```
 
-`make build` 在当前机器生成 `./llm-wiki`；`make install` 将已构建文件复制到 `go env GOBIN`，未设置时复制到 `$(go env GOPATH)/bin`。自定义安装目录可执行 `make install INSTALL_DIR=/path/to/bin`。该目录需在 `PATH` 中。
+`make build` 在当前机器生成 `./llm-wiki`；`make install` 将已构建文件复制到 `~/.local/bin/llm-wiki`。自定义安装目录可执行 `make install INSTALL_DIR=/path/to/bin`。`~/.local/bin` 需在 `PATH` 中。
 
 构建工具链可覆盖：`make build CC=gcc CXX=g++`。项目不提供预构建归档或交叉编译发布；运行时不需要系统 SQLite、Homebrew、Node、Python、MCP、后台服务或网络服务。
 

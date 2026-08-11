@@ -212,7 +212,7 @@ personal 2.0.0 模板将整理和批准流程放在 Vault `AGENTS.md` 与 `rules
 
 项目通过源码分发，不提供预构建归档、交叉编译产物或 GitHub Release 自动发布。使用者拉取仓库后，在当前机器依次执行 `make build` 与 `make install`。
 
-本机构建使用 Go 1.25、CGO、`fts5 sqlite_omit_load_extension` 与固定 simple tokenizer。`CC`/`CXX` 默认读取 Go 当前工具链配置，也可由 Make 参数覆盖。`make install` 只复制已经生成的本机二进制，默认目标是 Go 的 bin 目录。
+本机构建使用 Go 1.25、CGO、`fts5 sqlite_omit_load_extension` 与固定 simple tokenizer。`CC`/`CXX` 默认读取 Go 当前工具链配置，也可由 Make 参数覆盖。`make install` 只复制已经生成的本机二进制，默认目标是用户的 `~/.local/bin`。
 
 CI 在 macOS 与 Linux 原生运行 test/vet，Linux 运行 race，并对 `make build -> make install -> llm-wiki --version` 做 smoke 验证。运行时不依赖外部 SQLite 或 tokenizer。
 

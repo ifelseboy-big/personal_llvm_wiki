@@ -9,11 +9,7 @@ COMMIT ?= $(shell git rev-parse --short=12 HEAD)
 DATE ?= $(shell git show -s --format=%cI HEAD)
 VERSION_LDFLAGS := -s -w -X llm-wiki/internal/app.Version=$(VERSION) -X llm-wiki/internal/app.Commit=$(COMMIT) -X llm-wiki/internal/app.Date=$(DATE)
 BUILD_OUTPUT ?= llm-wiki
-DEFAULT_INSTALL_DIR := $(shell go env GOBIN)
-ifeq ($(strip $(DEFAULT_INSTALL_DIR)),)
-DEFAULT_INSTALL_DIR := $(shell go env GOPATH)/bin
-endif
-INSTALL_DIR ?= $(DEFAULT_INSTALL_DIR)
+INSTALL_DIR ?= $(HOME)/.local/bin
 
 build:
 	$(CGO_ENV) go build -tags "$(GO_TAGS)" -trimpath -ldflags "$(VERSION_LDFLAGS)" -o "$(BUILD_OUTPUT)" ./cmd/llm-wiki
