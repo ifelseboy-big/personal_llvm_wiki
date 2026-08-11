@@ -44,21 +44,21 @@ func TestPersonalTemplateMatchesVersionedDesignBaseline(t *testing.T) {
 	}
 }
 
-func TestPersonalTemplatesExposeObsidianProperties(t *testing.T) {
+func TestPersonalTemplatesExposeInboxPromotionAndOptionalViews(t *testing.T) {
 	manifest, err := templates.LoadManifest("personal")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Version != "1.4.0" {
+	if manifest.Version != "2.0.0" {
 		t.Fatalf("unexpected personal template version %s", manifest.Version)
 	}
 	agents, err := templates.ReadFile("personal", "AGENTS.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(agents), "`knowledge/` 中经过人工确认发布的 Markdown 是唯一可信事实源") ||
-		!strings.Contains(string(agents), "它不是 CLI 使用手册") ||
-		!strings.Contains(string(agents), "不进入全文检索") {
+	if !strings.Contains(string(agents), "`knowledge/` 中由 `promote apply` 写入的 Markdown 是唯一可信事实源") ||
+		!strings.Contains(string(agents), "Inbox -> Promotion -> Knowledge") ||
+		!strings.Contains(string(agents), "然后停止") {
 		t.Fatalf("personal AGENTS.md omitted its management-only or retrieval boundary: %s", agents)
 	}
 	if _, err := templates.ReadFile("personal", "rules/lifecycle.md"); err != nil {
@@ -82,7 +82,7 @@ func TestPersonalTemplatesExposeObsidianProperties(t *testing.T) {
 			t.Fatalf("%s template must declare tags and aliases lists", name)
 		}
 	}
-	for _, name := range []string{"knowledge.base", "review.base", "raw.base"} {
+	for _, name := range []string{"knowledge.base", "inbox.base"} {
 		content, err := templates.ReadFile("personal", "views/"+name)
 		if err != nil {
 			t.Fatal(err)
@@ -114,7 +114,7 @@ func TestCreateDraftRendersSafelyAndProtectsManagedPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.TemplateVersion != "1.4.0" || !strings.Contains(result.NextCommandHint, "publish propose") {
+	if result.TemplateVersion != "2.0.0" || !strings.Contains(result.NextCommandHint, "promote plan") {
 		t.Fatalf("unexpected result: %#v", result)
 	}
 	b, err := os.ReadFile(output)
@@ -141,14 +141,14 @@ func TestCreateDraftRendersSafelyAndProtectsManagedPaths(t *testing.T) {
 	}); err == nil {
 		t.Fatal("template create followed a parent symlink into knowledge")
 	}
-	rawResult, err := templates.CreateDraft(cfg, templates.CreateOptions{
-		Kind: "raw", Name: "source", Title: "Raw", Output: filepath.Join(t.TempDir(), "source.md"),
+	inboxResult, err := templates.CreateDraft(cfg, templates.CreateOptions{
+		Kind: "inbox", Name: "note", Title: "Inbox", Output: filepath.Join(t.TempDir(), "note.md"),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(rawResult.NextCommandHint, "raw add") {
-		t.Fatalf("raw template returned wrong next command: %s", rawResult.NextCommandHint)
+	if !strings.Contains(inboxResult.NextCommandHint, "inbox add") || !strings.Contains(inboxResult.NextCommandHint, "--note-file") {
+		t.Fatalf("inbox template returned wrong next command: %s", inboxResult.NextCommandHint)
 	}
 	if _, err := templates.ReadContent(cfg, "knowledge", "../../concept"); err == nil {
 		t.Fatal("template name traversal was silently normalized")

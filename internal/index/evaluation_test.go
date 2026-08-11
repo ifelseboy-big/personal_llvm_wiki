@@ -1,10 +1,8 @@
 package index
 
 import (
-	"bytes"
 	"fmt"
 	"math"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,7 +10,6 @@ import (
 	"llm-wiki/internal/config"
 	"llm-wiki/internal/document"
 	"llm-wiki/internal/governance"
-	"llm-wiki/internal/raw"
 	"llm-wiki/internal/vault"
 )
 
@@ -71,10 +68,8 @@ func TestRetrievalQualityEvaluation(t *testing.T) {
 	cfg, ids := createRetrievalEvaluationWiki(t, documents)
 	natural := evaluateRetrieval(t, cfg, ids, queries, false)
 	rewritten := evaluateRetrieval(t, cfg, ids, queries, true)
-	t.Logf("natural recall@5=%.3f precision@5=%.3f MRR=%.3f nDCG@5=%.3f",
-		natural.RecallAt5, natural.PrecisionAt5, natural.MRR, natural.NDCGAt5)
-	t.Logf("rewritten recall@5=%.3f precision@5=%.3f MRR=%.3f nDCG@5=%.3f",
-		rewritten.RecallAt5, rewritten.PrecisionAt5, rewritten.MRR, rewritten.NDCGAt5)
+	t.Logf("natural recall@5=%.3f precision@5=%.3f MRR=%.3f nDCG@5=%.3f", natural.RecallAt5, natural.PrecisionAt5, natural.MRR, natural.NDCGAt5)
+	t.Logf("rewritten recall@5=%.3f precision@5=%.3f MRR=%.3f nDCG@5=%.3f", rewritten.RecallAt5, rewritten.PrecisionAt5, rewritten.MRR, rewritten.NDCGAt5)
 	if natural.RecallAt5 < 0.80 || natural.PrecisionAt5 < 0.16 || natural.MRR < 0.70 || natural.NDCGAt5 < 0.75 {
 		t.Fatalf("natural-language retrieval quality regressed: %#v", natural)
 	}
@@ -109,40 +104,8 @@ func createBenchmarkWiki(tb testing.TB, count int) *config.Instance {
 	}
 	cfg := initialized.Config
 	base := time.Date(2026, 8, 9, 8, 0, 0, 0, time.UTC)
-	added, err := raw.Add(cfg, raw.AddOptions{
-		Input: "-", Name: "benchmark-source.md",
-		Stdin: bytes.NewBufferString("# Retrieval benchmark source\n\nDeterministic source for scale fixtures.\n"), Now: base,
-	})
-	if err != nil {
-		tb.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(cfg.KnowledgeDir(), "concept"), 0o700); err != nil {
-		tb.Fatal(err)
-	}
 	for i := 0; i < count; i++ {
-		id, err := document.NewID("know", base.Add(time.Duration(i+1)*time.Millisecond))
-		if err != nil {
-			tb.Fatal(err)
-		}
-		title := fmt.Sprintf("Synthetic knowledge %05d", i)
-		body := []byte(fmt.Sprintf("# %s\n\nUniqueNeedle%05d deterministic benchmark content for LLVM indexing and retrieval.[^%s-1]\n\n[^%s-1]: locator: retrieval benchmark fixture\n",
-			title, i, added[0].ID, added[0].ID))
-		meta := document.Metadata{
-			ID: id, Type: "concept", Title: title, Status: "published",
-			Sources:     []document.SourceRef{{ID: added[0].ID, ContentHash: added[0].ContentHash}},
-			PublishedAt: base.Format(time.RFC3339), UpdatedAt: base.Format(time.RFC3339),
-			ContentHash:       document.HashBytes(document.NormalizeMarkdownBody(body)),
-			GovernanceVersion: governance.PersonalGovernanceVersion,
-			Extra:             map[string]any{"description": "Retrieval benchmark fixture", "lifecycle": "current"},
-		}
-		data, err := document.Render(meta, body)
-		if err != nil {
-			tb.Fatal(err)
-		}
-		path := filepath.Join(cfg.KnowledgeDir(), "concept", fmt.Sprintf("%05d--%s.md", i, id))
-		if err := os.WriteFile(path, data, 0o600); err != nil {
-			tb.Fatal(err)
-		}
+		writeEvaluationKnowledge(tb, cfg, base.Add(time.Duration(i+1)*time.Millisecond), fmt.Sprintf("Synthetic knowledge %05d", i), fmt.Sprintf("UniqueNeedle%05d deterministic benchmark content for LLVM indexing and retrieval.", i), nil, nil)
 	}
 	if _, err := Rebuild(cfg); err != nil {
 		tb.Fatal(err)
@@ -159,39 +122,35 @@ func createRetrievalEvaluationWiki(tb testing.TB, documents []retrievalEvalDocum
 	}
 	cfg := initialized.Config
 	base := time.Date(2026, 8, 9, 8, 0, 0, 0, time.UTC)
-	added, err := raw.Add(cfg, raw.AddOptions{
-		Input: "-", Name: "evaluation-source.md",
-		Stdin: bytes.NewBufferString("# Retrieval evaluation source\n\nDeterministic source for retrieval fixtures.\n"), Now: base,
-	})
-	if err != nil {
-		tb.Fatal(err)
-	}
 	ids := make(map[string]string, len(documents))
 	for i, item := range documents {
-		id, err := document.NewID("know", base.Add(time.Duration(i+1)*time.Millisecond))
-		if err != nil {
-			tb.Fatal(err)
-		}
-		body := []byte(fmt.Sprintf("# %s\n\n%s[^%s-1]\n\n[^%s-1]: locator: retrieval evaluation fixture\n",
-			item.Title, item.Body, added[0].ID, added[0].ID))
-		meta := document.Metadata{
-			ID: id, Type: "concept", Title: item.Title, Status: "published",
-			Sources:     []document.SourceRef{{ID: added[0].ID, ContentHash: added[0].ContentHash}},
-			PublishedAt: base.Format(time.RFC3339), UpdatedAt: base.Format(time.RFC3339),
-			ContentHash: document.HashBytes(document.NormalizeMarkdownBody(body)), Tags: item.Tags, Aliases: item.Aliases,
-			GovernanceVersion: governance.PersonalGovernanceVersion,
-			Extra:             map[string]any{"description": "Retrieval evaluation fixture", "lifecycle": "current"},
-		}
-		path := filepath.Join(cfg.KnowledgeDir(), "concept", fmt.Sprintf("%05d--%s.md", i, id))
-		if err := document.Write(path, meta, body); err != nil {
-			tb.Fatal(err)
-		}
-		ids[item.Key] = id
+		ids[item.Key] = writeEvaluationKnowledge(tb, cfg, base.Add(time.Duration(i+1)*time.Millisecond), item.Title, item.Body, item.Tags, item.Aliases)
 	}
 	if _, err := Rebuild(cfg); err != nil {
 		tb.Fatal(err)
 	}
 	return cfg, ids
+}
+
+func writeEvaluationKnowledge(tb testing.TB, cfg *config.Instance, at time.Time, title, text string, tags, aliases []string) string {
+	tb.Helper()
+	id, err := document.NewID("know", at)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	body := []byte(fmt.Sprintf("# %s\n\n%s\n", title, text))
+	meta := document.Metadata{
+		SchemaVersion: document.CurrentSchema, ID: id, Type: "concept", Title: title, Status: "published",
+		PublishedAt: at.Format(time.RFC3339), UpdatedAt: at.Format(time.RFC3339), ContentHash: document.HashBytes(body),
+		Tags: tags, Aliases: aliases, GovernanceVersion: governance.PersonalGovernanceVersion,
+		Lineage: []document.LineageRef{{InboxID: "inbox_01arz3ndektsv4rrffq69g5fav", PayloadHash: document.HashBytes([]byte("evaluation-source")), Source: "retrieval-evaluation", CapturedAt: at.Format(time.RFC3339)}},
+		Extra:   map[string]any{"description": "Retrieval evaluation fixture", "lifecycle": "current"},
+	}
+	path := filepath.Join(cfg.Root, filepath.FromSlash(document.KnowledgePath(cfg.Paths.Knowledge, meta)))
+	if err := document.Write(path, meta, body); err != nil {
+		tb.Fatal(err)
+	}
+	return id
 }
 
 func evaluateRetrieval(t *testing.T, cfg *config.Instance, ids map[string]string, queries []retrievalEvalQuery, rewritten bool) retrievalMetrics {
@@ -230,8 +189,5 @@ func evaluateRetrieval(t *testing.T, cfg *config.Instance, ids map[string]string
 		}
 	}
 	count := float64(len(queries))
-	return retrievalMetrics{
-		RecallAt5: recall / count, PrecisionAt5: precision / count,
-		MRR: reciprocalRank / count, NDCGAt5: ndcg / count,
-	}
+	return retrievalMetrics{RecallAt5: recall / count, PrecisionAt5: precision / count, MRR: reciprocalRank / count, NDCGAt5: ndcg / count}
 }

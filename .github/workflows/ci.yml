@@ -10,7 +10,17 @@ permissions:
 
 jobs:
   verify:
-    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            cc: clang
+            cxx: clang++
+          - os: ubuntu-24.04
+            cc: gcc
+            cxx: g++
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -20,45 +30,20 @@ jobs:
         with:
           go-version: '1.25.x'
           cache: true
-      - uses: goreleaser/goreleaser-action@v7
-        with:
-          distribution: goreleaser
-          version: '~> v2'
-          install-only: true
-      - run: make verify
-
-  release-smoke:
-    runs-on: macos-15
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.25.x'
-          cache: true
-      - uses: anchore/sbom-action/download-syft@v0
-      - uses: goreleaser/goreleaser-action@v7
-        with:
-          distribution: goreleaser
-          version: '~> v2'
-          install-only: true
-      - run: make release-snapshot
-      - name: Verify release artifacts
-        shell: bash
+      - run: make fmt-check schema-check agents-check mod-verify vet test
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+      - name: Build and install smoke
         run: |
-          set -euo pipefail
-          jq -e 'any(.[]; .type == "Archive" and .goos == "darwin" and .goarch == "arm64")' dist/artifacts.json
-          jq -e 'any(.[]; .type == "SBOM")' dist/artifacts.json
-          jq -e 'any(.[]; .type == "Checksum")' dist/artifacts.json
-          archive="$(jq -r 'first(.[] | select(.type == "Archive" and .goos == "darwin" and .goarch == "arm64")) | .path' dist/artifacts.json)"
-          test -f "$archive"
-          release_dir="$(mktemp -d)"
-          trap 'rm -rf "$release_dir"' EXIT
-          tar -xzf "$archive" -C "$release_dir"
-          binary="$(find "$release_dir" -type f -name llm-wiki -print -quit)"
-          test -n "$binary"
-          file "$binary" | grep -q arm64
-          "$binary" --version
-          (cd dist && shasum -a 256 -c checksums.txt)
+          make build
+          make install INSTALL_DIR="$RUNNER_TEMP/llm-wiki-bin"
+          "$RUNNER_TEMP/llm-wiki-bin/llm-wiki" --version
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+      - if: runner.os == 'Linux'
+        run: make test-race
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}

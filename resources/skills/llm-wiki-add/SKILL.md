@@ -1,13 +1,14 @@
 ---
 name: llm-wiki-add
-description: 使用 llm-wiki 把用户明确指定的文本、文件或目录采集到个人知识库 raw 证据层。用户说“记住、记录、收集、保存这段材料”时使用；只执行采集，不检索 raw，不生成 knowledge，也不发布。
+description: 用户明确要求记住、收集、保存或加入稍后整理的信息时使用。
+version: 3.0.0
 ---
 
-# LLM Wiki Add
+1. 运行 `llm-wiki locate --json --no-interactive` 定位 Vault。
+2. 读取 Vault `AGENTS.md` 与 `rules/inbox.md`。
+3. 完整保留用户明确提供的文本、文件或目录内容，生成不丢信息的初步标题、摘要、来源和可选标签到临时 note 文件。
+4. 单输入调用 `llm-wiki inbox add <file|-> --note-file <note> --json --no-interactive`；stdin 必须带 `--name`。目录批量采集使用 batch manifest，为每个 payload 映射独立 note。
+5. 不查询 Inbox，不写 `knowledge/`，不创建或批准 Promotion。
+6. 返回 Inbox ID、item/payload 路径和 `pending` 状态，明确说明它尚未成为可信知识。
 
-1. 运行 `llm-wiki locate --json --no-interactive`；用户指定知识库时加 `--wiki <alias|path>`。
-2. 从 `data.root` 读取目标 Vault 的 `AGENTS.md`，并读取其采集与元数据规则。
-3. 对对话文本使用显式 stdin：`llm-wiki raw add - --name <可理解文件名> --origin <来源> --wiki <data.root> --json --no-interactive`。对文件或目录把 `-` 换成明确路径。
-4. 返回生成的 raw ID、路径和 warning，明确状态为“已采集、未发布”。
-
-`raw add` 不是发布。不要调用 `query`、`publish`，也不要把 raw 内容描述为可信知识；raw 不进入全文检索。
+不得用摘要替换用户输入；原始字节必须保留到条目 processed 后被明确清理。

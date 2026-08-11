@@ -109,7 +109,7 @@ func ReadFile(templateName, relative string) ([]byte, error) {
 
 func ListContent(cfg *config.Instance) ([]ContentTemplate, error) {
 	items := map[string]ContentTemplate{}
-	for _, kind := range []string{"raw", "knowledge"} {
+	for _, kind := range []string{"inbox", "knowledge"} {
 		root := "vault-templates/personal/templates/" + kind
 		entries, err := fs.ReadDir(resourcebundle.FS, root)
 		if err != nil {
@@ -125,7 +125,7 @@ func ListContent(cfg *config.Instance) ([]ContentTemplate, error) {
 		}
 	}
 	if cfg != nil {
-		for _, kind := range []string{"raw", "knowledge"} {
+		for _, kind := range []string{"inbox", "knowledge"} {
 			root := filepath.Join(cfg.TemplatesDir(), kind)
 			if err := fsutil.EnsureNoSymlinkPath(cfg.Root, root); err != nil {
 				return nil, err
@@ -165,13 +165,13 @@ func ListContent(cfg *config.Instance) ([]ContentTemplate, error) {
 }
 
 func ReadContent(cfg *config.Instance, kind, name string) (ContentTemplate, error) {
-	if kind != "" && kind != "raw" && kind != "knowledge" {
+	if kind != "" && kind != "inbox" && kind != "knowledge" {
 		return ContentTemplate{}, fmt.Errorf("invalid content template kind %q", kind)
 	}
 	if name == "" || filepath.Base(name) != name || document.SafeBaseName(name) != name {
 		return ContentTemplate{}, fmt.Errorf("invalid content template name %q", name)
 	}
-	kinds := []string{"knowledge", "raw"}
+	kinds := []string{"inbox", "knowledge"}
 	if kind != "" {
 		kinds = []string{kind}
 	}

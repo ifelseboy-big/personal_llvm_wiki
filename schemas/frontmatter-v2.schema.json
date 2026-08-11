@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://llm-wiki.dev/schemas/frontmatter-v2.schema.json",
+  "title": "llm-wiki Markdown frontmatter v2",
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "stringList": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "inboxId": { "type": "string", "pattern": "^inbox_[0-9a-hjkmnp-tv-z]{26}$" },
+    "knowledgeId": { "type": "string", "pattern": "^know_[0-9a-hjkmnp-tv-z]{26}$" },
+    "lineage": {
+      "type": "object",
+      "required": ["inbox_id", "payload_hash", "source", "captured_at"],
+      "properties": {
+        "inbox_id": { "$ref": "#/$defs/inboxId" },
+        "payload_hash": { "$ref": "#/$defs/hash" },
+        "source": { "type": "string", "minLength": 1 },
+        "captured_at": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    {
+      "title": "Inbox item",
+      "type": "object",
+      "required": ["schema_version", "id", "title", "status", "source", "captured_at", "content_hash", "media_type", "original_name", "payload", "payload_hash", "payload_bytes"],
+      "properties": {
+        "schema_version": { "const": 2 },
+        "id": { "$ref": "#/$defs/inboxId" },
+        "title": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["pending", "processed"] },
+        "source": { "type": "string", "minLength": 1 },
+        "captured_at": { "type": "string", "format": "date-time" },
+        "content_hash": { "$ref": "#/$defs/hash" },
+        "media_type": { "type": "string", "minLength": 1 },
+        "original_name": { "type": "string", "minLength": 1 },
+        "payload": { "type": "string", "pattern": "^payload/[^/]+$" },
+        "payload_hash": { "$ref": "#/$defs/hash" },
+        "payload_bytes": { "type": "integer", "minimum": 0 },
+        "processed_at": { "type": "string", "format": "date-time" },
+        "knowledge_ids": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/knowledgeId" }, "uniqueItems": true },
+        "tags": { "$ref": "#/$defs/stringList" },
+        "aliases": { "$ref": "#/$defs/stringList" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "processed" } }, "required": ["status"] },
+          "then": { "required": ["processed_at", "knowledge_ids"] },
+          "else": { "not": { "anyOf": [{ "required": ["processed_at"] }, { "required": ["knowledge_ids"] }] } }
+        }
+      ],
+      "additionalProperties": true
+    },
+    {
+      "title": "Knowledge",
+      "type": "object",
+      "required": ["schema_version", "id", "type", "title", "status", "lineage", "published_at", "updated_at", "content_hash", "governance_version", "description", "lifecycle"],
+      "properties": {
+        "schema_version": { "const": 2 },
+        "id": { "$ref": "#/$defs/knowledgeId" },
+        "type": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,31}$" },
+        "title": { "type": "string", "minLength": 1 },
+        "status": { "const": "published" },
+        "lineage": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/lineage" } },
+        "published_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" },
+        "content_hash": { "$ref": "#/$defs/hash" },
+        "governance_version": { "const": "personal-2.0" },
+        "description": { "type": "string", "minLength": 1 },
+        "lifecycle": { "enum": ["current", "disputed", "superseded", "retracted"] },
+        "related": { "type": "array", "items": { "$ref": "#/$defs/knowledgeId" }, "uniqueItems": true },
+        "supersedes": { "type": "array", "items": { "$ref": "#/$defs/knowledgeId" }, "uniqueItems": true },
+        "superseded_by": { "type": "array", "items": { "$ref": "#/$defs/knowledgeId" }, "uniqueItems": true },
+        "tags": { "$ref": "#/$defs/stringList" },
+        "aliases": { "$ref": "#/$defs/stringList" }
+      },
+      "additionalProperties": true
+    }
+  ]
+}

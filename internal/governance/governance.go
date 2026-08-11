@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -13,7 +11,6 @@ import (
 
 	"llm-wiki/internal/config"
 	"llm-wiki/internal/document"
-	"llm-wiki/internal/fsutil"
 )
 
 var (
@@ -27,12 +24,11 @@ var (
 	templateVariablePattern = regexp.MustCompile(`\{\{[^{}]+\}\}`)
 	footnotePattern         = regexp.MustCompile(`\[\^([^\]\s]+)\]`)
 	footnoteDefinition      = regexp.MustCompile(`^\[\^([^\]\s]+)\]:[ \t]*(.*)$`)
-	citationLabelPattern    = regexp.MustCompile(`^(raw_[0-9a-hjkmnp-tv-z]{26})(?:-[1-9][0-9]*)?$`)
 )
 
 const (
-	PersonalGovernanceVersion = "personal-1.3"
-	PersonalTemplateVersion   = "1.4.0"
+	PersonalGovernanceVersion = "personal-2.0"
+	PersonalTemplateVersion   = "2.0.0"
 )
 
 type LifecycleAssessment struct {
@@ -51,7 +47,11 @@ type Relation struct {
 	Target   *document.Document
 }
 
-func ValidateForPublish(cfg *config.Instance, doc *document.Document, now time.Time) error {
+func ValidateForPromotion(cfg *config.Instance, doc *document.Document, prospective map[string]*document.Document, now time.Time) error {
+	return validateKnowledge(cfg, doc, prospective, now)
+}
+
+func validateKnowledge(cfg *config.Instance, doc *document.Document, prospective map[string]*document.Document, now time.Time) error {
 	if cfg == nil || doc == nil {
 		return errors.New("knowledge governance validation requires a wiki and document")
 	}
@@ -69,19 +69,19 @@ func ValidateForPublish(cfg *config.Instance, doc *document.Document, now time.T
 		problems = append(problems, fmt.Errorf("knowledge governance_version must be %q", PersonalGovernanceVersion))
 	}
 	if !knowledgeTypes[doc.Metadata.Type] {
-		problems = append(problems, fmt.Errorf("knowledge type %q is not supported by personal 1.4.0", doc.Metadata.Type))
+		problems = append(problems, fmt.Errorf("knowledge type %q is not supported by personal 2.0.0", doc.Metadata.Type))
 	}
 	description, ok, err := ExtraString(doc.Metadata, "description")
 	if err != nil {
 		problems = append(problems, err)
 	} else if !ok || strings.TrimSpace(description) == "" {
-		problems = append(problems, errors.New("knowledge description is required by personal 1.4.0"))
+		problems = append(problems, errors.New("knowledge description is required by personal 2.0.0"))
 	}
 	lifecycle, lifecycleExists, lifecycleErr := ExtraString(doc.Metadata, "lifecycle")
 	if lifecycleErr != nil {
 		problems = append(problems, lifecycleErr)
 	} else if !lifecycleExists || strings.TrimSpace(lifecycle) == "" {
-		problems = append(problems, errors.New("knowledge lifecycle is required by personal 1.4.0"))
+		problems = append(problems, errors.New("knowledge lifecycle is required by personal 2.0.0"))
 	} else if _, err := AssessLifecycle(doc.Metadata, now); err != nil {
 		problems = append(problems, err)
 	}
@@ -98,10 +98,10 @@ func ValidateForPublish(cfg *config.Instance, doc *document.Document, now time.T
 	} else if heading != strings.TrimSpace(doc.Metadata.Title) {
 		problems = append(problems, fmt.Errorf("knowledge title %q does not match first H1 %q", doc.Metadata.Title, heading))
 	}
-	if err := ValidateCitations(doc, true); err != nil {
+	if err := ValidateCitations(doc, false); err != nil {
 		problems = append(problems, err)
 	}
-	if _, err := ValidateRelations(cfg, doc); err != nil {
+	if _, err := validateRelations(cfg, doc, prospective); err != nil {
 		problems = append(problems, err)
 	}
 	if err := validateTypeSpecific(doc.Metadata); err != nil {
@@ -111,7 +111,7 @@ func ValidateForPublish(cfg *config.Instance, doc *document.Document, now time.T
 }
 
 func ValidateStored(cfg *config.Instance, doc *document.Document, now time.Time) error {
-	return ValidateForPublish(cfg, doc, now)
+	return validateKnowledge(cfg, doc, nil, now)
 }
 
 func UsesPersonalGovernance(cfg *config.Instance) bool {
@@ -182,10 +182,6 @@ func ValidateCitations(doc *document.Document, requireReference bool) error {
 	if doc == nil {
 		return errors.New("citation validation requires a document")
 	}
-	sources := make(map[string]bool, len(doc.Metadata.Sources))
-	for _, source := range doc.Metadata.Sources {
-		sources[source.ID] = true
-	}
 	definitions := map[string]string{}
 	references := map[string]bool{}
 	var problems []error
@@ -204,24 +200,11 @@ func ValidateCitations(doc *document.Document, requireReference bool) error {
 		}
 	}
 	if requireReference && len(references) == 0 {
-		problems = append(problems, errors.New("knowledge body requires at least one raw-ID footnote reference"))
+		problems = append(problems, errors.New("knowledge body requires at least one footnote reference"))
 	}
 	for label := range references {
-		match := citationLabelPattern.FindStringSubmatch(label)
-		if match == nil {
-			problems = append(problems, fmt.Errorf("footnote %q must start with a complete raw ID", label))
-			continue
-		}
-		if !sources[match[1]] {
-			problems = append(problems, fmt.Errorf("footnote %q references raw source %s not present in sources", label, match[1]))
-		}
-		definition, exists := definitions[label]
-		if !exists {
+		if _, exists := definitions[label]; !exists {
 			problems = append(problems, fmt.Errorf("footnote %q has no definition", label))
-			continue
-		}
-		if !hasLocator(definition) {
-			problems = append(problems, fmt.Errorf("footnote %q definition requires a non-empty locator", label))
 		}
 	}
 	for label := range definitions {
@@ -233,6 +216,10 @@ func ValidateCitations(doc *document.Document, requireReference bool) error {
 }
 
 func ValidateRelations(cfg *config.Instance, doc *document.Document) ([]Relation, error) {
+	return validateRelations(cfg, doc, nil)
+}
+
+func validateRelations(cfg *config.Instance, doc *document.Document, prospective map[string]*document.Document) ([]Relation, error) {
 	if cfg == nil || doc == nil {
 		return nil, errors.New("relation validation requires a wiki and document")
 	}
@@ -248,15 +235,27 @@ func ValidateRelations(cfg *config.Instance, doc *document.Document) ([]Relation
 		if !exists {
 			continue
 		}
-		for _, link := range links {
-			key := property + "\x00" + link
+		for _, id := range links {
+			key := property + "\x00" + id
 			if seen[key] {
-				problems = append(problems, fmt.Errorf("duplicate %s link %q", property, link))
+				problems = append(problems, fmt.Errorf("duplicate %s knowledge id %q", property, id))
 				continue
 			}
 			seen[key] = true
-			target, err := resolveKnowledgeLink(cfg, link)
+			if !document.ValidID("know", id) {
+				problems = append(problems, fmt.Errorf("%s relation %q is not a knowledge id", property, id))
+				continue
+			}
+			target := prospective[id]
+			var err error
+			if target == nil {
+				target, err = document.FindByID(cfg.KnowledgeDir(), id)
+			}
 			if err != nil {
+				problems = append(problems, fmt.Errorf("%s: %w", property, err))
+				continue
+			}
+			if err := target.Validate("knowledge", true); err != nil {
 				problems = append(problems, fmt.Errorf("%s: %w", property, err))
 				continue
 			}
@@ -264,7 +263,7 @@ func ValidateRelations(cfg *config.Instance, doc *document.Document) ([]Relation
 				problems = append(problems, fmt.Errorf("%s cannot link knowledge %s to itself", property, doc.Metadata.ID))
 				continue
 			}
-			relations = append(relations, Relation{Property: property, Link: link, Target: target})
+			relations = append(relations, Relation{Property: property, Link: id, Target: target})
 		}
 	}
 	return relations, errors.Join(problems...)
@@ -292,9 +291,8 @@ func ValidateReciprocalRelations(cfg *config.Instance, doc *document.Document) e
 			continue
 		}
 		found := false
-		for _, link := range links {
-			target, resolveErr := resolveKnowledgeLink(cfg, link)
-			if resolveErr == nil && target.Metadata.ID == doc.Metadata.ID {
+		for _, id := range links {
+			if id == doc.Metadata.ID {
 				found = true
 				break
 			}
@@ -413,97 +411,6 @@ func extraDate(meta document.Metadata, key string, location *time.Location) (tim
 		}
 	}
 	return time.Time{}, true, false, fmt.Errorf("knowledge property %s must be YYYY-MM-DD", key)
-}
-
-func CanonicalKnowledgeLink(cfg *config.Instance, id string) (string, error) {
-	if cfg == nil {
-		return "", errors.New("a wiki is required to resolve knowledge links")
-	}
-	target, err := document.FindByID(cfg.KnowledgeDir(), id)
-	if err != nil {
-		return "", err
-	}
-	if err := target.Validate("knowledge", cfg.Publish.RequireSources); err != nil {
-		return "", err
-	}
-	rel, err := filepath.Rel(cfg.Root, target.Path)
-	if err != nil {
-		return "", err
-	}
-	path := strings.TrimSuffix(filepath.ToSlash(rel), filepath.Ext(rel))
-	return fmt.Sprintf("[[%s|%s]]", escapeWikiLinkPart(path), escapeWikiLinkPart(target.Metadata.Title)), nil
-}
-
-func resolveKnowledgeLink(cfg *config.Instance, link string) (*document.Document, error) {
-	linkPath, linkTitle, ok := parseWikiLink(strings.TrimSpace(link))
-	if !ok {
-		return nil, fmt.Errorf("knowledge link %q must use [[knowledge/path--know_id|Title]]", link)
-	}
-	rel := filepath.ToSlash(filepath.Clean(filepath.FromSlash(linkPath)))
-	if rel != linkPath || !strings.HasPrefix(rel, filepath.ToSlash(filepath.Clean(cfg.Paths.Knowledge))+"/") {
-		return nil, fmt.Errorf("knowledge link %q points outside knowledge", link)
-	}
-	if filepath.Ext(rel) == "" {
-		rel += ".md"
-	} else if !strings.EqualFold(filepath.Ext(rel), ".md") {
-		return nil, fmt.Errorf("knowledge link %q does not point to Markdown", link)
-	}
-	target := filepath.Join(cfg.Root, filepath.FromSlash(rel))
-	if err := fsutil.EnsureNoSymlinkPath(cfg.Root, target); err != nil {
-		return nil, err
-	}
-	doc, err := document.Read(target)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("knowledge link target does not exist: %s", rel)
-	}
-	if err != nil {
-		return nil, err
-	}
-	if err := doc.Validate("knowledge", cfg.Publish.RequireSources); err != nil {
-		return nil, err
-	}
-	if !strings.Contains(filepath.Base(target), "--"+doc.Metadata.ID+".md") {
-		return nil, fmt.Errorf("knowledge link target filename does not contain frontmatter id %s", doc.Metadata.ID)
-	}
-	if linkTitle != doc.Metadata.Title {
-		return nil, fmt.Errorf("knowledge link title %q does not match target title %q", linkTitle, doc.Metadata.Title)
-	}
-	return doc, nil
-}
-
-func escapeWikiLinkPart(value string) string {
-	return strings.NewReplacer("\\", "\\\\", "|", "\\|", "]", "\\]").Replace(value)
-}
-
-func parseWikiLink(value string) (string, string, bool) {
-	if !strings.HasPrefix(value, "[[") || !strings.HasSuffix(value, "]]") {
-		return "", "", false
-	}
-	inner := value[2 : len(value)-2]
-	separator := -1
-	escaped := false
-	for i, r := range inner {
-		if escaped {
-			escaped = false
-			continue
-		}
-		if r == '\\' {
-			escaped = true
-			continue
-		}
-		if r == '|' {
-			separator = i
-			break
-		}
-	}
-	if separator <= 0 || separator >= len(inner)-1 {
-		return "", "", false
-	}
-	unescape := func(part string) string {
-		return strings.NewReplacer("\\|", "|", "\\]", "]", "\\\\", "\\").Replace(part)
-	}
-	path, title := unescape(inner[:separator]), unescape(inner[separator+1:])
-	return path, title, path != "" && title != ""
 }
 
 func firstHeading(body []byte) string {

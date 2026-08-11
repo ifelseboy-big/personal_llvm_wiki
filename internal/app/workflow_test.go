@@ -2,328 +2,200 @@ package app
 
 import (
 	"bytes"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
-
-	"llm-wiki/internal/config"
-	"llm-wiki/internal/document"
-	indexstore "llm-wiki/internal/index"
-	"llm-wiki/internal/sqlite3simple"
 )
 
-func TestCompleteCLIWorkflow(t *testing.T) {
-	t.Setenv("LLM_WIKI_CONFIG", filepath.Join(t.TempDir(), "user-config.toml"))
+func TestCompleteInboxPromotionKnowledgeCleanWorkflow(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "wiki")
 	runCLI(t, "", "init", root, "--name", "workflow", "--json", "--no-interactive")
-	rawResponse := runCLI(t, "# Source\n\n稳定 IR 解耦编译器组件。\n", "raw", "add", "-", "--name", "source.md", "--wiki", root, "--json", "--no-interactive")
-	rawID := nestedString(t, rawResponse.Data, "items", 0, "id")
-	indexAfterCapture := runCLI(t, "", "index", "status", "--wiki", root, "--json", "--no-interactive")
-	if documentsValue, exists := indexAfterCapture.Data.(map[string]any)["documents"]; exists {
-		documents := documentsValue.(map[string]any)
-		if rawCount, exists := documents["raw"]; exists && rawCount.(float64) != 0 {
-			t.Fatalf("raw add updated the searchable index: %#v", indexAfterCapture.Data)
-		}
-	}
-	beforePublish := runCLI(t, "", "query", "稳定 IR", "--wiki", root, "--json", "--no-interactive")
-	beforeData := beforePublish.Data.(map[string]any)
-	if nestedFloat(t, beforePublish.Data, "count") != 0 {
-		t.Fatalf("query returned unpublished raw content: %#v", beforePublish.Data)
-	}
-	if _, exists := beforeData["raw_evidence"]; exists {
-		t.Fatalf("query exposed a raw retrieval channel: %#v", beforePublish.Data)
-	}
-	inbox := runCLI(t, "", "raw", "list", "--unreferenced", "--wiki", root, "--json", "--no-interactive")
-	if nestedFloat(t, inbox.Data, "count") != 1 {
-		t.Fatalf("new raw evidence was not visible in the unreferenced inbox: %#v", inbox.Data)
-	}
-	draft := filepath.Join(t.TempDir(), "draft.md")
-	if err := os.WriteFile(draft, governedDraft("稳定 IR", "稳定 IR 解耦编译器组件。", rawID), 0o600); err != nil {
+	work := t.TempDir()
+	note := filepath.Join(work, "note.md")
+	if err := os.WriteFile(note, []byte("# Stable IR input\n\nInitial organization for later review.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	proposalResponse := runCLI(t, "", "publish", "propose", "--source", rawID, "--file", draft, "--wiki", root, "--json", "--no-interactive")
-	changeID := nestedString(t, proposalResponse.Data, "change_id")
-	knowledgeID := nestedString(t, proposalResponse.Data, "knowledge_id")
-	runCLI(t, "", "publish", "diff", changeID, "--wiki", root, "--json", "--no-interactive")
-	apply := runCLI(t, "", "publish", "apply", changeID, "--wiki", root, "--json", "--no-interactive")
-	if _, ok := apply.Data.(map[string]any)["index"].(map[string]any); !ok {
-		t.Fatalf("publish apply did not refresh the knowledge index: %#v", apply.Data)
+	added := runCLI(t, "Stable IR decouples compiler components.", "inbox", "add", "-", "--name", "source.txt", "--source", "user", "--note-file", note, "--wiki", root, "--json", "--no-interactive")
+	inboxID := nestedString(t, added.Data, "items", 0, "id")
+	payloadHash := nestedString(t, added.Data, "items", 0, "payload_hash")
+	itemHash := nestedString(t, added.Data, "items", 0, "item_hash")
+	if status := nestedString(t, added.Data, "items", 0, "status"); status != "pending" {
+		t.Fatalf("add did not create pending inbox: %#v", added.Data)
 	}
-	inbox = runCLI(t, "", "raw", "list", "--unreferenced", "--wiki", root, "--json", "--no-interactive")
-	if nestedFloat(t, inbox.Data, "count") != 0 {
-		t.Fatalf("published raw evidence remained in the unreferenced inbox: %#v", inbox.Data)
+	before := runCLI(t, "", "query", "Stable IR", "--wiki", root, "--json", "--no-interactive")
+	if nestedFloat(t, before.Data, "count") != 0 {
+		t.Fatalf("query returned Inbox content: %#v", before.Data)
 	}
-	query := runCLI(t, "", "query", "稳定 IR", "--wiki", root, "--json", "--no-interactive")
-	if count := nestedFloat(t, query.Data, "count"); count < 1 {
-		t.Fatalf("expected query evidence, got %#v", query.Data)
+	runCLI(t, "", "inbox", "show", inboxID, "--wiki", root, "--json", "--no-interactive")
+
+	knowledgeID := "know_01arz3ndektsv4rrffq69g5faw"
+	draft := filepath.Join(work, "draft.md")
+	draftData := "---\ntype: concept\ntitle: \"Stable IR\"\ndescription: \"Stable IR decouples compiler components\"\nlifecycle: current\n---\n# Stable IR\n\nStable IR decouples compiler frontends and backends while preserving a common contract.\n"
+	if err := os.WriteFile(draft, []byte(draftData), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if normalized := nestedString(t, query.Data, "normalized_query"); normalized != "稳定 ir" {
-		t.Fatalf("unexpected normalized query %q", normalized)
-	}
-	if factsFrom := nestedString(t, query.Data, "facts_from"); factsFrom != "knowledge_markdown" {
-		t.Fatalf("query facts came from %q", factsFrom)
-	}
-	if mode := nestedString(t, query.Data, "evidence", 0, "retrieval_mode"); mode != "strict" {
-		t.Fatalf("unexpected evidence retrieval mode %q", mode)
-	}
-	trace := runCLI(t, "", "trace", knowledgeID, "--wiki", root, "--json", "--no-interactive")
-	if valid, ok := trace.Data.(map[string]any)["valid"].(bool); !ok || !valid {
-		t.Fatalf("invalid trace %#v", trace.Data)
-	}
-	runCLI(t, "", "index", "rebuild", "--wiki", root, "--json", "--no-interactive")
-	doctor := runCLI(t, "", "doctor", "--wiki", root, "--json", "--no-interactive")
-	if healthy, ok := doctor.Data.(map[string]any)["healthy"].(bool); !ok || !healthy {
-		t.Fatalf("doctor failed after complete workflow: %#v", doctor.Data)
-	}
+	manifest := filepath.Join(work, "promotion.json")
+	manifestData := fmt.Sprintf(`{
+  "schema_version": 1,
+  "inboxes": [{"id": %q, "payload_hash": %q, "item_hash": %q, "consume": true}],
+  "targets": [{"operation": "create", "draft_file": "draft.md", "knowledge_id": %q, "inbox_ids": [%q]}]
 }
-
-func TestQueryRejectsWrapperOnlyChinese(t *testing.T) {
-	t.Setenv("LLM_WIKI_CONFIG", filepath.Join(t.TempDir(), "user-config.toml"))
-	root := filepath.Join(t.TempDir(), "wiki")
-	runCLI(t, "", "init", root, "--name", "empty-query", "--json", "--no-interactive")
-	for _, query := range []string{"的", "是什么"} {
-		response := runCLIFailure(t, "", "query", query, "--wiki", root, "--json", "--no-interactive")
-		if response.Error == nil || response.Error.Code != "QUERY_INVALID" {
-			t.Fatalf("query %q returned %#v", query, response)
-		}
-	}
-}
-
-func TestPublishApplyConflictUsesStableMachineCode(t *testing.T) {
-	t.Setenv("LLM_WIKI_CONFIG", filepath.Join(t.TempDir(), "user-config.toml"))
-	root := filepath.Join(t.TempDir(), "wiki")
-	runCLI(t, "", "init", root, "--name", "apply-conflict", "--json", "--no-interactive")
-	rawResponse := runCLI(t, "# Source\n\nOriginal evidence.\n", "raw", "add", "-", "--name", "source.md", "--wiki", root, "--json", "--no-interactive")
-	rawID := nestedString(t, rawResponse.Data, "items", 0, "id")
-	draft := filepath.Join(t.TempDir(), "draft.md")
-	if err := os.WriteFile(draft, governedDraft("Conflict", "Original evidence.", rawID), 0o600); err != nil {
+`, inboxID, payloadHash, itemHash, knowledgeID, inboxID)
+	if err := os.WriteFile(manifest, []byte(manifestData), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	proposal := runCLI(t, "", "publish", "propose", "--source", rawID, "--file", draft, "--wiki", root, "--json", "--no-interactive")
-	changeID := nestedString(t, proposal.Data, "change_id")
-	cfg, err := config.Load(root)
-	if err != nil {
-		t.Fatal(err)
+	planned := runCLI(t, "", "promote", "plan", "--manifest", manifest, "--wiki", root, "--json", "--no-interactive")
+	promotionID := nestedString(t, planned.Data, "promotion_id")
+	planHash := nestedString(t, planned.Data, "plan_hash")
+	diff := runCLI(t, "", "promote", "diff", promotionID, "--wiki", root, "--json", "--no-interactive")
+	if nestedString(t, diff.Data, "plan_hash") != planHash || !bytes.Contains([]byte(nestedString(t, diff.Data, "diff")), []byte("Stable IR")) {
+		t.Fatalf("diff is not bound to plan: %#v", diff.Data)
 	}
-	rawDoc, err := document.FindByID(cfg.RawDir(), rawID)
-	if err != nil {
-		t.Fatal(err)
+	apply := runCLI(t, "", "promote", "apply", promotionID, "--approve", planHash, "--wiki", root, "--json", "--no-interactive")
+	if nestedString(t, apply.Data, "targets", 0, "knowledge_id") != knowledgeID {
+		t.Fatalf("promotion did not publish target: %#v", apply.Data)
 	}
-	rawDoc.Body = append(rawDoc.Body, []byte("\nChanged after proposal.\n")...)
-	rawDoc.Metadata.ContentHash = document.HashBytes(document.NormalizeMarkdownBody(rawDoc.Body))
-	if err := document.Write(rawDoc.Path, rawDoc.Metadata, rawDoc.Body); err != nil {
-		t.Fatal(err)
+	listed := runCLI(t, "", "inbox", "list", "--status", "processed", "--wiki", root, "--json", "--no-interactive")
+	if nestedFloat(t, listed.Data, "count") != 1 {
+		t.Fatalf("applied inbox is not processed: %#v", listed.Data)
 	}
-
-	response := runCLIFailure(t, "", "publish", "apply", changeID, "--wiki", root, "--json", "--no-interactive")
-	if response.Error.Code != "PUBLISH_BASE_CHANGED" {
-		t.Fatalf("apply conflict returned unstable protocol error: %#v", response.Error)
+	query := runCLI(t, "", "query", "compiler frontends backends", "--wiki", root, "--json", "--no-interactive")
+	if nestedFloat(t, query.Data, "count") < 1 || nestedString(t, query.Data, "evidence", 0, "knowledge_id") != knowledgeID {
+		t.Fatalf("query missed applied Knowledge: %#v", query.Data)
 	}
-}
-
-func TestAuxiliaryCLICommandSurface(t *testing.T) {
-	t.Setenv("LLM_WIKI_CONFIG", filepath.Join(t.TempDir(), "user-config.toml"))
-	skillsRoot := filepath.Join(t.TempDir(), "skills")
-	t.Setenv("LLM_WIKI_CODEX_SKILLS_DIR", skillsRoot)
-	root := filepath.Join(t.TempDir(), "wiki")
-	runCLI(t, "", "init", root, "--name", "surface", "--json", "--no-interactive")
-	runCLI(t, "", "locate", "--wiki", root, "--json", "--no-interactive")
-	runCLI(t, "", "status", "--wiki", root, "--json", "--no-interactive")
-	runCLI(t, "", "index", "status", "--wiki", root, "--json", "--no-interactive")
-	runCLI(t, "", "index", "update", "--wiki", root, "--json", "--no-interactive")
-	runCLI(t, "", "template", "list", "--wiki", root, "--json", "--no-interactive")
-	runCLI(t, "", "template", "show", "concept", "--wiki", root, "--json", "--no-interactive")
-	runCLI(t, "", "template", "upgrade", "--plan", "--wiki", root, "--json", "--no-interactive")
-	templateOutput := filepath.Join(t.TempDir(), "source-template.md")
-	createdTemplate := runCLI(t, "", "template", "create", "source", "--kind", "raw", "--title", `A "quoted" source`,
-		"--output", templateOutput, "--set", "origin=web", "--set", "authors=[Alice, Bob]", "--wiki", root, "--json", "--no-interactive")
-	if version := nestedString(t, createdTemplate.Data, "template_version"); version != "1.4.0" {
-		t.Fatalf("template create returned version %q", version)
+	show := runCLI(t, "", "show", knowledgeID, "--wiki", root, "--json", "--no-interactive")
+	lineageID := nestedString(t, show.Data, "metadata", "lineage", 0, "inbox_id")
+	if lineageID != inboxID {
+		t.Fatalf("Knowledge lineage missing: %#v", show.Data)
 	}
-	templateRaw := runCLI(t, "", "raw", "add", templateOutput, "--wiki", root, "--json", "--no-interactive")
-	templateRawID := nestedString(t, templateRaw.Data, "items", 0, "id")
-	templateRawShow := runCLI(t, "", "raw", "show", templateRawID, "--wiki", root, "--json", "--no-interactive")
-	if origin := nestedString(t, templateRawShow.Data, "metadata", "origin"); origin != "web" {
-		t.Fatalf("raw add replaced template origin with %q", origin)
+	preview := runCLI(t, "", "inbox", "clean", inboxID, "--dry-run", "--wiki", root, "--json", "--no-interactive")
+	if len(preview.AffectedFiles) != 2 {
+		t.Fatalf("clean preview is incomplete: %#v", preview)
 	}
-
-	rawResponse := runCLI(t, "# Reject source\n", "raw", "add", "-", "--name", "reject.md", "--wiki", root, "--json", "--no-interactive")
-	rawID := nestedString(t, rawResponse.Data, "items", 0, "id")
-	runCLI(t, "", "raw", "list", "--wiki", root, "--json", "--no-interactive")
-	runCLI(t, "", "raw", "show", rawID, "--wiki", root, "--json", "--no-interactive")
-	draft := filepath.Join(t.TempDir(), "reject-draft.md")
-	if err := os.WriteFile(draft, governedDraft("Rejected knowledge", "Rejected knowledge remains reviewable.", rawID), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	proposal := runCLI(t, "", "publish", "propose", "--source", rawID, "--file", draft, "--wiki", root, "--json", "--no-interactive")
-	changeID := nestedString(t, proposal.Data, "change_id")
-	runCLI(t, "", "publish", "reject", changeID, "--reason", "test rejection", "--wiki", root, "--json", "--no-interactive")
-
-	runCLI(t, "", "skill", "status", "codex", "--json", "--no-interactive")
-	installedSkills := runCLI(t, "", "skill", "install", "codex", "--yes", "--json", "--no-interactive")
-	if skills, ok := installedSkills.Data.(map[string]any)["skills"].([]any); !ok || len(skills) != 4 {
-		t.Fatalf("skill install did not return four independent skills: %#v", installedSkills.Data)
-	}
-	if _, err := os.Stat(filepath.Join(skillsRoot, "llm-wiki-query", "SKILL.md")); err != nil {
-		t.Fatalf("query skill was not installed as a sibling directory: %v", err)
-	}
-	runCLI(t, "", "skill", "update", "codex", "--yes", "--json", "--no-interactive")
-	runCLI(t, "", "skill", "uninstall", "codex", "--yes", "--json", "--no-interactive")
-	if _, err := os.Stat(filepath.Join(skillsRoot, "llm-wiki-query", "SKILL.md")); !os.IsNotExist(err) {
-		t.Fatalf("query skill remains after uninstall: %v", err)
-	}
-}
-
-func TestQueryUsesIndexForCandidatesAndKnowledgeForFacts(t *testing.T) {
-	t.Setenv("LLM_WIKI_CONFIG", filepath.Join(t.TempDir(), "user-config.toml"))
-	root := filepath.Join(t.TempDir(), "wiki")
-	runCLI(t, "", "init", root, "--name", "facts", "--json", "--no-interactive")
-	rawResponse := runCLI(t, "# Source\n\nOriginal evidence.\n", "raw", "add", "-", "--name", "source.md", "--wiki", root, "--json", "--no-interactive")
-	rawID := nestedString(t, rawResponse.Data, "items", 0, "id")
-	rawPath := nestedString(t, rawResponse.Data, "items", 0, "path")
-	draft := filepath.Join(t.TempDir(), "draft.md")
-	if err := os.WriteFile(draft, governedDraft("File facts", "Original evidence.", rawID), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	proposal := runCLI(t, "", "publish", "propose", "--source", rawID, "--file", draft, "--wiki", root, "--json", "--no-interactive")
-	changeID := nestedString(t, proposal.Data, "change_id")
-	knowledgeID := nestedString(t, proposal.Data, "knowledge_id")
-	runCLI(t, "", "publish", "apply", changeID, "--wiki", root, "--json", "--no-interactive")
-
-	cfg, err := config.Load(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	knowledge, err := document.FindByID(cfg.KnowledgeDir(), knowledgeID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open(sqlite3simple.DriverName, indexstore.DBPath(cfg))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`UPDATE chunks SET body='Poisoned SQLite body' WHERE document_id=?`, knowledgeID); err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`UPDATE documents SET title='Poisoned SQLite title',metadata_json='{}' WHERE id=?`, knowledgeID); err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`UPDATE chunks_fts SET body=body || ' Poisoned SQLite FTS body',title='Poisoned SQLite FTS title' WHERE document_id=?`, knowledgeID); err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	query := runCLI(t, "", "query", "Original evidence", "--wiki", root, "--json", "--no-interactive")
-	bodyBeforeRebuild := nestedString(t, query.Data, "evidence", 0, "body")
-	if !strings.Contains(bodyBeforeRebuild, "Original evidence.") || strings.Contains(bodyBeforeRebuild, "Poisoned") {
-		t.Fatalf("query returned cached SQLite body instead of published Markdown: %q", bodyBeforeRebuild)
-	}
-	titleBeforeRebuild := nestedString(t, query.Data, "evidence", 0, "title")
-	if titleBeforeRebuild != "File facts" {
-		t.Fatalf("query returned cached SQLite metadata instead of published Markdown: %q", titleBeforeRebuild)
-	}
-	if err := os.Remove(indexstore.DBPath(cfg)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := indexstore.Rebuild(cfg); err != nil {
-		t.Fatal(err)
-	}
-	rebuiltQuery := runCLI(t, "", "query", "Original evidence", "--wiki", root, "--json", "--no-interactive")
-	if body := nestedString(t, rebuiltQuery.Data, "evidence", 0, "body"); body != bodyBeforeRebuild {
-		t.Fatalf("evidence changed after deleting and rebuilding SQLite: before=%q after=%q", bodyBeforeRebuild, body)
-	}
-	if title := nestedString(t, rebuiltQuery.Data, "evidence", 0, "title"); title != titleBeforeRebuild {
-		t.Fatalf("title changed after deleting and rebuilding SQLite: before=%q after=%q", titleBeforeRebuild, title)
-	}
-
-	knowledge.Body = append(knowledge.Body, []byte("\nUniqueFileFactToken\n")...)
-	knowledge.Metadata.ContentHash = document.HashBytes(document.NormalizeMarkdownBody(knowledge.Body))
-	if err := document.Write(knowledge.Path, knowledge.Metadata, knowledge.Body); err != nil {
-		t.Fatal(err)
-	}
-	stale := runCLIFailure(t, "", "query", "Original evidence", "--wiki", root, "--json", "--no-interactive")
-	if stale.Error == nil || stale.Error.Code != "INDEX_STALE" {
-		t.Fatalf("query trusted a stale index: %#v", stale)
-	}
-	runCLI(t, "", "index", "update", "--wiki", root, "--json", "--no-interactive")
-	query = runCLI(t, "", "query", "UniqueFileFactToken", "--wiki", root, "--json", "--no-interactive")
+	runCLI(t, "", "inbox", "clean", inboxID, "--yes", "--wiki", root, "--json", "--no-interactive")
+	query = runCLI(t, "", "query", "compiler frontends backends", "--wiki", root, "--json", "--no-interactive")
 	if nestedFloat(t, query.Data, "count") < 1 {
-		t.Fatalf("query did not use the explicitly updated index: %#v", query)
+		t.Fatalf("clean broke Knowledge query: %#v", query.Data)
 	}
+	runCLI(t, "", "doctor", "--wiki", root, "--json", "--no-interactive")
+	runCLI(t, "", "index", "rebuild", "--wiki", root, "--json", "--no-interactive")
+}
 
-	path := filepath.Join(root, filepath.FromSlash(rawPath))
-	b, err := os.ReadFile(path)
+func TestPromotionApprovalAndStaleErrorsAreStable(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "wiki")
+	runCLI(t, "", "init", root, "--name", "conflict", "--json", "--no-interactive")
+	work := t.TempDir()
+	added := runCLI(t, "payload", "inbox", "add", "-", "--name", "input.txt", "--wiki", root, "--json", "--no-interactive")
+	id := nestedString(t, added.Data, "items", 0, "id")
+	payloadHash := nestedString(t, added.Data, "items", 0, "payload_hash")
+	itemHash := nestedString(t, added.Data, "items", 0, "item_hash")
+	if err := os.WriteFile(filepath.Join(work, "draft.md"), []byte("---\ntype: concept\ntitle: Conflict\ndescription: Complete\nlifecycle: current\n---\n# Conflict\n\nComplete fact.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest := fmt.Sprintf(`{"schema_version":1,"inboxes":[{"id":%q,"payload_hash":%q,"item_hash":%q,"consume":true}],"targets":[{"operation":"create","draft_file":"draft.md","knowledge_id":"know_01arz3ndektsv4rrffq69g5faw","inbox_ids":[%q]}]}`, id, payloadHash, itemHash, id)
+	manifestPath := filepath.Join(work, "promotion.json")
+	if err := os.WriteFile(manifestPath, []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	planned := runCLI(t, "", "promote", "plan", "--manifest", manifestPath, "--wiki", root, "--json", "--no-interactive")
+	promotionID := nestedString(t, planned.Data, "promotion_id")
+	missing := runCLIFailure(t, "", "promote", "apply", promotionID, "--wiki", root, "--json", "--no-interactive")
+	if missing.Error == nil || missing.Error.Code != "INVALID_ARGUMENT" {
+		t.Fatalf("missing approval was not rejected as usage: %#v", missing)
+	}
+	wrong := runCLIFailure(t, "", "promote", "apply", promotionID, "--approve", "sha256:0000000000000000000000000000000000000000000000000000000000000000", "--wiki", root, "--json", "--no-interactive")
+	if wrong.Error == nil || wrong.Error.Code != "PROMOTION_APPROVAL_MISMATCH" {
+		t.Fatalf("wrong approval used unstable code: %#v", wrong)
+	}
+	itemPath := filepath.Join(root, nestedString(t, added.Data, "items", 0, "item_path"))
+	b, err := os.ReadFile(itemPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b = bytes.Replace(b, []byte("Original evidence."), []byte("Tampered evidence."), 1)
-	if err := os.WriteFile(path, b, 0o600); err != nil {
+	if err := os.WriteFile(itemPath, append(b, []byte("\n")...), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	query = runCLI(t, "", "query", "UniqueFileFactToken", "--wiki", root, "--json", "--no-interactive")
-	if body := nestedString(t, query.Data, "evidence", 0, "body"); !strings.Contains(body, "UniqueFileFactToken") {
-		t.Fatalf("raw drift incorrectly prevented reading the published knowledge fact: %#v", query)
-	}
-	trace := runCLI(t, "", "trace", knowledgeID, "--wiki", root, "--json", "--no-interactive")
-	data := trace.Data.(map[string]any)
-	if valid, ok := data["valid"].(bool); !ok || valid {
-		t.Fatalf("trace trusted recorded metadata instead of actual raw bytes: %#v", trace.Data)
+	stale := runCLIFailure(t, "", "promote", "apply", promotionID, "--approve", nestedString(t, planned.Data, "plan_hash"), "--wiki", root, "--json", "--no-interactive")
+	if stale.Error == nil || stale.Error.Code != "PROMOTION_STALE" {
+		t.Fatalf("drift used unstable code: %#v", stale)
 	}
 }
 
-func governedDraft(title, fact, rawID string) []byte {
-	return []byte(fmt.Sprintf("---\ntype: concept\ntitle: %q\ndescription: Test knowledge for %s\nlifecycle: current\n---\n# %s\n\n%s[^%s-1]\n\n[^%s-1]: locator: test fixture\n",
-		title, title, title, fact, rawID, rawID))
+func TestIndexFailureAfterPromotionReturnsWarningAndRecovers(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "wiki")
+	runCLI(t, "", "init", root, "--name", "index-failure", "--json", "--no-interactive")
+	work := t.TempDir()
+	added := runCLI(t, "payload", "inbox", "add", "-", "--name", "input.txt", "--wiki", root, "--json", "--no-interactive")
+	id := nestedString(t, added.Data, "items", 0, "id")
+	payloadHash := nestedString(t, added.Data, "items", 0, "payload_hash")
+	itemHash := nestedString(t, added.Data, "items", 0, "item_hash")
+	if err := os.WriteFile(filepath.Join(work, "draft.md"), []byte("---\ntype: concept\ntitle: Recoverable\ndescription: Complete knowledge\nlifecycle: current\n---\n# Recoverable\n\nCommitted before index recovery.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest := fmt.Sprintf(`{"schema_version":1,"inboxes":[{"id":%q,"payload_hash":%q,"item_hash":%q,"consume":true}],"targets":[{"operation":"create","draft_file":"draft.md","knowledge_id":"know_01arz3ndektsv4rrffq69g5faw","inbox_ids":[%q]}]}`, id, payloadHash, itemHash, id)
+	manifestPath := filepath.Join(work, "promotion.json")
+	if err := os.WriteFile(manifestPath, []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	planned := runCLI(t, "", "promote", "plan", "--manifest", manifestPath, "--wiki", root, "--json", "--no-interactive")
+	indexPath := filepath.Join(root, ".llm-wiki", "index.sqlite")
+	if err := os.Remove(indexPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(indexPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	applied := runCLI(t, "", "promote", "apply", nestedString(t, planned.Data, "promotion_id"), "--approve", nestedString(t, planned.Data, "plan_hash"), "--wiki", root, "--json", "--no-interactive")
+	if len(applied.Warnings) != 1 || nestedString(t, applied.Data, "targets", 0, "knowledge_id") == "" {
+		t.Fatalf("index failure did not preserve promotion result and warning: %#v", applied)
+	}
+	processed := runCLI(t, "", "inbox", "list", "--status", "processed", "--wiki", root, "--json", "--no-interactive")
+	if nestedFloat(t, processed.Data, "count") != 1 {
+		t.Fatalf("inbox was not committed before index failure: %#v", processed.Data)
+	}
+	if err := os.Remove(indexPath); err != nil {
+		t.Fatal(err)
+	}
+	runCLI(t, "", "index", "update", "--wiki", root, "--json", "--no-interactive")
+	query := runCLI(t, "", "query", "Committed recovery", "--wiki", root, "--json", "--no-interactive")
+	if nestedFloat(t, query.Data, "count") < 1 {
+		t.Fatalf("maintenance did not recover the committed promotion: %#v", query.Data)
+	}
 }
 
 func runCLI(t *testing.T, stdin string, args ...string) Response {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
-	root := NewRootCommandWithIO(strings.NewReader(stdin), &stdout, &stderr)
-	root.SetArgs(args)
-	if err := root.Execute(); err != nil {
-		t.Fatalf("command %v: %v stderr=%s stdout=%s", args, err, stderr.String(), stdout.String())
+	cmd := NewRootCommandWithIO(bytes.NewBufferString(stdin), &stdout, &stderr)
+	cmd.SetArgs(args)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("command %v failed: %v stderr=%s stdout=%s", args, err, stderr.String(), stdout.String())
 	}
 	var response Response
 	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
-		t.Fatalf("decode %v output %q: %v", args, stdout.String(), err)
+		t.Fatalf("decode response for %v: %v output=%s", args, err, stdout.String())
 	}
 	if !response.OK {
-		t.Fatalf("command %v returned failure %#v", args, response)
+		t.Fatalf("command %v returned failure: %#v", args, response)
 	}
-	var generic any
-	b, _ := json.Marshal(response.Data)
-	_ = json.Unmarshal(b, &generic)
-	response.Data = generic
 	return response
 }
 
 func runCLIFailure(t *testing.T, stdin string, args ...string) Response {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
-	root := NewRootCommandWithIO(strings.NewReader(stdin), &stdout, &stderr)
-	root.SetArgs(args)
-	err := root.Execute()
-	if err == nil {
-		t.Fatalf("command %v unexpectedly succeeded stdout=%s", args, stdout.String())
-	}
-	if code := RenderFailure(root, err); code == ExitOK {
-		t.Fatalf("command %v returned a zero failure code", args)
+	cmd := NewRootCommandWithIO(bytes.NewBufferString(stdin), &stdout, &stderr)
+	cmd.SetArgs(args)
+	if err := cmd.Execute(); err == nil {
+		t.Fatalf("command %v unexpectedly succeeded: %s", args, stdout.String())
+	} else {
+		RenderFailure(cmd, err)
 	}
 	var response Response
 	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
-		t.Fatalf("decode %v failure output %q: %v stderr=%s", args, stdout.String(), err, stderr.String())
-	}
-	if response.OK || response.Error == nil {
-		t.Fatalf("command %v returned invalid failure %#v", args, response)
+		t.Fatalf("decode failure response for %v: %v output=%s", args, err, stdout.String())
 	}
 	return response
 }
@@ -334,37 +206,35 @@ func nestedString(t *testing.T, value any, path ...any) string {
 	for _, part := range path {
 		switch key := part.(type) {
 		case string:
-			m, ok := current.(map[string]any)
+			object, ok := current.(map[string]any)
 			if !ok {
-				t.Fatalf("%v is not an object at %s", current, key)
+				t.Fatalf("%v is not an object at %q", current, key)
 			}
-			current = m[key]
+			current = object[key]
 		case int:
-			a, ok := current.([]any)
-			if !ok || key >= len(a) {
-				t.Fatalf("%v is not an array at %d", current, key)
+			list, ok := current.([]any)
+			if !ok || key >= len(list) {
+				t.Fatalf("%v is not a list containing %d", current, key)
 			}
-			current = a[key]
-		default:
-			t.Fatal(fmt.Sprintf("unsupported path component %T", part))
+			current = list[key]
 		}
 	}
-	out, ok := current.(string)
+	result, ok := current.(string)
 	if !ok {
 		t.Fatalf("%v is not a string", current)
 	}
-	return out
+	return result
 }
 
 func nestedFloat(t *testing.T, value any, key string) float64 {
 	t.Helper()
-	m, ok := value.(map[string]any)
+	object, ok := value.(map[string]any)
 	if !ok {
 		t.Fatalf("%v is not an object", value)
 	}
-	out, ok := m[key].(float64)
+	result, ok := object[key].(float64)
 	if !ok {
-		t.Fatalf("%v is not a number", m[key])
+		t.Fatalf("%v is not numeric", object[key])
 	}
-	return out
+	return result
 }

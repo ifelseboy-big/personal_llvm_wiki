@@ -102,7 +102,7 @@ func TestLegacyDerivedPathIsIgnoredAndPreserved(t *testing.T) {
 
 func TestRejectEscapingManagedPath(t *testing.T) {
 	cfg := DefaultInstance("test", "wiki_01arz3ndektsv4rrffq69g5fav", time.Now())
-	cfg.Paths.Raw = "../outside"
+	cfg.Paths.Inbox = "../outside"
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected path escape validation error")
 	}
@@ -110,7 +110,7 @@ func TestRejectEscapingManagedPath(t *testing.T) {
 
 func TestRejectOverlappingManagedPaths(t *testing.T) {
 	cfg := DefaultInstance("test", "wiki_01arz3ndektsv4rrffq69g5fav", time.Now())
-	cfg.Paths.Knowledge = filepath.Join(cfg.Paths.Raw, "published")
+	cfg.Paths.Knowledge = filepath.Join(cfg.Paths.Inbox, "published")
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "overlap") {
 		t.Fatalf("expected overlapping path rejection, got %v", err)
 	}

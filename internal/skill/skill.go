@@ -21,18 +21,18 @@ import (
 )
 
 const (
-	SkillVersion    = "2.1.0"
-	manifestSchema  = 2
+	SkillVersion    = "3.0.0"
+	manifestSchema  = 3
 	manifestName    = ".llm-wiki-install.json"
 	installLockName = ".llm-wiki-install.lock"
 )
 
 var skillNames = []string{
 	"llm-wiki-add",
-	"llm-wiki-maintain",
-	"llm-wiki-publish",
 	"llm-wiki-query",
 }
+
+var legacySkillNames = []string{"llm-wiki-add", "llm-wiki-maintain", "llm-wiki-publish", "llm-wiki-query"}
 
 type OwnedFile struct {
 	Path string `json:"path"`
@@ -177,6 +177,11 @@ func Install(client string, update, dryRun bool) (*Result, error) {
 	if !installed && update {
 		return nil, errors.New("skill is not installed; use skill install")
 	}
+	newPaths := map[string]bool{}
+	for _, file := range files {
+		newPaths[file.Path] = true
+	}
+	preservedOld := []string{}
 	if installed {
 		for _, owned := range existing.Files {
 			path, err := managedFilePath(target, owned.Path)
@@ -194,7 +199,10 @@ func Install(client string, update, dryRun bool) (*Result, error) {
 				return nil, err
 			}
 			if document.HashBytes(b) != owned.Hash {
-				return nil, fmt.Errorf("installed skill file was modified: %s", owned.Path)
+				if newPaths[owned.Path] {
+					return nil, fmt.Errorf("installed skill file was modified: %s", owned.Path)
+				}
+				preservedOld = append(preservedOld, owned.Path)
 			}
 		}
 	}
@@ -223,7 +231,7 @@ func Install(client string, update, dryRun bool) (*Result, error) {
 		action = "updated"
 	}
 	result := &Result{
-		Client: client, Target: target, Action: action, Skills: SkillNames(), DryRun: dryRun,
+		Client: client, Target: target, Action: action, Skills: SkillNames(), Preserved: preservedOld, DryRun: dryRun,
 	}
 	for _, file := range files {
 		result.Files = append(result.Files, file.Path)
@@ -266,6 +274,9 @@ func Install(client string, update, dryRun bool) (*Result, error) {
 		}
 		for _, owned := range existing.Files {
 			if current[owned.Path] {
+				continue
+			}
+			if contains(result.Preserved, owned.Path) {
 				continue
 			}
 			path, pathErr := managedFilePath(target, owned.Path)
@@ -398,7 +409,7 @@ func readManifest(target string) (InstallManifest, error) {
 	if err := json.Unmarshal(b, &manifest); err != nil {
 		return manifest, err
 	}
-	if manifest.SchemaVersion != manifestSchema || manifest.Client != "codex" || manifest.SkillVersion == "" {
+	if (manifest.SchemaVersion != 2 && manifest.SchemaVersion != manifestSchema) || manifest.Client != "codex" || manifest.SkillVersion == "" {
 		return manifest, errors.New("invalid skill installation manifest")
 	}
 	if !validManifestSkills(manifest.Skills) {
@@ -433,19 +444,16 @@ func equalStrings(left, right []string) bool {
 }
 
 func validManifestSkills(names []string) bool {
-	if len(names) == 0 {
-		return false
-	}
-	allowed := map[string]bool{}
-	for _, name := range skillNames {
-		allowed[name] = true
-	}
-	for i, name := range names {
-		if !allowed[name] || (i > 0 && names[i-1] >= name) {
-			return false
+	return equalStrings(names, skillNames) || equalStrings(names, legacySkillNames)
+}
+
+func contains(items []string, value string) bool {
+	for _, item := range items {
+		if item == value {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 func isManagedSkillPath(relative string, names []string) bool {

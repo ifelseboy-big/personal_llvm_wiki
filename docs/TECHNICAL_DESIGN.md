@@ -1,408 +1,226 @@
 # llm-wiki 技术设计
 
-状态：已确认，作为实现与验收的规范基线。
+## 1. 目标与事实边界
 
-## 1. 不可破坏的不变量
+llm-wiki 是单进程、本地文件优先的知识库 CLI。AI 负责自然语言整理，人负责批准，CLI 负责确定性与安全性。
 
-1. `knowledge/` 中通过发布流程产生的 Markdown 是最终可信知识和唯一事实依据。
-2. `raw/` 保存原始证据。可信知识必须记录来源 ID 与发布时的来源内容哈希。
-3. `.llm-wiki/index.sqlite` 只保存可重建索引和运行状态。删除数据库不得导致知识、元数据或溯源关系丢失。
-4. `AGENTS.md` 和 `rules/` 是语义治理依据；CLI 是唯一稳定写入接口，只强制来源、哈希、事务、路径与索引等机械不变量。
-5. 不依赖 MCP、常驻服务、外部数据库、解释器或网络服务。
+| 层 | 属性 | 唯一写入者 |
+| --- | --- | --- |
+| `inbox/` | 临时输入、原始 payload、初步整理 | `internal/inbox` |
+| `knowledge/` | 唯一可信事实源 | `internal/promote` 的 apply |
+| `.llm-wiki/promotions/` | 冻结审阅与状态 | `internal/promote` |
+| `.llm-wiki/index.sqlite` | 可重建 Knowledge 候选缓存 | `internal/index` |
+| 模板受管文件 | 治理与草稿资源 | `internal/templates` |
 
-## 2. 技术选型
+Knowledge 必须自包含。lineage 是历史元数据，不是对 Inbox 的运行时外键。删除 processed Inbox 不改变 Knowledge 健康性。
 
-### 2.1 实现与构建
+Obsidian、Bases、Properties 与 wikilink 都是可选展示增强。CLI 不调用 Obsidian URI、插件 API、文件监听或可执行文件。
 
-- 语言：Go 1.25 兼容语法，CI 使用当前稳定 Go。
-- CLI：Cobra，负责子命令、全局参数、帮助和参数验证。
-- SQLite：`mattn/go-sqlite3` CGO 驱动，启用 FTS5，并静态注册固定版本的 `simple` 中文 tokenizer。
-- 配置：TOML；规范文档使用 JSON Schema 表达约束。
-- Frontmatter：YAML；正文保持 UTF-8 Markdown。
-- Markdown：CommonMark/GFM 解析，额外识别 Obsidian wikilink，但不改写用户正文。
-- 内置资源：使用 `go:embed` 编译进二进制。
-- 锁：跨平台 advisory file lock；所有可信层写操作持有实例独占锁。
-
-Go 与 Rust 都满足单文件分发。选 Go 是因为当前构建环境可直接验证；SQLite、FTS5 和 `simple` 源码随二进制构建，不依赖本机 `sqlite3` 命令、Homebrew SQLite 或运行时动态扩展。
-
-### 2.2 分发
-
-唯一发布目标：
-
-| 系统 | 架构 |
-|---|---|
-| macOS | Apple Silicon（arm64） |
-
-产物包含单个 `llm-wiki` 可执行文件、校验和与 SBOM。发布渠道为 GitHub Release 和 Homebrew tap；`go install` 只作为开发者安装方式。版本通过构建参数注入，开发构建为 `dev`。其他平台不进入发布和验收范围。
-
-## 3. 工程结构
+## 2. 包边界
 
 ```text
-cmd/llm-wiki/              程序入口
-internal/
-  app/                     命令装配、输出协议
-  config/                  实例配置、用户注册表、定位
-  document/                frontmatter、ID、哈希、验证
-  vault/                   路径、安全检查、锁、事务恢复
-  raw/                     原始资料导入
-  publish/                 变更集、diff、apply/reject
-  index/                   SQLite、FTS5、增量更新、重建
-  templates/               模板发现、渲染、版本
-  skill/                   AI CLI 适配器
-resources/
-  vault-templates/personal/
-  skills/llm-wiki-{query,add,publish,maintain}/
-schemas/                   稳定 JSON Schema
-tests/e2e/                 安装后二进制端到端测试
+cmd/llm-wiki -> internal/app
+internal/app -> config, document, governance, inbox, promote, index,
+                templates, skill, vault
+internal/inbox -> config, document, fsutil, vault
+internal/promote -> config, document, fsutil, governance, inbox, vault
+internal/index -> config, document, fsutil, governance, sqlite3simple, vault
 ```
 
-包依赖方向为 `app -> use case -> document/config/vault`。`document`、`config` 不得依赖 SQLite；索引模块只能读取它们的解析结果。
+只有 `internal/index` 与 `internal/sqlite3simple` 依赖 SQLite。业务包不依赖 `internal/app`；稳定错误码、退出码、Cobra 和 stdout/stderr 映射只在 app 层。
 
-## 4. 知识库配置
+## 3. 版本边界
 
-### 4.1 `llm-wiki.toml`
+| 契约 | 当前版本 |
+| --- | --- |
+| instance | 2 |
+| frontmatter | 2 |
+| Promotion plan | 1 |
+| JSON response | 2.0 |
+| personal template | 2.0.0 |
+| personal governance | personal-2.0 |
+| Skill | 3.0.0 |
+| index schema | 5 |
+| query planner | 3 |
 
-```toml
-schema_version = 1
-instance_id = "wiki_01..."
-name = "personal"
-created_at = "2026-08-08T10:00:00+08:00"
+生产路径只读取当前契约。旧 `paths.raw`、frontmatter v1、change、旧 governance 或旧 instance 直接拒绝；不猜测字段、不静默转换。
 
-[template]
-name = "personal"
-version = "1.4.0"
-
-[paths]
-raw = "raw"
-knowledge = "knowledge"
-templates = "templates"
-rules = "rules"
-runtime = ".llm-wiki"
-
-[publish]
-require_sources = true
-
-[index]
-chunk_max_chars = 1800
-chunk_overlap_chars = 180
-chinese_tokenizer = "simple"
-
-[security]
-follow_symlinks = false
-max_input_bytes = 52428800
-block_sensitive_files = true
-```
-
-路径必须是相对知识库根目录的规范路径，不能为空，不能包含 `..`，不能互相重叠，不能指向符号链接。运行时解析后的真实路径必须仍位于知识库根目录。
-
-未知字段往返保留，避免损坏用户扩展；`schema_version` 必须等于当前值，其他版本直接拒绝加载和写入。
-
-旧实例中的 `paths.derived` 作为兼容未知字段保留，但不参与路径校验、初始化、发布、索引或其他命令；旧 `llm-wiki/` 目录可由用户直接删除。
-
-### 4.2 用户注册表
-
-macOS 默认位于 `$XDG_CONFIG_HOME/llm-wiki/config.toml`，未设置时为 `~/.config/llm-wiki/config.toml`。`LLM_WIKI_CONFIG` 可显式覆盖。
-
-```toml
-schema_version = 1
-default = "personal"
-
-[wikis.personal]
-instance_id = "wiki_01..."
-path = "/absolute/path/to/personal"
-```
-
-注册表不保存知识元数据。别名和实例 ID 均唯一；重复注册同一实例是幂等操作。
-
-## 5. 文档模型
-
-### 5.1 ID
-
-使用 Crockford Base32 ULID，并增加固定前缀：`wiki_`、`raw_`、`know_`、`chg_`、`op_`。ID 创建后不可修改，文件移动不改变 ID。
-
-### 5.2 哈希
-
-- Markdown：去除 UTF-8 BOM，将 CRLF/CR 归一为 LF，对 frontmatter 结束分隔线之后的正文原样计算 SHA-256。
-- 非 Markdown：对原始字节计算 SHA-256。
-- 表示形式固定为小写 `sha256:<64 hex>`。
-- 不 trim 行尾空格、不补末尾换行，避免掩盖真实变更。
-
-### 5.3 Raw frontmatter
-
-```yaml
-schema_version: 1
-id: raw_01...
-type: note
-title: 示例
-status: raw
-origin: manual
-captured_at: 2026-08-08T10:00:00+08:00
-content_hash: sha256:...
-media_type: text/markdown
-original_name: example.md
-description: 原始材料说明
-tags: []
-aliases: []
-cssclasses: []
-```
-
-非 Markdown 文件放入 `raw/YYYY/MM/<raw-id>/`，同目录创建 `<stem>.source.md`。sidecar 是该 raw ID 的规范元数据，原文件是其内容载荷。
-
-### 5.4 Knowledge frontmatter
-
-```yaml
-schema_version: 1
-id: know_01...
-type: concept
-title: 示例概念
-description: 一句话摘要
-lifecycle: current
-valid_from:
-valid_until:
-review_after:
-status: published
-sources:
-  - id: raw_01...
-    content_hash: sha256:...
-published_at: 2026-08-08T11:00:00+08:00
-updated_at: 2026-08-08T11:00:00+08:00
-content_hash: sha256:...
-governance_version: personal-1.3
-tags: []
-aliases: []
-cssclasses: []
-related: []
-supersedes: []
-superseded_by: []
-```
-
-`sources` 至少一个且全部可解析。缺失来源、来源哈希变化或正文哈希不匹配均使文档失去可发布状态，`doctor` 和 `index update` 必须报告，不得静默修复。
-
-frontmatter 同时兼容 Obsidian Properties。系统属性由 CLI 重建，草稿值不能覆盖；personal 1.3 发布会写入 `governance_version: personal-1.3`，doctor、query 和 index 只接受该当前治理契约。用户属性允许扩展并在发布时无损保留。更新时省略用户属性表示保持原值，同名值表示覆盖，`null` 表示删除；`tags: []` 和 `aliases: []` 表示明确清空。Obsidian 不支持在 Properties 界面编辑嵌套对象，因此 `sources` 只允许由 CLI 管理，不能为适配界面而拍平或写入 SQLite。
-
-## 6. 文件布局
+## 4. Vault 布局
 
 ```text
-raw/YYYY/MM/<raw-id>/...
-knowledge/<type>/<slug>--<knowledge-id>.md
-templates/raw/*.md
-templates/knowledge/*.md
-rules/*.md
-.llm-wiki/
-  index.sqlite
-  changes/<change-id>/
-  transactions/<operation-id>/
-  locks/write.lock
-  logs/
-  cache/
-```
-
-Slug 只用于可读路径，所有关系依赖稳定 ID。扫描器忽略不在 raw 和 knowledge 管理根目录中的已有 Obsidian 文档；它们必须通过 `raw add` 显式导入。
-
-`init` 创建或增量补全根目录 `.gitignore`，忽略 SQLite 索引、锁、日志、缓存和事务暂存目录。它不忽略 `.llm-wiki/changes/`、`template-state.json` 或 `template-base/`，因此变更审计和模板升级基线可以随知识库提交。已有规则和文件权限保持不变。
-
-## 7. 命令与全局协议
-
-全局参数：
-
-```text
---wiki <alias|path>
---json
---no-interactive
---dry-run
---quiet
---verbose
---color <auto|always|never>
-```
-
-`--json` 时 stdout 只允许一个 JSON 对象，日志和诊断进入 stderr；自动禁用颜色和交互。`--no-interactive` 缺少选择时返回错误，不能等待 stdin，但显式 `raw add -` 除外。
-
-成功响应：
-
-```json
-{
-  "schema_version": "1.0",
-  "ok": true,
-  "command": "query",
-  "tool_version": "1.0.0",
-  "wiki": {"id": "wiki_...", "name": "personal", "path": "/..."},
-  "data": {},
-  "warnings": [],
-  "affected_files": []
-}
-```
-
-失败响应：
-
-```json
-{
-  "schema_version": "1.0",
-  "ok": false,
-  "command": "publish.apply",
-  "tool_version": "1.0.0",
-  "error": {
-    "code": "PUBLISH_BASE_CHANGED",
-    "message": "target knowledge changed after proposal",
-    "details": {},
-    "retryable": false
-  }
-}
-```
-
-退出码：`0` 成功；`2` 参数；`3` 配置/定位；`4` 不存在；`5` 冲突；`6` 内容校验；`7` 安全拒绝；`8` 锁冲突；`9` I/O；`10` 索引；`12` 不支持；`70` 内部错误。
-
-字符串错误码和 JSON Schema 是当前机器契约，变更时必须同步实现、Schema、文档与测试。人类文案不属于机器契约。
-
-## 8. 发布状态机
-
-```text
-raw(captured) -> change(proposed) -> change(applied) -> knowledge(published)
-                              \-> change(rejected)
-                              \-> change(stale/conflict)
-```
-
-Change set：
-
-```text
-.llm-wiki/changes/<change-id>/
-  proposal.json       不可变，包含操作、source hash、base hash、目标路径
-  files/              待发布文件
-  diff.patch          可读审阅材料
-  state.json          唯一允许变化的状态
-```
-
-`propose` 不写 `knowledge/`。`apply` 是唯一审批提交点。若 source hash、base hash、proposal hash 任一变化，进入 `stale` 并以退出码 5 失败。`reject` 不删除审计材料。
-
-`apply` 提交事实文件后，由 app 层自动增量更新索引。索引失败以 warning 返回，不能撤销或降级已经提交的 knowledge 事实；调用方按 warning 修复索引。
-
-## 9. 锁、事务和恢复
-
-所有会修改实例文件的命令获取 `.llm-wiki/locks/write.lock`。只读命令不持锁，但只读取已经原子提交的文件和 SQLite 事务快照。
-
-多文件写入协议：
-
-1. 验证路径、Schema、来源和基线哈希。
-2. 在同一文件系统 `.llm-wiki/transactions/<op-id>/stage` 写入全部新文件。
-3. `fsync` 文件和目录，写入 `journal.json` 状态 `prepared`。
-4. 保存被替换文件的恢复副本，然后逐个原子替换。
-5. 所有事实文件完成后将 journal 标记为 `files_committed`。
-6. 在单个 SQLite 事务中更新索引。
-7. 标记业务状态和 journal 为 `complete`。
-
-启动任何写命令前执行恢复：`prepared` 回滚；`files_committed` 以文件为准补建索引；`complete` 清理缓存。不得用 SQLite 状态反向覆盖文件。
-
-SQLite 使用 rollback journal 而不是 WAL，降低同步盘和可移动知识库残留 sidecar 文件的问题。数据库损坏时重命名隔离并执行 rebuild。
-
-## 10. SQLite 与检索
-
-规范表：
-
-```sql
-meta(key PRIMARY KEY, value)
-files(path PRIMARY KEY, layer, size, mtime_ns, file_hash, document_id, indexed_at)
-documents(id PRIMARY KEY, layer, path UNIQUE, type, title, status, content_hash, updated_at, metadata_json)
-source_links(knowledge_id, raw_id, raw_content_hash, PRIMARY KEY(knowledge_id, raw_id))
-chunks(id PRIMARY KEY, document_id, ordinal, heading_path, body, body_hash, start_line, end_line)
-chunks_fts(document_id UNINDEXED, chunk_id UNINDEXED, title, headings, properties, body)
-operations(id PRIMARY KEY, kind, state, started_at, finished_at, detail_json)
-```
-
-`metadata_json`、`chunks.body` 和 FTS 内容都是解析缓存，不是事实源。`properties` 由 `tags`、`aliases` 和用户自定义 Properties 确定性生成，仅用于全文检索。完整重建必须先扫描文件、校验所有文档和引用，在临时数据库完成后原子替换旧数据库。
-
-增量更新仍对候选文件计算内容哈希，不能只依赖 mtime/size。删除、重命名和来源关系均从本次文件扫描推导。
-
-检索：
-
-- 标题权重 8、标签 6、标题路径 4、正文 1。
-- SQLite 由 `mattn/go-sqlite3` 提供并启用 FTS5；`simple` 官方 `v0.7.1` 源码固定到明确 commit，使用 `simple 0`，不启用 Jieba 和拼音索引/查询扩展。
-- FTS 原始字段直接写入 title、headings、properties 和 body。索引元数据记录 tokenizer 版本/commit 和 query planner 版本，任一不匹配都要求重建。
-- 查询先规范化自然问题并删除确定无检索价值的包装词；默认执行 `simple_query(..., 0)` 严格 AND 检索。结果不足时才以中文连续二字短语和英文完整 token 做宽松 OR 补足，禁止退回中文单字全量 OR。
-- 严格结果始终排在宽松结果前；每级内部按 BM25、文档 ID、chunk ordinal 确定性排序。同一 knowledge 最多返回两个 chunk。
-- FTS 只接收已发布 knowledge 正文；raw 不生成 searchable chunk。SQLite 只返回候选 knowledge ID、路径、行号、chunk hash、文件 hash 和相关性分数。
-- 每次查询在执行 FTS 前比较完整 `knowledge/` 文件集合的相对路径和文件 SHA-256；新增、删除、改名、命中或未命中文档修改均返回 `INDEX_STALE`。不能用 mtime/size 代替文件 hash。
-- CLI 根据候选路径重新读取 `knowledge/` Markdown，校验 ID、完整文件 hash 和正文 hash，再从 Markdown 提取 evidence。
-- 查询不自动同步索引，也不修改知识库；索引与发布文件不一致时返回 `INDEX_STALE`，由调用方显式执行 `index update`。
-- evidence 的正文、metadata 和 sources 只能来自已验证的 `knowledge/` 文件；SQLite 只影响召回与排序。
-- `raw/` 的来源完整性只由 `trace` 报告，不阻断 `query` 或 `show` 读取已经发布的事实。
-
-首个正式版本不内置 embedding 模型或 SQLite 向量扩展。预留检索后端和 embedding 版本字段，但任何未来向量索引仍必须可从文件和显式模型配置重建。
-
-## 11. 模板系统
-
-内置模板包：
-
-```text
-resources/vault-templates/personal/
-  template.toml
+<vault>/
+  llm-wiki.toml
   AGENTS.md
   LLM-WIKI.md
-  rules/capture.md
-  rules/metadata.md
-  rules/types.md
-  rules/lifecycle.md
-  rules/citations.md
-  rules/publish.md
-  rules/index.md
-  rules/quality.md
-  templates/raw/note.md
-  templates/raw/source.md
-  templates/knowledge/claim.md
-  templates/knowledge/concept.md
-  templates/knowledge/guide.md
-  templates/knowledge/tutorial.md
-  templates/knowledge/reference.md
-  templates/knowledge/decision.md
-  templates/knowledge/project.md
-  views/knowledge.base
-  views/review.base
-  views/raw.base
+  inbox/YYYY/MM/<inbox-id>/
+    item.md
+    payload/<original>
+  knowledge/<type>/<slug>--<knowledge-id>.md
+  templates/
+  rules/
+  views/
+  .llm-wiki/
+    promotions/<promotion-id>/
+      plan.json
+      state.json
+      diff.patch
+      files/<knowledge-id>.md
+    transactions/<operation-id>/
+    locks/
+    template-state.json
+    template-base/<version>/
+    index.sqlite
 ```
 
-模板 manifest 记录模板版本、要求的当前实例 Schema、每个受管文件的初始 hash。初始化只复制实例必需规则、用户可编辑模板、使用入口和可选 Bases 视图。`template create` 只向用户显式指定的非受管路径生成草稿，支持属性设置、稳定 related 链接、dry-run 和覆盖确认。
+Promotion、模板状态和模板基线是审阅或恢复数据，可进入版本控制。SQLite、锁、事务、日志和缓存在 `.gitignore` 中忽略。
 
-升级时比较“旧内置版本、用户当前文件、新内置版本”：未修改的受管文件可更新；用户修改过的文件只生成三方 diff 和升级提案，绝不静默覆盖。`raw/` 和 `knowledge/` 永远不属于模板升级写入目标。
+## 5. Inbox
 
-Vault 的 `AGENTS.md` 只描述知识库政策和管理规则入口，不承担 CLI 或外部 AI 使用说明；各类知识字段要求放在 `rules/` 与 `templates/`，避免重复和漂移。
+### 5.1 数据模型
 
-## 12. Skill
+`item.md` frontmatter 包含：`inbox_` ID、title、source、captured_at、media_type、original_name、payload 相对路径、payload bytes/hash、初步整理正文 hash，以及 pending/processed 状态。processed 还包含 processed_at 与关联 Knowledge ID 列表。
 
-首批支持 Codex。客户端适配器接口负责 `Detect/ResolveTarget/Install/Status/Update/Uninstall`，后续客户端不能进入核心知识逻辑。
+payload 永远按原始字节复制。Markdown、文本和二进制都使用同一路径；初步整理只进入 `item.md`。
 
-Codex 安装根目录为 `$HOME/.agents/skills`，安装四个同级 Skill：`llm-wiki-query`、`llm-wiki-add`、`llm-wiki-publish`、`llm-wiki-maintain`。查询、采集、受控发布与索引维护分别触发，避免单个 Skill 混合读写授权。根目录所有权 manifest 只声明这四个目录中的文件；发现用户修改或未知冲突时拒绝覆盖，卸载只删除 hash 匹配的自有文件。
+### 5.2 Add
 
-每个 Skill 只负责自身命令边界：先 `locate`，再读取目标知识库根目录的 `AGENTS.md` 与所需规则。知识类型、生命周期等治理语义不得复制到 Skill。`llm-wiki-query` 用 SQLite 选择 knowledge 候选后必须调用 `show` 回读原始 knowledge；`llm-wiki-add` 只采集 raw；`llm-wiki-publish` 展示 diff 并等待明确批准；`llm-wiki-maintain` 只维护索引和运行状态。
+单文件或 stdin Add 在持锁前读取并预检输入，在首次持久化前生成完整计划。stdin 只允许显式 `-`，且必须提供 name。
 
-## 13. 安全边界
+目录批量输入只能通过 batch manifest；manifest 将每个 input 映射到独立 note 和元数据。全部输入先校验重复、类型、大小、敏感文件、symlink/hardlink，再在同一文件系统 staging，最后逐目录 rename。任一提交失败删除本次新目录，形成零写入结果。
 
-- 所有目标路径 canonicalize 后验证位于实例根目录。
-- 默认拒绝管理目录中的符号链接、硬链接逃逸和路径穿越。
-- 导入复制源文件内容，不在知识库中保留指向外部的链接。
-- 默认拒绝私钥、`.env`、凭据数据库、认证 token 等敏感文件；显式 `--allow-sensitive` 才能导入，并产生高等级告警。
-- 默认单文件上限 50 MiB；目录导入先完整规划并显示总量。
-- 不自动解压归档、不执行模板脚本、不运行外部命令。
-- 日志只记录相对路径、ID、hash、错误码和字节数，不记录正文、密钥或用户查询全文。
-- 文件权限：运行目录和 changes 默认仅当前用户可读写；继承限制更严格的现有权限。
+dry-run 复用相同规划和校验，但不创建锁、目录或事务。
 
-## 14. 版本一致性
+### 5.3 List、Show 与 Clean
 
-版本分为：CLI、实例 Schema、frontmatter Schema、索引 Schema、模板版本、Skill 版本、JSON 协议版本。
+List 只读取固定 `item.md`，不遍历 payload Markdown 作为受管文档。Show 校验 item 正文 hash、payload hash、字节数、路径和文件类型。
 
-- 索引版本不匹配：允许自动 rebuild，因为它不是事实源。
-- 实例、frontmatter 与治理版本只接受当前值；不提供旧版本兼容读取或迁移命令。
-- 模板升级只处理受管模板文件，走三方 diff，不修改事实层。
-- 任一事实契约版本不匹配时拒绝读写，不能猜测或静默修复。
+Clean 只接受明确 ID 或 `--processed`。所有目标必须 processed、无 planned Promotion 引用且通过 item/payload/path/symlink/hardlink 校验。真实非交互删除要求 `--yes`。
 
-## 15. 测试与完成门槛
+批量 Clean 先把所有目标原子 rename 到同文件系统事务目录；中途失败按相反顺序 rename 回去；全部移动成功后删除事务目录。它不写 Knowledge 或索引。
 
-1. 单元测试：路径、哈希、frontmatter、ID、配置、排序、错误码。
-2. 属性测试：任意路径输入不能逃逸；序列化/解析保持语义。
-3. 集成测试：每个命令的人类输出与 JSON 输出、幂等和冲突。
-4. 故障注入：事务每一步中断并验证回滚或续作。
-5. 重建测试：删除 SQLite 后 query/trace 结果与删除前等价。
-6. 安全测试：symlink、`..`、敏感文件、超大文件、恶意 YAML/FTS 输入。
-7. Golden test：JSON Schema 和模板产物。
-8. 端到端：执行完整 init/raw/propose/diff/apply/query/show/trace/rebuild 场景，并验证 raw 不可检索和发布后自动刷新。
-9. CI 在原生 macOS ARM64 上执行格式、vet、普通测试、race、Schema 和 GoReleaser 检查，并以 snapshot 完整生成归档、校验和及 SBOM。
-10. 检索评测分别记录自然语言与关键词改写查询的 Recall@5、Precision@5、MRR、nDCG@5，并提供 1k/10k 文档显式性能基准。
+## 6. Knowledge 与治理
 
-只有上述门槛、所有命令面、模板质量检查和发布产物验证全部通过，目标才算完成。
+Knowledge frontmatter 包含 `know_` ID、type、title、published 状态、published_at、updated_at、content_hash、governance_version、description、lifecycle、lineage 和类型专属用户属性。
+
+lineage 每项保存 Inbox ID、发布时 payload hash、source 和 captured_at。运行时不会查找 Inbox 来验证 Knowledge。
+
+`related`、`supersedes`、`superseded_by` 保存稳定 Knowledge ID。校验通过 ID 回读目标，检查重复、自引用和 supersedes 双向一致；路径、标题和 wikilink 不参与权威关系。
+
+治理校验还要求：H1 与 title 一致、无模板变量或 prompt 注释、生命周期与类型字段有效。外部 URL、书目、会议来源或脚注由内容类型决定，不强制 Inbox-ID 脚注。
+
+## 7. Promotion
+
+### 7.1 Manifest 与 Plan
+
+Manifest 包含：
+
+- Inbox ID、预期 payload hash、完整 item file hash、consume 标记；
+- 每个 target 的 create/update、draft_file、lineage Inbox 集合；
+- update 的 Knowledge ID、正文基线 hash 和完整文件基线 hash；
+- 可选 create Knowledge ID 与目标路径。
+
+Plan 先校验所有 Inbox、draft、Knowledge baseline、governance、关系、路径和重复目标。然后生成 `prm_` ID，将最终渲染文件复制到 Promotion 的 `files/`，生成覆盖所有 target 的 diff，并以规范 plan JSON 的 SHA-256 作为 plan hash 写入 state。
+
+状态机固定为：
+
+```text
+planned -> applied
+        -> rejected
+        -> stale
+```
+
+Plan 不写 Knowledge、不修改 Inbox、不更新索引。创建后 Apply 不再读取工作草稿。
+
+### 7.2 Diff 与批准
+
+Diff 返回冻结完整 diff 与 plan hash。人工批准对象是 promotion ID、完整 diff 和 plan hash。
+
+Apply 必须显式传入 `--approve <plan-hash>`。缺少或不一致直接冲突；JSON/no-interactive 不等待输入。
+
+### 7.3 Apply 预检
+
+Apply 在实例独占写锁内重新验证：
+
+- state 仍为 planned，plan hash 未变；
+- Inbox 仍 pending，item/payload hash 未变；
+- create target 仍不存在；update target 的 ID、正文 hash 和完整文件 hash 未变；
+- 冻结文件 path、完整 hash、正文 hash、ID、governance 和跨目标关系仍一致。
+
+任一漂移将 Promotion 标记 stale，Knowledge 与 Inbox 零写入。
+
+### 7.4 多文件事实事务
+
+真实 Apply 生成 `op_` journal。journal 枚举全部 Knowledge target、被 consume Inbox 的 `item.md` 和 Promotion `state.json`，记录每个目标的 staged file、backup、new hash 和是否原本存在。
+
+```text
+prepared -> files_committed -> complete
+```
+
+1. prepared：staging、backup 和 journal 已持久化，事实文件尚未保证完整提交。
+2. 依固定路径顺序 AtomicWrite 全部文件。
+3. files_committed：Markdown、Inbox 状态和 Promotion 状态已提交。
+4. app 增量更新索引；成功后标记 complete。
+
+prepared 恢复：只有当前文件等于 backup 或 new hash 时才回滚；外部漂移拒绝恢复。新增文件只有等于 new hash 才删除。
+
+files_committed 恢复：以已提交文件为准，校验所有 new hash，重建索引后 complete。索引失败不会回滚 Knowledge 或 processed 状态，保留 journal 并返回 warning。
+
+## 8. 查询与索引
+
+索引 schema 只含 Knowledge documents、files、chunks、FTS 和可重建 metadata；不含 Inbox 文档、正文或生命周期唯一数据。
+
+Rebuild 在 runtime 同文件系统创建临时 SQLite，完整扫描、验证 Knowledge 与 governance，再原子替换。Update 从 Knowledge 文件集合推导 added/changed/deleted；schema、tokenizer、planner 或 wiki ID 不匹配时完整重建。
+
+Query 流程：
+
+1. 校验 index schema、tokenizer、planner、wiki ID；
+2. 比较索引与 Knowledge 完整文件集合及 file hash；
+3. FTS 返回候选；
+4. 按 candidate path 回读 Markdown；
+5. 校验 ID、规范路径、file hash、content hash、chunk hash 和行边界；
+6. 返回证据与 Knowledge metadata。
+
+Query 不自动更新索引。Inbox 永远不进入上述扫描或候选流程。
+
+## 9. CLI 与 JSON
+
+命令面：
+
+```text
+init, locate, status, doctor
+inbox add|list|show|clean
+promote plan|diff|apply|reject
+query, show
+index status|update|rebuild
+template list|show|create|upgrade
+skill status|install|update|uninstall
+```
+
+JSON stdout 恰好一个对象；warnings 与 affected_files 永远是数组。诊断写 stderr。JSON 自动关闭颜色与交互。dry-run 不创建 Vault、锁、Promotion、事务、索引、注册或 Skill 文件。
+
+稳定错误码至少区分 WIKI_NOT_FOUND、WIKI_LOCKED、INBOX_INPUT_REJECTED、INBOX_CLEAN_REJECTED、PROMOTION_PLAN_INVALID、PROMOTION_STALE、INDEX_NOT_FOUND、INDEX_STALE、KNOWLEDGE_INVALID 与 RECOVERY_REQUIRED。
+
+## 10. 模板与 Skill
+
+personal 2.0.0 模板将整理和批准流程放在 Vault `AGENTS.md` 与 `rules/promote.md`。resources 与 `docs/template-design/personal-2.0.0` 的受管同路径文件必须同字节。
+
+模板安装/升级只管理 manifest 声明的文件，不写 Inbox 或 Knowledge。Obsidian views 可删除且不影响 CLI。
+
+只嵌入 Add 与 Query 两个 Skill。Skill 3.0.0 更新可读取旧 manifest；仅删除旧 manifest 拥有且 hash 匹配的 Publish/Maintain 文件，修改文件保留并报告，未知目录不接管。
+
+## 11. 平台与源码安装
+
+项目通过源码分发，不提供预构建归档、交叉编译产物或 GitHub Release 自动发布。使用者拉取仓库后，在当前机器依次执行 `make build` 与 `make install`。
+
+本机构建使用 Go 1.25、CGO、`fts5 sqlite_omit_load_extension` 与固定 simple tokenizer。`CC`/`CXX` 默认读取 Go 当前工具链配置，也可由 Make 参数覆盖。`make install` 只复制已经生成的本机二进制，默认目标是 Go 的 bin 目录。
+
+CI 在 macOS 与 Linux 原生运行 test/vet，Linux 运行 race，并对 `make build -> make install -> llm-wiki --version` 做 smoke 验证。运行时不依赖外部 SQLite 或 tokenizer。
+
+## 12. 安全与隐私
+
+- 所有目标通过 filepath canonicalization、root containment 和逐组件 symlink 检查；不使用字符串前缀判断 containment。
+- 受管文件拒绝多重硬链接、非普通文件和大小超限。
+- 写操作在首次持久化前完成全量预检并持有独占锁。
+- 私有目录默认 0700，受管文件默认 0600，保留更严格权限。
+- 错误、journal、Promotion state、日志和 SQLite 不保存 Inbox/Knowledge 正文、查询全文、token 或密钥。
+- 删除只作用于已经解析并验证的具体 Inbox 目录。

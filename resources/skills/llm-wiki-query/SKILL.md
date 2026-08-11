@@ -1,14 +1,14 @@
 ---
 name: llm-wiki-query
-description: 从 llm-wiki 个人知识库检索已经人工确认发布的可信知识，并在命中后回读原始 knowledge Markdown。用户询问“我的知识库里有什么”、要求查找或引用个人知识时使用；不检索 raw，也不执行采集、发布或维护写操作。
+description: 用户询问个人知识库中已经沉淀的可信知识时使用。
+version: 3.0.0
 ---
 
-# LLM Wiki Query
+1. 运行 `llm-wiki locate --json --no-interactive` 定位 Vault，并读取 Vault `AGENTS.md` 的事实边界。
+2. 运行 `llm-wiki query <question> --json --no-interactive`，只检索已验证 Knowledge。
+3. 对采用的 Knowledge ID 运行 `llm-wiki show <id> --json --no-interactive` 回读完整 Markdown。
+4. 只根据回读后的 Knowledge 回答，并返回 Knowledge ID 与路径。
+5. 禁止调用 `inbox list/show`、读取 `inbox/`、写文件或维护索引。
+6. 收到 `INDEX_NOT_FOUND` 或 `INDEX_STALE` 时停止，提示用户在 Vault 内运行索引维护；不得自行写入或用 Inbox 兜底。
 
-1. 运行 `llm-wiki locate --json --no-interactive`；用户指定知识库时加 `--wiki <alias|path>`。
-2. 从 `data.root` 读取目标 Vault 的 `AGENTS.md`，遵守其中的知识库治理边界。
-3. 运行 `llm-wiki query <问题> --wiki <data.root> --json --no-interactive`。`query` 只检索已发布的 `knowledge/`，不得尝试搜索 `raw/`。
-4. 对命中的每个目标 `knowledge_id` 运行 `llm-wiki show <knowledge-id> --wiki <data.root> --json --no-interactive`，以回读的原始 knowledge Markdown 和元数据回答；SQLite 候选或缓存片段不能单独作为事实。
-5. 需要核对来源关系时运行 `llm-wiki trace <knowledge-id> --wiki <data.root> --json --no-interactive`。
-
-返回知识 ID 与路径。若 `query` 返回 `INDEX_NOT_FOUND` 或 `INDEX_STALE`，停止查询并说明需要使用 `$llm-wiki-maintain` 修复索引；本 Skill 不执行写操作。
+SQLite 只是候选缓存，不是事实源。

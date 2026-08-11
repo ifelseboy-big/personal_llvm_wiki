@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -22,15 +23,14 @@ import (
 )
 
 const (
-	SchemaVersion       = 4
-	QueryPlannerVersion = "2"
+	SchemaVersion       = 5
+	QueryPlannerVersion = "3"
 )
 
 type RebuildResult struct {
 	Path      string         `json:"path"`
 	Documents map[string]int `json:"documents"`
 	Chunks    int            `json:"chunks"`
-	Sources   int            `json:"source_links"`
 	RebuiltAt string         `json:"rebuilt_at"`
 }
 
@@ -167,103 +167,71 @@ func rebuildLocked(cfg *config.Instance) (*RebuildResult, error) {
 
 	result := &RebuildResult{
 		Path:      filepath.ToSlash(filepath.Join(cfg.Paths.Runtime, "index.sqlite")),
-		Documents: map[string]int{"raw": 0, "knowledge": 0},
+		Documents: map[string]int{"knowledge": 0},
 		RebuiltAt: time.Now().Format(time.RFC3339),
 	}
-	type layerDocs struct {
-		name string
-		root string
-		docs []*document.Document
+	if _, err := os.Stat(cfg.KnowledgeDir()); err != nil {
+		return nil, err
 	}
-	var layers []layerDocs
-	rawHashes := map[string]string{}
-	for _, spec := range []struct{ name, root string }{
-		{"raw", cfg.RawDir()}, {"knowledge", cfg.KnowledgeDir()},
-	} {
-		if _, err := os.Stat(spec.root); err != nil {
+	docs, problems := document.ScanMarkdown(cfg.KnowledgeDir())
+	if len(problems) > 0 {
+		return nil, fmt.Errorf("scan knowledge: %w", problems[0])
+	}
+	seenIDs := map[string]bool{}
+	for _, doc := range docs {
+		if err := doc.Validate("knowledge", true); err != nil {
+			return nil, fmt.Errorf("validate %s: %w", doc.Path, err)
+		}
+		if seenIDs[doc.Metadata.ID] {
+			return nil, fmt.Errorf("duplicate knowledge id %s", doc.Metadata.ID)
+		}
+		seenIDs[doc.Metadata.ID] = true
+		if err := governance.ValidateStored(cfg, doc, time.Now()); err != nil {
+			return nil, fmt.Errorf("validate governance %s: %w", doc.Path, err)
+		}
+		rel, err := filepath.Rel(cfg.Root, doc.Path)
+		if err != nil {
 			return nil, err
 		}
-		docs, problems := document.ScanMarkdown(spec.root)
-		if len(problems) > 0 {
-			return nil, fmt.Errorf("scan %s: %w", spec.name, problems[0])
+		rel = filepath.ToSlash(rel)
+		if rel != document.KnowledgePath(cfg.Paths.Knowledge, doc.Metadata) {
+			return nil, fmt.Errorf("knowledge %s path is not canonical: %s", doc.Metadata.ID, rel)
 		}
-		for _, doc := range docs {
-			if err := doc.Validate(spec.name, cfg.Publish.RequireSources); err != nil {
-				return nil, fmt.Errorf("validate %s: %w", doc.Path, err)
-			}
-			if spec.name == "knowledge" {
-				if err := governance.ValidateStored(cfg, doc, time.Now()); err != nil {
-					return nil, fmt.Errorf("validate governance %s: %w", doc.Path, err)
-				}
-			}
-			if spec.name == "raw" {
-				if _, duplicate := rawHashes[doc.Metadata.ID]; duplicate {
-					return nil, fmt.Errorf("duplicate raw id %s", doc.Metadata.ID)
-				}
-				rawHashes[doc.Metadata.ID] = doc.Metadata.ContentHash
-			}
+		metadataJSON, err := json.Marshal(doc.Metadata)
+		if err != nil {
+			return nil, err
 		}
-		layers = append(layers, layerDocs{name: spec.name, root: spec.root, docs: docs})
-	}
-	for _, layer := range layers {
-		for _, doc := range layer.docs {
-			if layer.name == "knowledge" {
-				for _, source := range doc.Metadata.Sources {
-					if rawHashes[source.ID] != source.ContentHash {
-						return nil, fmt.Errorf("knowledge %s source %s is missing or changed", doc.Metadata.ID, source.ID)
-					}
-				}
-			}
-			rel, err := filepath.Rel(cfg.Root, doc.Path)
-			if err != nil {
-				return nil, err
-			}
-			metadataJSON, err := json.Marshal(doc.Metadata)
-			if err != nil {
-				return nil, err
-			}
-			info, err := os.Stat(doc.Path)
-			if err != nil {
-				return nil, err
-			}
-			rel = filepath.ToSlash(rel)
-			if _, err := tx.Exec(`INSERT INTO documents(id,layer,path,type,title,status,content_hash,updated_at,metadata_json)
-				VALUES(?,?,?,?,?,?,?,?,?)`, doc.Metadata.ID, layer.name, rel, doc.Metadata.Type, doc.Metadata.Title,
-				doc.Metadata.Status, doc.Metadata.ContentHash, effectiveUpdatedAt(doc.Metadata), string(metadataJSON)); err != nil {
-				return nil, fmt.Errorf("insert document %s: %w", doc.Metadata.ID, err)
-			}
-			fileBytes, err := os.ReadFile(doc.Path)
-			if err != nil {
-				return nil, err
-			}
-			if _, err := tx.Exec(`INSERT INTO files(path,layer,size,mtime_ns,file_hash,document_id,indexed_at)
-				VALUES(?,?,?,?,?,?,?)`, rel, layer.name, info.Size(), info.ModTime().UnixNano(), document.HashBytes(fileBytes),
-				doc.Metadata.ID, result.RebuiltAt); err != nil {
-				return nil, err
-			}
-			result.Documents[layer.name]++
-			if layer.name == "knowledge" {
-				for _, source := range doc.Metadata.Sources {
-					if _, err := tx.Exec(`INSERT INTO source_links(knowledge_id,raw_id,raw_content_hash) VALUES(?,?,?)`,
-						doc.Metadata.ID, source.ID, source.ContentHash); err != nil {
-						return nil, err
-					}
-					result.Sources++
-				}
-				chunks := makeChunks(doc.Metadata.ID, doc.Body, cfg.Index.ChunkMaxChars, cfg.Index.ChunkOverlapChars)
-				for _, c := range chunks {
-					if _, err := tx.Exec(`INSERT INTO chunks(id,document_id,ordinal,heading_path,body,body_hash,start_line,end_line)
+		info, err := os.Stat(doc.Path)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(`INSERT INTO documents(id,layer,path,type,title,status,content_hash,updated_at,metadata_json)
+				VALUES(?,?,?,?,?,?,?,?,?)`, doc.Metadata.ID, "knowledge", rel, doc.Metadata.Type, doc.Metadata.Title,
+			doc.Metadata.Status, doc.Metadata.ContentHash, effectiveUpdatedAt(doc.Metadata), string(metadataJSON)); err != nil {
+			return nil, fmt.Errorf("insert document %s: %w", doc.Metadata.ID, err)
+		}
+		fileBytes, err := os.ReadFile(doc.Path)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(`INSERT INTO files(path,layer,size,mtime_ns,file_hash,document_id,indexed_at)
+				VALUES(?,?,?,?,?,?,?)`, rel, "knowledge", info.Size(), info.ModTime().UnixNano(), document.HashBytes(fileBytes),
+			doc.Metadata.ID, result.RebuiltAt); err != nil {
+			return nil, err
+		}
+		result.Documents["knowledge"]++
+		chunks := makeChunks(doc.Metadata.ID, doc.Body, cfg.Index.ChunkMaxChars, cfg.Index.ChunkOverlapChars)
+		for _, c := range chunks {
+			if _, err := tx.Exec(`INSERT INTO chunks(id,document_id,ordinal,heading_path,body,body_hash,start_line,end_line)
 						VALUES(?,?,?,?,?,?,?,?)`, c.ID, doc.Metadata.ID, c.Ordinal, c.HeadingPath, c.Body, c.Hash, c.StartLine, c.EndLine); err != nil {
-						return nil, err
-					}
-					if _, err := tx.Exec(`INSERT INTO chunks_fts(document_id,chunk_id,title,headings,properties,body)
-						VALUES(?,?,?,?,?,?)`, doc.Metadata.ID, c.ID, doc.Metadata.Title, c.HeadingPath,
-						propertySearchText(doc.Metadata), c.Body); err != nil {
-						return nil, err
-					}
-					result.Chunks++
-				}
+				return nil, err
 			}
+			if _, err := tx.Exec(`INSERT INTO chunks_fts(document_id,chunk_id,title,headings,properties,body)
+						VALUES(?,?,?,?,?,?)`, doc.Metadata.ID, c.ID, doc.Metadata.Title, c.HeadingPath,
+				propertySearchText(doc.Metadata), c.Body); err != nil {
+				return nil, err
+			}
+			result.Chunks++
 		}
 	}
 	meta := map[string]string{
@@ -303,7 +271,7 @@ func GetStatus(cfg *config.Instance) (*Status, error) {
 		return nil, err
 	}
 	status.Exists = true
-	db, err := openDB(path)
+	db, err := openDBReadOnly(path)
 	if err != nil {
 		return nil, err
 	}
@@ -371,7 +339,12 @@ func Update(cfg *config.Instance, dryRun bool) (*UpdateResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	db, err := openDB(path)
+	var db *sql.DB
+	if dryRun {
+		db, err = openDBReadOnly(path)
+	} else {
+		db, err = openDB(path)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -466,9 +439,6 @@ func Update(cfg *config.Instance, dryRun bool) (*UpdateResult, error) {
 			_ = tx.Rollback()
 		}
 	}()
-	if _, err := tx.Exec(`DELETE FROM source_links`); err != nil {
-		return nil, err
-	}
 	for _, rel := range deleted {
 		if err := deleteIndexedPath(tx, rel); err != nil {
 			return nil, err
@@ -486,17 +456,6 @@ func Update(cfg *config.Instance, dryRun bool) (*UpdateResult, error) {
 			return nil, err
 		}
 	}
-	for _, item := range scanned {
-		if item.layer != "knowledge" {
-			continue
-		}
-		for _, source := range item.doc.Metadata.Sources {
-			if _, err := tx.Exec(`INSERT INTO source_links(knowledge_id,raw_id,raw_content_hash) VALUES(?,?,?)`,
-				item.doc.Metadata.ID, source.ID, source.ContentHash); err != nil {
-				return nil, err
-			}
-		}
-	}
 	if _, err := tx.Exec(`INSERT INTO meta(key,value) VALUES('built_at',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, updatedAt); err != nil {
 		return nil, err
 	}
@@ -512,59 +471,42 @@ func Update(cfg *config.Instance, dryRun bool) (*UpdateResult, error) {
 
 func scanValidated(cfg *config.Instance) ([]*scannedDocument, error) {
 	var scanned []*scannedDocument
-	rawHashes := map[string]string{}
-	for _, spec := range []struct{ layer, root string }{
-		{"raw", cfg.RawDir()}, {"knowledge", cfg.KnowledgeDir()},
-	} {
-		if _, err := os.Stat(spec.root); err != nil {
+	if _, err := os.Stat(cfg.KnowledgeDir()); err != nil {
+		return nil, err
+	}
+	docs, problems := document.ScanMarkdown(cfg.KnowledgeDir())
+	if len(problems) > 0 {
+		return nil, problems[0]
+	}
+	seenIDs := map[string]bool{}
+	for _, doc := range docs {
+		if err := doc.Validate("knowledge", true); err != nil {
+			return nil, fmt.Errorf("validate %s: %w", doc.Path, err)
+		}
+		if seenIDs[doc.Metadata.ID] {
+			return nil, fmt.Errorf("duplicate knowledge id %s", doc.Metadata.ID)
+		}
+		seenIDs[doc.Metadata.ID] = true
+		if err := governance.ValidateStored(cfg, doc, time.Now()); err != nil {
+			return nil, fmt.Errorf("validate governance %s: %w", doc.Path, err)
+		}
+		rel, err := filepath.Rel(cfg.Root, doc.Path)
+		if err != nil {
 			return nil, err
 		}
-		docs, problems := document.ScanMarkdown(spec.root)
-		if len(problems) > 0 {
-			return nil, problems[0]
+		rel = filepath.ToSlash(rel)
+		if rel != document.KnowledgePath(cfg.Paths.Knowledge, doc.Metadata) {
+			return nil, fmt.Errorf("knowledge %s path is not canonical: %s", doc.Metadata.ID, rel)
 		}
-		for _, doc := range docs {
-			if err := doc.Validate(spec.layer, cfg.Publish.RequireSources); err != nil {
-				return nil, fmt.Errorf("validate %s: %w", doc.Path, err)
-			}
-			if spec.layer == "knowledge" {
-				if err := governance.ValidateStored(cfg, doc, time.Now()); err != nil {
-					return nil, fmt.Errorf("validate governance %s: %w", doc.Path, err)
-				}
-			}
-			if spec.layer == "raw" {
-				if _, exists := rawHashes[doc.Metadata.ID]; exists {
-					return nil, fmt.Errorf("duplicate raw id %s", doc.Metadata.ID)
-				}
-				rawHashes[doc.Metadata.ID] = doc.Metadata.ContentHash
-			}
-			rel, err := filepath.Rel(cfg.Root, doc.Path)
-			if err != nil {
-				return nil, err
-			}
-			b, err := os.ReadFile(doc.Path)
-			if err != nil {
-				return nil, err
-			}
-			info, err := os.Stat(doc.Path)
-			if err != nil {
-				return nil, err
-			}
-			scanned = append(scanned, &scannedDocument{
-				layer: spec.layer, rel: filepath.ToSlash(rel), doc: doc,
-				fileHash: document.HashBytes(b), size: info.Size(), mtimeNS: info.ModTime().UnixNano(),
-			})
+		b, err := os.ReadFile(doc.Path)
+		if err != nil {
+			return nil, err
 		}
-	}
-	for _, item := range scanned {
-		if item.layer != "knowledge" {
-			continue
+		info, err := os.Stat(doc.Path)
+		if err != nil {
+			return nil, err
 		}
-		for _, source := range item.doc.Metadata.Sources {
-			if rawHashes[source.ID] != source.ContentHash {
-				return nil, fmt.Errorf("knowledge %s source %s is missing or changed", item.doc.Metadata.ID, source.ID)
-			}
-		}
+		scanned = append(scanned, &scannedDocument{layer: "knowledge", rel: rel, doc: doc, fileHash: document.HashBytes(b), size: info.Size(), mtimeNS: info.ModTime().UnixNano()})
 	}
 	sort.Slice(scanned, func(i, j int) bool {
 		if layerOrder(scanned[i].layer) != layerOrder(scanned[j].layer) {
@@ -631,12 +573,10 @@ func insertScanned(tx *sql.Tx, item *scannedDocument, cfg *config.Instance, inde
 
 func layerOrder(layer string) int {
 	switch layer {
-	case "raw":
-		return 0
 	case "knowledge":
-		return 1
+		return 0
 	default:
-		return 2
+		return 1
 	}
 }
 
@@ -649,7 +589,18 @@ func totalDocuments(items map[string]int) int {
 }
 
 func openDB(path string) (*sql.DB, error) {
+	if err := sqlite3simple.RegistrationError(); err != nil {
+		return nil, err
+	}
 	return sql.Open(sqlite3simple.DriverName, path)
+}
+
+func openDBReadOnly(path string) (*sql.DB, error) {
+	if err := sqlite3simple.RegistrationError(); err != nil {
+		return nil, err
+	}
+	dsn := (&url.URL{Scheme: "file", Path: filepath.ToSlash(path), RawQuery: "mode=ro"}).String()
+	return sql.Open(sqlite3simple.DriverName, dsn)
 }
 
 func validateIndexMetadata(db *sql.DB, cfg *config.Instance) error {
@@ -677,7 +628,7 @@ func validateIndexMetadata(db *sql.DB, cfg *config.Instance) error {
 }
 
 func ProbeTokenizer(cfg *config.Instance) error {
-	db, err := openDB(DBPath(cfg))
+	db, err := openDBReadOnly(DBPath(cfg))
 	if err != nil {
 		return err
 	}
@@ -735,7 +686,7 @@ func SearchWithOptions(cfg *config.Instance, question string, opts SearchOptions
 	if _, err := os.Stat(path); err != nil {
 		return nil, err
 	}
-	db, err := openDB(path)
+	db, err := openDBReadOnly(path)
 	if err != nil {
 		return nil, err
 	}
@@ -1128,12 +1079,6 @@ CREATE TABLE files(
   path TEXT PRIMARY KEY,layer TEXT NOT NULL,size INTEGER NOT NULL,mtime_ns INTEGER NOT NULL,
   file_hash TEXT NOT NULL,document_id TEXT NOT NULL,indexed_at TEXT NOT NULL,
   FOREIGN KEY(document_id) REFERENCES documents(id) ON DELETE CASCADE
-);
-CREATE TABLE source_links(
-  knowledge_id TEXT NOT NULL,raw_id TEXT NOT NULL,raw_content_hash TEXT NOT NULL,
-  PRIMARY KEY(knowledge_id,raw_id),
-  FOREIGN KEY(knowledge_id) REFERENCES documents(id) ON DELETE CASCADE,
-  FOREIGN KEY(raw_id) REFERENCES documents(id) ON DELETE RESTRICT
 );
 CREATE TABLE chunks(
   id TEXT PRIMARY KEY,document_id TEXT NOT NULL,ordinal INTEGER NOT NULL,heading_path TEXT,

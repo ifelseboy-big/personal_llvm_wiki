@@ -15,14 +15,14 @@ import (
 
 var allowedRepositoryImports = map[string][]string{
 	"llm-wiki/cmd/llm-wiki":           {"llm-wiki/internal/app"},
-	"llm-wiki/internal/app":           {"llm-wiki/internal/config", "llm-wiki/internal/document", "llm-wiki/internal/fsutil", "llm-wiki/internal/governance", "llm-wiki/internal/index", "llm-wiki/internal/publish", "llm-wiki/internal/raw", "llm-wiki/internal/skill", "llm-wiki/internal/templates", "llm-wiki/internal/vault"},
+	"llm-wiki/internal/app":           {"llm-wiki/internal/config", "llm-wiki/internal/document", "llm-wiki/internal/fsutil", "llm-wiki/internal/governance", "llm-wiki/internal/inbox", "llm-wiki/internal/index", "llm-wiki/internal/promote", "llm-wiki/internal/skill", "llm-wiki/internal/templates", "llm-wiki/internal/vault"},
 	"llm-wiki/internal/config":        {"llm-wiki/internal/fsutil"},
 	"llm-wiki/internal/document":      {"llm-wiki/internal/fsutil"},
 	"llm-wiki/internal/fsutil":        {},
 	"llm-wiki/internal/governance":    {"llm-wiki/internal/config", "llm-wiki/internal/document", "llm-wiki/internal/fsutil"},
 	"llm-wiki/internal/index":         {"llm-wiki/internal/config", "llm-wiki/internal/document", "llm-wiki/internal/fsutil", "llm-wiki/internal/governance", "llm-wiki/internal/sqlite3simple", "llm-wiki/internal/vault"},
-	"llm-wiki/internal/publish":       {"llm-wiki/internal/config", "llm-wiki/internal/document", "llm-wiki/internal/fsutil", "llm-wiki/internal/governance", "llm-wiki/internal/vault"},
-	"llm-wiki/internal/raw":           {"llm-wiki/internal/config", "llm-wiki/internal/document", "llm-wiki/internal/fsutil", "llm-wiki/internal/vault"},
+	"llm-wiki/internal/inbox":         {"llm-wiki/internal/config", "llm-wiki/internal/document", "llm-wiki/internal/fsutil", "llm-wiki/internal/vault"},
+	"llm-wiki/internal/promote":       {"llm-wiki/internal/config", "llm-wiki/internal/document", "llm-wiki/internal/fsutil", "llm-wiki/internal/governance", "llm-wiki/internal/inbox", "llm-wiki/internal/vault"},
 	"llm-wiki/internal/skill":         {"llm-wiki/internal/document", "llm-wiki/internal/fsutil", "llm-wiki/resources"},
 	"llm-wiki/internal/sqlite3simple": {},
 	"llm-wiki/internal/templates":     {"llm-wiki/internal/config", "llm-wiki/internal/document", "llm-wiki/internal/fsutil", "llm-wiki/internal/governance", "llm-wiki/resources"},
@@ -33,7 +33,7 @@ func TestAgentInstructionTopology(t *testing.T) {
 	root := repositoryRoot(t)
 	want := []string{
 		"AGENTS.md",
-		"docs/template-design/personal-1.4.0/AGENTS.md",
+		"docs/template-design/personal-2.0.0/AGENTS.md",
 		"resources/vault-templates/personal/AGENTS.md",
 	}
 
@@ -64,7 +64,7 @@ func TestAgentInstructionTopology(t *testing.T) {
 
 	assertSameFile(t,
 		filepath.Join(root, "resources/vault-templates/personal/AGENTS.md"),
-		filepath.Join(root, "docs/template-design/personal-1.4.0/AGENTS.md"),
+		filepath.Join(root, "docs/template-design/personal-2.0.0/AGENTS.md"),
 	)
 }
 

@@ -58,7 +58,7 @@ func EnsureSafeManagedPaths(cfg *config.Instance) error {
 		return fmt.Errorf("wiki root must be a real directory: %s", cfg.Root)
 	}
 	for _, relative := range []string{
-		cfg.Paths.Raw, cfg.Paths.Knowledge,
+		cfg.Paths.Inbox, cfg.Paths.Knowledge,
 		cfg.Paths.Templates, cfg.Paths.Rules, cfg.Paths.Runtime,
 	} {
 		target := filepath.Join(cfg.Root, relative)

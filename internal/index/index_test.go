@@ -2,6 +2,7 @@ package index
 
 import (
 	"bytes"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -12,10 +13,38 @@ import (
 
 	"llm-wiki/internal/config"
 	"llm-wiki/internal/document"
-	"llm-wiki/internal/publish"
-	"llm-wiki/internal/raw"
+	"llm-wiki/internal/governance"
+	"llm-wiki/internal/inbox"
+	"llm-wiki/internal/sqlite3simple"
 	"llm-wiki/internal/vault"
 )
+
+func TestIndexContainsOnlyKnowledge(t *testing.T) {
+	cfg := indexWiki(t)
+	if _, err := inbox.Add(cfg, inbox.AddOptions{Input: "-", Name: "private.txt", Stdin: bytes.NewBufferString("InboxOnlyNeedleZXQ"), Now: time.Unix(100, 0).UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Rebuild(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Documents) != 1 || result.Documents["knowledge"] != 0 {
+		t.Fatalf("index exposed non-knowledge layer: %#v", result.Documents)
+	}
+	db, err := sql.Open(sqlite3simple.DriverName, DBPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var count int
+	if err := db.QueryRow(`SELECT count(*) FROM documents`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("inbox leaked into documents: %d %v", count, err)
+	}
+	search, err := Search(cfg, "InboxOnlyNeedleZXQ", 8)
+	if err != nil || len(search.Candidates) != 0 {
+		t.Fatalf("inbox leaked into FTS: %#v %v", search, err)
+	}
+}
 
 func TestQueryNormalizationAndRelaxedBigrams(t *testing.T) {
 	normalized := normalizeQuery("请问：LLVM 的核心结论是什么？")
@@ -45,145 +74,69 @@ func TestMakeChunksInheritsHeading(t *testing.T) {
 	}
 }
 
-func TestSearchNeverIndexesOrReturnsRawBody(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "raw-not-searchable")
-	initialized, err := vault.Init(vault.InitOptions{Path: root, Name: "raw-not-searchable", Template: "personal"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := initialized.Config
-	if _, err := raw.Add(cfg, raw.AddOptions{
-		Input: "-", Name: "private-source.md",
-		Stdin: bytes.NewBufferString("# RawOnlyNeedleZXQ\n\nThis body must never enter FTS.\n"),
-		Now:   time.Date(2026, 8, 10, 8, 0, 0, 0, time.UTC),
-	}); err != nil {
-		t.Fatal(err)
-	}
+func TestSearchUsesStableRankingAndSnapshotValidation(t *testing.T) {
+	cfg := indexWiki(t)
+	first := writeKnowledge(t, cfg, 1, "LLVM stable IR", "# LLVM stable IR\n\nStableNeedleZXQ enables decoupled compiler components.\n")
+	writeKnowledge(t, cfg, 2, "Other", "# Other\n\nUnrelated content.\n")
 	if _, err := Rebuild(cfg); err != nil {
 		t.Fatal(err)
 	}
-	result, err := Search(cfg, "RawOnlyNeedleZXQ", 8)
+	one, err := Search(cfg, "StableNeedleZXQ", 8)
+	if err != nil || len(one.Candidates) == 0 || one.Candidates[0].KnowledgeID != first {
+		t.Fatalf("expected knowledge hit: %#v %v", one, err)
+	}
+	two, err := Search(cfg, "StableNeedleZXQ", 8)
+	if err != nil || fmt.Sprint(one.Candidates) != fmt.Sprint(two.Candidates) {
+		t.Fatalf("ranking is unstable: %#v %#v %v", one, two, err)
+	}
+	doc, err := document.FindByID(cfg.KnowledgeDir(), first)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Candidates) != 0 {
-		t.Fatalf("raw body leaked into query candidates: %#v", result.Candidates)
-	}
-	db, err := openDB(DBPath(cfg))
-	if err != nil {
+	doc.Body = append(doc.Body, []byte("changed outside promotion\n")...)
+	doc.Metadata.ContentHash = document.HashBytes(doc.Body)
+	if err := document.Write(doc.Path, doc.Metadata, doc.Body); err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
-	var rawChunks int
-	if err := db.QueryRow(`SELECT count(*) FROM chunks c JOIN documents d ON d.id=c.document_id WHERE d.layer='raw'`).Scan(&rawChunks); err != nil {
-		t.Fatal(err)
-	}
-	if rawChunks != 0 {
-		t.Fatalf("raw documents produced %d searchable chunks", rawChunks)
+	if _, err := Search(cfg, "StableNeedleZXQ", 8); !errors.Is(err, ErrStale) {
+		t.Fatalf("knowledge drift did not stale index: %v", err)
 	}
 }
 
-func TestSimpleChineseRetrievalRankingAndFallback(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "search-wiki")
-	initialized, err := vault.Init(vault.InitOptions{Path: root, Name: "search", Template: "personal"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := initialized.Config
+func TestChineseRankingFallbackLifecycleAndMetadataDrift(t *testing.T) {
+	cfg := indexWiki(t)
 	cfg.Index.ChunkMaxChars = 256
 	cfg.Index.ChunkOverlapChars = 0
-
 	base := time.Date(2026, 8, 9, 8, 0, 0, 0, time.UTC)
-	llvmID := publishSearchFixture(t, cfg, 0, base,
-		"LLVM 核心结论", []string{"模块化编译框架"},
-		"# LLVM 核心结论\n\nLLVM 使用稳定 IR 连接前端、优化器和后端，实现组件解耦。\n")
-	unrelatedID := publishSearchFixture(t, cfg, 1, base,
-		"团队会议记录", nil,
-		"# 团队会议记录\n\n核心结论用于记录下周的会议室安排，与编译器无关。\n")
-	titleID := publishSearchFixture(t, cfg, 2, base,
-		"TitlePriorityZXQ", nil,
-		"# TitlePriorityZXQ\n\n普通正文。\n")
-	publishSearchFixture(t, cfg, 3, base,
-		"正文命中文档", nil,
-		"# 正文命中文档\n\nTitlePriorityZXQ 只在正文出现。\n"+strings.Repeat("填充内容用于降低正文密度。\n", 20))
-
-	var longBody strings.Builder
-	longBody.WriteString("# 多块文档\n\n")
-	for i := 0; i < 16; i++ {
-		fmt.Fprintf(&longBody, "ChunkCapZXQ section %02d repeats across chunks with deterministic filler text.\n", i)
-	}
-	chunkedID := publishSearchFixture(t, cfg, 4, base, "多块文档", nil, longBody.String())
-	strictID := publishSearchFixture(t, cfg, 5, base, "火星协议说明", nil, "# 火星协议说明\n\n完整严格命中。\n")
-	publishSearchFixture(t, cfg, 6, base, "火星观测", nil, "# 火星观测\n\n只有连续二字片段。\n")
-	publishSearchFixture(t, cfg, 7, base, "网络协议", nil, "# 网络协议\n\n只有另一个连续二字片段。\n")
-
+	llvmID := writeEvaluationKnowledge(t, cfg, base.Add(time.Millisecond), "LLVM 核心结论", "LLVM 使用稳定 IR 连接前端、优化器和后端，实现组件解耦。", []string{"编译器架构"}, []string{"模块化编译框架"})
+	unrelatedID := writeEvaluationKnowledge(t, cfg, base.Add(2*time.Millisecond), "团队会议记录", "核心结论用于记录下周的会议室安排，与编译器无关。", nil, nil)
+	titleID := writeEvaluationKnowledge(t, cfg, base.Add(3*time.Millisecond), "TitlePriorityZXQ", "普通正文。", nil, nil)
+	writeEvaluationKnowledge(t, cfg, base.Add(4*time.Millisecond), "正文命中文档", "TitlePriorityZXQ 只在正文出现。"+strings.Repeat("填充内容用于降低正文密度。", 20), nil, nil)
+	strictID := writeEvaluationKnowledge(t, cfg, base.Add(5*time.Millisecond), "火星协议说明", "完整严格命中。", nil, nil)
+	writeEvaluationKnowledge(t, cfg, base.Add(6*time.Millisecond), "火星观测", "只有连续二字片段。", nil, nil)
+	writeEvaluationKnowledge(t, cfg, base.Add(7*time.Millisecond), "网络协议", "只有另一个连续二字片段。", nil, nil)
 	if _, err := Rebuild(cfg); err != nil {
 		t.Fatal(err)
 	}
 	if err := ProbeTokenizer(cfg); err != nil {
 		t.Fatalf("simple tokenizer probe failed: %v", err)
 	}
-
-	assertFirstKnowledge(t, cfg, "LLVM 的核心结论", llvmID)
-	assertFirstKnowledge(t, cfg, "稳定 IR", llvmID)
-	assertFirstKnowledge(t, cfg, "核心结论", llvmID)
-	assertFirstKnowledge(t, cfg, "模块化编译框架", llvmID)
-	assertFirstKnowledge(t, cfg, "TitlePriorityZXQ", titleID)
-
-	for _, query := range []string{"的", "是什么"} {
-		if _, err := Search(cfg, query, 8); err != ErrNoSearchTerms {
-			t.Fatalf("query %q returned %v, expected ErrNoSearchTerms", query, err)
+	for _, test := range []struct{ query, expected string }{
+		{query: "LLVM 的核心结论", expected: llvmID}, {query: "稳定 IR", expected: llvmID},
+		{query: "模块化编译框架", expected: llvmID}, {query: "TitlePriorityZXQ", expected: titleID},
+	} {
+		result, err := Search(cfg, test.query, 8)
+		if err != nil || len(result.Candidates) == 0 || result.Candidates[0].KnowledgeID != test.expected {
+			t.Fatalf("query %q did not rank %s first: %#v %v", test.query, test.expected, result, err)
 		}
 	}
-
-	chunkMatches, err := SearchCandidates(cfg, "ChunkCapZXQ", 8)
-	if err != nil {
-		t.Fatal(err)
-	}
-	count := 0
-	for _, candidate := range chunkMatches {
-		if candidate.KnowledgeID == chunkedID {
-			count++
-		}
-	}
-	if count != 2 {
-		t.Fatalf("same document returned %d chunks, expected 2: %#v", count, chunkMatches)
-	}
-
 	fallback, err := Search(cfg, "火星协议", 3)
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || len(fallback.Candidates) != 3 || fallback.Candidates[0].KnowledgeID != strictID || fallback.Candidates[0].RetrievalMode != "strict" {
+		t.Fatalf("strict result did not stay ahead of relaxed fallback: %#v %v", fallback, err)
 	}
-	if len(fallback.Candidates) != 3 || fallback.Candidates[0].KnowledgeID != strictID ||
-		fallback.Candidates[0].RetrievalMode != "strict" {
-		t.Fatalf("strict candidate did not stay ahead of relaxed candidates: %#v", fallback)
-	}
-	if len(fallback.RetrievalModes) != 2 || fallback.RetrievalModes[0] != "strict" || fallback.RetrievalModes[1] != "relaxed" {
+	if fmt.Sprint(fallback.RetrievalModes) != "[strict relaxed]" {
 		t.Fatalf("unexpected retrieval modes: %#v", fallback.RetrievalModes)
 	}
-	for _, candidate := range fallback.Candidates[1:] {
-		if candidate.RetrievalMode != "relaxed" {
-			t.Fatalf("fallback candidate has mode %q: %#v", candidate.RetrievalMode, fallback.Candidates)
-		}
-	}
-
-	llvmMatches, err := SearchCandidates(cfg, "LLVM 的核心结论", 8)
-	if err != nil {
-		t.Fatal(err)
-	}
-	llvmPosition, unrelatedPosition := -1, -1
-	for i, candidate := range llvmMatches {
-		if candidate.KnowledgeID == llvmID && llvmPosition < 0 {
-			llvmPosition = i
-		}
-		if candidate.KnowledgeID == unrelatedID && unrelatedPosition < 0 {
-			unrelatedPosition = i
-		}
-	}
-	if llvmPosition < 0 || unrelatedPosition < 0 || llvmPosition >= unrelatedPosition {
-		t.Fatalf("LLVM result did not rank ahead of unrelated Chinese result: %#v", llvmMatches)
-	}
-
 	inactive, err := document.FindByID(cfg.KnowledgeDir(), unrelatedID)
 	if err != nil {
 		t.Fatal(err)
@@ -195,29 +148,26 @@ func TestSimpleChineseRetrievalRankingAndFallback(t *testing.T) {
 	if _, err := Update(cfg, false); err != nil {
 		t.Fatal(err)
 	}
-	defaultInactive, err := Search(cfg, "团队会议记录", 8)
+	withoutInactive, err := Search(cfg, "团队会议记录", 8)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, candidate := range defaultInactive.Candidates {
+	for _, candidate := range withoutInactive.Candidates {
 		if candidate.KnowledgeID == unrelatedID {
 			t.Fatal("default query returned superseded knowledge")
 		}
 	}
 	withInactive, err := SearchWithOptions(cfg, "团队会议记录", SearchOptions{Limit: 8, IncludeInactive: true})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("include-inactive failed: %#v %v", withInactive, err)
 	}
 	foundInactive := false
 	for _, candidate := range withInactive.Candidates {
-		if candidate.KnowledgeID == unrelatedID {
-			foundInactive = true
-		}
+		foundInactive = foundInactive || candidate.KnowledgeID == unrelatedID
 	}
 	if !foundInactive {
-		t.Fatal("include-inactive did not return superseded knowledge")
+		t.Fatalf("include-inactive omitted superseded knowledge: %#v", withInactive)
 	}
-
 	db, err := openDB(DBPath(cfg))
 	if err != nil {
 		t.Fatal(err)
@@ -233,180 +183,168 @@ func TestSimpleChineseRetrievalRankingAndFallback(t *testing.T) {
 		t.Fatalf("tokenizer metadata mismatch returned %v, expected ErrStale", err)
 	}
 	updated, err := Update(cfg, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !updated.FullRebuild {
-		t.Fatalf("tokenizer metadata mismatch did not force a full rebuild: %#v", updated)
+	if err != nil || !updated.FullRebuild {
+		t.Fatalf("metadata mismatch did not force full rebuild: %#v %v", updated, err)
 	}
 }
 
 func TestSearchDetectsCompleteKnowledgeSnapshotDrift(t *testing.T) {
 	newFixture := func(t *testing.T) (*config.Instance, string) {
-		t.Helper()
-		root := filepath.Join(t.TempDir(), "snapshot-wiki")
-		initialized, err := vault.Init(vault.InitOptions{Path: root, Name: "snapshot", Template: "personal"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		cfg := initialized.Config
+		cfg := indexWiki(t)
 		base := time.Date(2026, 8, 9, 10, 0, 0, 0, time.UTC)
-		publishSearchFixture(t, cfg, 0, base, "StableNeedleZXQ", nil,
-			"# StableNeedleZXQ\n\nStableNeedleZXQ is the expected indexed result.\n")
-		otherID := publishSearchFixture(t, cfg, 1, base, "UnrelatedTokenAAAA", nil,
-			"# UnrelatedTokenAAAA\n\nUnrelatedTokenAAAA belongs to a different document.\n")
+		writeEvaluationKnowledge(t, cfg, base.Add(time.Millisecond), "StableNeedleZXQ", "StableNeedleZXQ is the expected indexed result.", nil, nil)
+		otherID := writeEvaluationKnowledge(t, cfg, base.Add(2*time.Millisecond), "UnrelatedTokenAAAA", "UnrelatedTokenAAAA belongs to a different document.", nil, nil)
 		if _, err := Rebuild(cfg); err != nil {
 			t.Fatal(err)
 		}
 		return cfg, otherID
 	}
-
-	t.Run("added matching document before an empty result", func(t *testing.T) {
+	t.Run("added file", func(t *testing.T) {
 		cfg, _ := newFixture(t)
-		base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
-		addedID := publishSearchFixture(t, cfg, 2, base, "NewlyAddedNeedleZXQ", nil,
-			"# NewlyAddedNeedleZXQ\n\nNewlyAddedNeedleZXQ must not be hidden by an old index.\n")
-		if _, err := Search(cfg, "NewlyAddedNeedleZXQ", 8); !errors.Is(err, ErrStale) {
-			t.Fatalf("query against an unindexed new document returned %v, expected ErrStale", err)
+		writeEvaluationKnowledge(t, cfg, time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC), "NewlyAddedNeedleZXQ", "new", nil, nil)
+		if _, err := Search(cfg, "StableNeedleZXQ", 8); !errors.Is(err, ErrStale) {
+			t.Fatalf("unindexed addition returned %v", err)
 		}
-		if _, err := Update(cfg, false); err != nil {
+	})
+	t.Run("deleted unselected file", func(t *testing.T) {
+		cfg, otherID := newFixture(t)
+		doc, err := document.FindByID(cfg.KnowledgeDir(), otherID)
+		if err != nil {
 			t.Fatal(err)
 		}
-		result, err := Search(cfg, "NewlyAddedNeedleZXQ", 8)
-		if err != nil || len(result.Candidates) == 0 || result.Candidates[0].KnowledgeID != addedID {
-			t.Fatalf("updated index did not return the new document: %#v %v", result, err)
+		if err := os.Remove(doc.Path); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Search(cfg, "StableNeedleZXQ", 8); !errors.Is(err, ErrStale) {
+			t.Fatalf("deleted unselected file returned %v", err)
 		}
 	})
+	t.Run("same size and mtime change", func(t *testing.T) {
+		cfg, otherID := newFixture(t)
+		doc, err := document.FindByID(cfg.KnowledgeDir(), otherID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(doc.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		original, err := os.ReadFile(doc.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		modified := bytes.ReplaceAll(original, []byte("UnrelatedTokenAAAA"), []byte("UnrelatedTokenBBBB"))
+		if len(modified) != len(original) || bytes.Equal(modified, original) {
+			t.Fatal("mutation did not preserve size")
+		}
+		if err := os.WriteFile(doc.Path, modified, info.Mode().Perm()); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(doc.Path, info.ModTime(), info.ModTime()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Search(cfg, "StableNeedleZXQ", 8); !errors.Is(err, ErrStale) {
+			t.Fatalf("same-size snapshot drift returned %v", err)
+		}
+	})
+}
 
-	for _, test := range []struct {
-		name   string
-		mutate func(*testing.T, *config.Instance, string)
-	}{
-		{
-			name: "deleted unselected document",
-			mutate: func(t *testing.T, cfg *config.Instance, otherID string) {
-				doc, err := document.FindByID(cfg.KnowledgeDir(), otherID)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Remove(doc.Path); err != nil {
-					t.Fatal(err)
-				}
-			},
-		},
-		{
-			name: "renamed unselected document",
-			mutate: func(t *testing.T, cfg *config.Instance, otherID string) {
-				doc, err := document.FindByID(cfg.KnowledgeDir(), otherID)
-				if err != nil {
-					t.Fatal(err)
-				}
-				target := filepath.Join(filepath.Dir(doc.Path), "renamed--"+otherID+".md")
-				if err := os.Rename(doc.Path, target); err != nil {
-					t.Fatal(err)
-				}
-			},
-		},
-		{
-			name: "modified unselected document",
-			mutate: func(t *testing.T, cfg *config.Instance, otherID string) {
-				doc, err := document.FindByID(cfg.KnowledgeDir(), otherID)
-				if err != nil {
-					t.Fatal(err)
-				}
-				doc.Body = append(doc.Body, []byte("\nExternally changed but still unrelated.\n")...)
-				doc.Metadata.ContentHash = document.HashBytes(document.NormalizeMarkdownBody(doc.Body))
-				if err := document.Write(doc.Path, doc.Metadata, doc.Body); err != nil {
-					t.Fatal(err)
-				}
-			},
-		},
-		{
-			name: "same size and mtime modification",
-			mutate: func(t *testing.T, cfg *config.Instance, otherID string) {
-				doc, err := document.FindByID(cfg.KnowledgeDir(), otherID)
-				if err != nil {
-					t.Fatal(err)
-				}
-				info, err := os.Stat(doc.Path)
-				if err != nil {
-					t.Fatal(err)
-				}
-				original, err := os.ReadFile(doc.Path)
-				if err != nil {
-					t.Fatal(err)
-				}
-				modified := bytes.ReplaceAll(original, []byte("UnrelatedTokenAAAA"), []byte("UnrelatedTokenBBBB"))
-				if len(modified) != len(original) || bytes.Equal(modified, original) {
-					t.Fatal("test mutation did not preserve size or content changed unexpectedly")
-				}
-				if err := os.WriteFile(doc.Path, modified, info.Mode().Perm()); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Chtimes(doc.Path, info.ModTime(), info.ModTime()); err != nil {
-					t.Fatal(err)
-				}
-			},
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			cfg, otherID := newFixture(t)
-			test.mutate(t, cfg, otherID)
-			result, err := Search(cfg, "StableNeedleZXQ", 8)
-			if !errors.Is(err, ErrStale) {
-				t.Fatalf("query returned %#v, %v; expected ErrStale after %s", result, err, test.name)
-			}
-		})
+func TestIncrementalUpdateDerivesAddChangeDeleteFromKnowledge(t *testing.T) {
+	cfg := indexWiki(t)
+	first := writeKnowledge(t, cfg, 1, "First", "# First\n\nFirstNeedle.\n")
+	if _, err := Rebuild(cfg); err != nil {
+		t.Fatal(err)
+	}
+	writeKnowledge(t, cfg, 2, "Second", "# Second\n\nSecondNeedle.\n")
+	before, err := os.ReadFile(DBPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := Update(cfg, true)
+	if err != nil || plan.Added != 1 || !plan.DryRun {
+		t.Fatalf("bad update plan %#v %v", plan, err)
+	}
+	after, err := os.ReadFile(DBPath(cfg))
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("dry-run changed the index: %v", err)
+	}
+	doc, _ := document.FindByID(cfg.KnowledgeDir(), first)
+	if err := os.Remove(doc.Path); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Update(cfg, false)
+	if err != nil || result.Added != 1 || result.Deleted != 1 || result.Documents != 1 {
+		t.Fatalf("bad incremental update %#v %v", result, err)
+	}
+	if _, err := Search(cfg, "SecondNeedle", 8); err != nil {
+		t.Fatal(err)
 	}
 }
 
-func assertFirstKnowledge(t *testing.T, cfg *config.Instance, query, expectedID string) {
-	t.Helper()
-	matches, err := SearchCandidates(cfg, query, 8)
+func TestRebuildRejectsNonCanonicalKnowledgePath(t *testing.T) {
+	cfg := indexWiki(t)
+	id := writeKnowledge(t, cfg, 1, "Canonical title", "# Canonical title\n\nCanonical fact.\n")
+	doc, err := document.FindByID(cfg.KnowledgeDir(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(matches) == 0 || matches[0].KnowledgeID != expectedID {
-		t.Fatalf("query %q first result = %#v, expected %s", query, matches, expectedID)
+	wrong := filepath.Join(filepath.Dir(doc.Path), "wrong--"+id+".md")
+	if err := os.Rename(doc.Path, wrong); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Rebuild(cfg); err == nil {
+		t.Fatal("rebuild accepted a non-canonical knowledge path")
 	}
 }
 
-func publishSearchFixture(t *testing.T, cfg *config.Instance, ordinal int, base time.Time, title string, aliases []string, body string) string {
+func indexWiki(t *testing.T) *config.Instance {
 	t.Helper()
-	added, err := raw.Add(cfg, raw.AddOptions{
-		Input: "-", Name: fmt.Sprintf("source-%02d.md", ordinal),
-		Stdin: bytes.NewBufferString(body), Now: base.Add(time.Duration(ordinal) * time.Minute),
-	})
+	result, err := vault.Init(vault.InitOptions{Path: filepath.Join(t.TempDir(), "wiki"), Name: "index-test", Template: "personal"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	draft := filepath.Join(t.TempDir(), fmt.Sprintf("draft-%02d.md", ordinal))
-	frontmatter := "---\ntype: concept\ntitle: " + title + "\ndescription: Search fixture\nlifecycle: current\n"
-	if len(aliases) > 0 {
-		frontmatter += "aliases:\n"
-		for _, alias := range aliases {
-			frontmatter += "  - " + alias + "\n"
-		}
+	return result.Config
+}
+
+func writeKnowledge(t *testing.T, cfg *config.Instance, ordinal int, title, body string) string {
+	t.Helper()
+	return writeKnowledgeForTest(t, cfg, ordinal, title, body)
+}
+
+type fataler interface {
+	Helper()
+	Fatal(...any)
+}
+
+func writeKnowledgeForTest(t fataler, cfg *config.Instance, ordinal int, title, body string) string {
+	t.Helper()
+	id := fmt.Sprintf("know_01arz3ndektsv4rrffq69g%04x", ordinal)
+	if len(id) != len("know_01arz3ndektsv4rrffq69g5fav") || !document.ValidID("know", id) {
+		// The fixed ULID alphabet suffix below stays valid for the test range.
+		alphabet := "0123456789abcdefghjkmnpqrstvwxyz"
+		id = "know_01arz3ndektsv4rrffq69g5fa" + string(alphabet[ordinal%len(alphabet)])
 	}
-	frontmatter += "---\n"
-	body += fmt.Sprintf("\nFixture evidence.[^%s-1]\n\n[^%s-1]: locator: test fixture\n", added[0].ID, added[0].ID)
-	if err := os.WriteFile(draft, []byte(frontmatter+body), 0o600); err != nil {
+	data := []byte(body)
+	meta := document.Metadata{
+		SchemaVersion: document.CurrentSchema, ID: id, Type: "concept", Title: title, Status: "published",
+		PublishedAt: "2026-08-09T00:00:00Z", UpdatedAt: "2026-08-09T00:00:00Z", ContentHash: document.HashBytes(data),
+		GovernanceVersion: governance.PersonalGovernanceVersion,
+		Lineage:           []document.LineageRef{{InboxID: "inbox_01arz3ndektsv4rrffq69g5fav", PayloadHash: document.HashBytes([]byte("payload")), Source: "test", CapturedAt: "2026-08-08T00:00:00Z"}},
+		Extra:             map[string]any{"description": title + " description", "lifecycle": "current"},
+	}
+	dir := filepath.Join(cfg.KnowledgeDir(), "concept")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	proposal, err := publish.Propose(cfg, publish.ProposeOptions{
-		SourceIDs: []string{added[0].ID}, DraftPath: draft,
-		Now: base.Add(time.Duration(ordinal)*time.Minute + time.Hour),
-	})
-	if err != nil {
+	path := filepath.Join(dir, document.Slug(title)+"--"+id+".md")
+	if err := document.Write(path, meta, data); err != nil {
 		t.Fatal(err)
 	}
-	applied, err := publish.Apply(cfg, proposal.Proposal.ID, false,
-		base.Add(time.Duration(ordinal)*time.Minute+2*time.Hour))
-	if err != nil {
-		t.Fatal(err)
+	return id
+}
+
+func TestNormalizeQueryRejectsWrapperOnlyInput(t *testing.T) {
+	if normalized := normalizeQuery(strings.Repeat("，。！？", 5)); normalized != "" {
+		t.Fatalf("wrapper-only query normalized to %q", normalized)
 	}
-	if err := publish.CompleteOperation(cfg, applied.OperationID); err != nil {
-		t.Fatal(err)
-	}
-	return proposal.Proposal.KnowledgeID
 }

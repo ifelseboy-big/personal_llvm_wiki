@@ -22,8 +22,12 @@ const (
 	TokenizerCommit  = "4ed008934495fc55ff4bf6620bba58311988b23e"
 )
 
+var registrationErr error
+
 func init() {
 	if rc := int(C.llm_wiki_register_simple_auto_extension()); rc != 0 {
-		panic(fmt.Sprintf("register simple SQLite auto-extension: error code %d", rc))
+		registrationErr = fmt.Errorf("register simple SQLite auto-extension: error code %d", rc)
 	}
 }
+
+func RegistrationError() error { return registrationErr }

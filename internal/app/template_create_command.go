@@ -16,7 +16,7 @@ func newTemplateCreateCommand(rt *Runtime) *cobra.Command {
 	var overwrite, yes bool
 	cmd := &cobra.Command{
 		Use: "create <name>", Args: cobra.ExactArgs(1),
-		Short: "Create an editable draft from a raw or knowledge template",
+		Short: "Create an editable draft from an inbox or knowledge template",
 		RunE: func(_ *cobra.Command, args []string) error {
 			cfg, ref, err := resolveWiki(rt)
 			if err != nil {
@@ -61,11 +61,11 @@ func newTemplateCreateCommand(rt *Runtime) *cobra.Command {
 			return rt.Success("template.create", ref, result, nil, files)
 		},
 	}
-	cmd.Flags().StringVar(&kind, "kind", "knowledge", "template kind: raw or knowledge")
+	cmd.Flags().StringVar(&kind, "kind", "knowledge", "template kind: inbox or knowledge")
 	cmd.Flags().StringVar(&title, "title", "", "draft title used for {{title}}")
 	cmd.Flags().StringVar(&output, "output", "", "explicit draft output path")
 	cmd.Flags().StringArrayVar(&set, "set", nil, "set a draft property as name=YAML-value; may be repeated")
-	cmd.Flags().StringArrayVar(&related, "related", nil, "knowledge ID to add as a canonical related link; may be repeated")
+	cmd.Flags().StringArrayVar(&related, "related", nil, "stable knowledge ID to add to related; may be repeated")
 	cmd.Flags().BoolVar(&overwrite, "overwrite", false, "allow replacing an existing output file")
 	cmd.Flags().BoolVar(&yes, "yes", false, "confirm overwriting an existing output file")
 	_ = cmd.MarkFlagRequired("title")

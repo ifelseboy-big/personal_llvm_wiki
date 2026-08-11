@@ -15,8 +15,8 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"llm-wiki/internal/config"
+	"llm-wiki/internal/document"
 	"llm-wiki/internal/fsutil"
-	"llm-wiki/internal/governance"
 )
 
 type CreateOptions struct {
@@ -47,10 +47,11 @@ var (
 	propertyNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
 	variablePattern     = regexp.MustCompile(`\{\{[^{}]+\}\}`)
 	systemProperties    = map[string]bool{
-		"schema_version": true, "id": true, "status": true, "sources": true,
-		"captured_at": true, "published_at": true, "updated_at": true,
+		"schema_version": true, "id": true, "status": true,
+		"captured_at": true, "published_at": true, "updated_at": true, "processed_at": true,
+		"payload": true, "payload_hash": true, "payload_bytes": true, "knowledge_ids": true, "lineage": true,
 		"content_hash": true, "media_type": true, "original_name": true,
-		"asset": true, "governance_version": true,
+		"governance_version": true,
 	}
 )
 
@@ -58,8 +59,8 @@ func CreateDraft(cfg *config.Instance, opts CreateOptions) (*CreateResult, error
 	if cfg == nil {
 		return nil, errors.New("template creation requires a resolved wiki")
 	}
-	if opts.Kind != "raw" && opts.Kind != "knowledge" {
-		return nil, errors.New("template kind must be raw or knowledge")
+	if opts.Kind != "inbox" && opts.Kind != "knowledge" {
+		return nil, errors.New("template kind must be inbox or knowledge")
 	}
 	if strings.TrimSpace(opts.Name) == "" || strings.TrimSpace(opts.Title) == "" || strings.TrimSpace(opts.Output) == "" {
 		return nil, errors.New("template name, title, and output are required")
@@ -117,13 +118,12 @@ func CreateDraft(cfg *config.Instance, opts CreateOptions) (*CreateResult, error
 			seen[link] = true
 		}
 		for _, id := range opts.Related {
-			link, err := governance.CanonicalKnowledgeLink(cfg, id)
-			if err != nil {
+			if _, err := document.FindByID(cfg.KnowledgeDir(), id); err != nil {
 				return nil, fmt.Errorf("resolve related knowledge %s: %w", id, err)
 			}
-			if !seen[link] {
-				seen[link] = true
-				links = append(links, link)
+			if !seen[id] {
+				seen[id] = true
+				links = append(links, id)
 			}
 		}
 		setMappingValue(mapping, "related", stringSequence(links))
@@ -136,7 +136,7 @@ func CreateDraft(cfg *config.Instance, opts CreateOptions) (*CreateResult, error
 	if err != nil {
 		return nil, err
 	}
-	for _, managed := range []string{cfg.RawDir(), cfg.KnowledgeDir(), cfg.RuntimeDir()} {
+	for _, managed := range []string{cfg.InboxDir(), cfg.KnowledgeDir(), cfg.RuntimeDir()} {
 		_, resolvedManaged, resolveErr := resolvedOutputPath(managed)
 		if resolveErr != nil {
 			return nil, resolveErr
@@ -157,9 +157,9 @@ func CreateDraft(cfg *config.Instance, opts CreateOptions) (*CreateResult, error
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-	nextCommand := fmt.Sprintf("llm-wiki publish propose --source <raw-id> --file %q", target)
-	if opts.Kind == "raw" {
-		nextCommand = fmt.Sprintf("llm-wiki raw add %q", target)
+	nextCommand := fmt.Sprintf("prepare a promotion manifest using %q, then run llm-wiki promote plan --manifest <file>", target)
+	if opts.Kind == "inbox" {
+		nextCommand = fmt.Sprintf("llm-wiki inbox add <input> --note-file %q", target)
 	}
 	result := &CreateResult{
 		Template: item, TemplateVersion: cfg.Template.Version,

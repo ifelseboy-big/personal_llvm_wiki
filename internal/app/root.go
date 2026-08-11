@@ -16,8 +16,9 @@ import (
 	"llm-wiki/internal/config"
 	"llm-wiki/internal/document"
 	"llm-wiki/internal/governance"
+	"llm-wiki/internal/inbox"
 	indexstore "llm-wiki/internal/index"
-	"llm-wiki/internal/publish"
+	"llm-wiki/internal/promote"
 	"llm-wiki/internal/skill"
 	"llm-wiki/internal/templates"
 	"llm-wiki/internal/vault"
@@ -70,12 +71,11 @@ func newRootCommand(rt *Runtime) *cobra.Command {
 	root.AddCommand(newStatusCommand(rt))
 	root.AddCommand(newDoctorCommand(rt))
 	root.AddCommand(newTemplateCommand(rt))
-	root.AddCommand(newRawCommand(rt))
+	root.AddCommand(newInboxCommand(rt))
 	root.AddCommand(newIndexCommand(rt))
 	root.AddCommand(newQueryCommand(rt))
 	root.AddCommand(newShowCommand(rt))
-	root.AddCommand(newTraceCommand(rt))
-	root.AddCommand(newPublishCommand(rt))
+	root.AddCommand(newPromoteCommand(rt))
 	root.AddCommand(newSkillCommand(rt))
 	return root
 }
@@ -103,7 +103,7 @@ func wikiRef(cfg *config.Instance) *WikiRef {
 
 func recoverIfNeeded(cfg *config.Instance, dryRun bool) ([]string, error) {
 	if dryRun {
-		pending, err := publish.PendingOperations(cfg)
+		pending, err := promote.PendingOperations(cfg)
 		if err != nil {
 			return nil, E("RECOVERY_INSPECTION_FAILED", "cannot inspect interrupted wiki transactions", ExitIO, err)
 		}
@@ -114,7 +114,7 @@ func recoverIfNeeded(cfg *config.Instance, dryRun bool) ([]string, error) {
 		}
 		return nil, nil
 	}
-	actions, err := publish.Recover(cfg)
+	actions, err := promote.Recover(cfg)
 	if err != nil {
 		if errors.Is(err, vault.ErrLocked) {
 			return nil, E("WIKI_LOCKED", "wiki is locked by another writer", ExitLock, err)
@@ -130,7 +130,7 @@ func recoverIfNeeded(cfg *config.Instance, dryRun bool) ([]string, error) {
 	warnings := make([]string, 0, len(actions))
 	for _, action := range actions {
 		if action.Action == "index_required" {
-			if err := publish.CompleteOperation(cfg, action.OperationID); err != nil {
+			if err := promote.CompleteOperation(cfg, action.OperationID); err != nil {
 				return nil, E("RECOVERY_FINALIZE_FAILED", "index rebuilt but transaction could not be finalized", ExitIO, err)
 			}
 		}
@@ -321,20 +321,39 @@ func newStatusCommand(rt *Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			counts := map[string]int{}
+			counts := map[string]int{"pending_inbox": 0, "processed_inbox": 0, "knowledge": 0}
 			problems := []string{}
-			for layer, root := range map[string]string{"raw": cfg.RawDir(), "knowledge": cfg.KnowledgeDir()} {
-				docs, errs := document.ScanMarkdown(root)
-				counts[layer] = len(docs)
-				for _, problem := range errs {
-					problems = append(problems, problem.Error())
+			inboxDocs, inboxProblems := inbox.List(cfg, "")
+			for _, doc := range inboxDocs {
+				counts[doc.Metadata.Status+"_inbox"]++
+			}
+			for _, problem := range inboxProblems {
+				problems = append(problems, problem.Error())
+			}
+			problems = append(problems, inbox.ProcessedPayloadWarnings(cfg)...)
+			knowledgeDocs, knowledgeProblems := document.ScanMarkdown(cfg.KnowledgeDir())
+			counts["knowledge"] = len(knowledgeDocs)
+			for _, doc := range knowledgeDocs {
+				rel, relErr := filepath.Rel(cfg.Root, doc.Path)
+				if relErr != nil || filepath.ToSlash(rel) != document.KnowledgePath(cfg.Paths.Knowledge, doc.Metadata) {
+					problems = append(problems, "knowledge path is not canonical: "+doc.Path)
 				}
+				if validateErr := doc.Validate("knowledge", true); validateErr != nil {
+					problems = append(problems, doc.Path+": "+validateErr.Error())
+				}
+			}
+			for _, problem := range knowledgeProblems {
+				problems = append(problems, problem.Error())
+			}
+			activePromotions, promotionErr := promote.ActiveCount(cfg)
+			if promotionErr != nil {
+				problems = append(problems, promotionErr.Error())
 			}
 			_, indexErr := os.Stat(filepath.Join(cfg.RuntimeDir(), "index.sqlite"))
 			data := map[string]any{
 				"documents": counts, "problems": problems,
 				"index_exists": indexErr == nil,
-				"template":     cfg.Template,
+				"template":     cfg.Template, "active_promotions": activePromotions,
 			}
 			return rt.Success("status", ref, data, problems, nil)
 		},
@@ -358,37 +377,32 @@ func newDoctorCommand(rt *Runtime) *cobra.Command {
 			}
 			checks := []check{{Name: "config", OK: true, Message: "schema and managed paths are valid"}}
 			attention := []string{}
-			allRaw := map[string]string{}
-			rawDocs, rawProblems := document.ScanMarkdown(cfg.RawDir())
-			for _, doc := range rawDocs {
-				err := doc.Validate("raw", false)
-				if _, duplicate := allRaw[doc.Metadata.ID]; duplicate {
-					err = fmt.Errorf("duplicate raw id %s", doc.Metadata.ID)
+			attention = append(attention, inbox.ProcessedPayloadWarnings(cfg)...)
+			inboxDocs, inboxProblems := inbox.List(cfg, "")
+			inboxIDs := map[string]bool{}
+			for _, doc := range inboxDocs {
+				err := error(nil)
+				if inboxIDs[doc.Metadata.ID] {
+					err = fmt.Errorf("duplicate inbox id %s", doc.Metadata.ID)
 				}
-				checks = append(checks, check{Name: "raw:" + doc.Metadata.ID, OK: err == nil, Message: errorMessage(err, "valid")})
-				if err == nil {
-					allRaw[doc.Metadata.ID] = doc.Metadata.ContentHash
-				}
+				inboxIDs[doc.Metadata.ID] = true
+				checks = append(checks, check{Name: "inbox:" + doc.Metadata.ID, OK: err == nil, Message: errorMessage(err, "valid")})
 			}
-			for _, problem := range rawProblems {
-				checks = append(checks, check{Name: "raw:parse", OK: false, Message: problem.Error()})
+			for _, problem := range inboxProblems {
+				checks = append(checks, check{Name: "inbox:parse", OK: false, Message: problem.Error()})
 			}
 			knowledgeDocs, knowledgeProblems := document.ScanMarkdown(cfg.KnowledgeDir())
 			knowledgeIDs := map[string]bool{}
 			for _, doc := range knowledgeDocs {
-				err := doc.Validate("knowledge", cfg.Publish.RequireSources)
+				err := doc.Validate("knowledge", true)
+				rel, relErr := filepath.Rel(cfg.Root, doc.Path)
+				if err == nil && (relErr != nil || filepath.ToSlash(rel) != document.KnowledgePath(cfg.Paths.Knowledge, doc.Metadata)) {
+					err = errors.New("knowledge path is not canonical")
+				}
 				if knowledgeIDs[doc.Metadata.ID] {
 					err = fmt.Errorf("duplicate knowledge id %s", doc.Metadata.ID)
 				}
 				knowledgeIDs[doc.Metadata.ID] = true
-				if err == nil {
-					for _, source := range doc.Metadata.Sources {
-						if hash, ok := allRaw[source.ID]; !ok || hash != source.ContentHash {
-							err = fmt.Errorf("source %s is missing or changed", source.ID)
-							break
-						}
-					}
-				}
 				checks = append(checks, check{Name: "knowledge:" + doc.Metadata.ID, OK: err == nil, Message: errorMessage(err, "valid")})
 				if err == nil && governance.UsesPersonalGovernance(cfg) {
 					if governanceErr := governance.ValidateStored(cfg, doc, time.Now()); governanceErr != nil {
@@ -403,7 +417,7 @@ func newDoctorCommand(rt *Runtime) *cobra.Command {
 					attention = append(attention, assessment.Warnings...)
 					checks = append(checks, check{
 						Name: "knowledge-governance:" + doc.Metadata.ID, OK: true,
-						Message: "personal 1.4.0 metadata, citations, and links are valid",
+						Message: "personal 2.0.0 metadata, lineage, and stable relations are valid",
 					})
 					if reciprocalErr := governance.ValidateReciprocalRelations(cfg, doc); reciprocalErr != nil {
 						checks = append(checks, check{Name: "knowledge-relations:" + doc.Metadata.ID, OK: false, Message: reciprocalErr.Error()})
@@ -417,7 +431,7 @@ func newDoctorCommand(rt *Runtime) *cobra.Command {
 			if indexErr != nil {
 				checks = append(checks, check{Name: "index", OK: false, Message: indexErr.Error() + "; run index rebuild"})
 			} else {
-				expectedCounts := map[string]int{"raw": len(rawDocs), "knowledge": len(knowledgeDocs)}
+				expectedCounts := map[string]int{"knowledge": len(knowledgeDocs)}
 				indexOK := indexStatus.Exists && indexStatus.SchemaVersion == indexstore.SchemaVersion &&
 					indexStatus.Tokenizer == "simple" &&
 					indexStatus.TokenizerVersion != "" && indexStatus.TokenizerCommit != "" &&
@@ -517,7 +531,7 @@ func newTemplateCommand(rt *Runtime) *cobra.Command {
 		},
 	}
 	show.Flags().StringVar(&file, "file", "", "show a file inside the template")
-	show.Flags().StringVar(&kind, "kind", "", "content template kind: raw or knowledge")
+	show.Flags().StringVar(&kind, "kind", "", "content template kind: inbox or knowledge")
 	cmd.AddCommand(show)
 	cmd.AddCommand(newTemplateCreateCommand(rt))
 	cmd.AddCommand(newTemplateUpgradeCommand(rt))

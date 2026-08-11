@@ -18,19 +18,19 @@
 | 产品入口、命令面 | `README.md` |
 | 架构、事实边界、事务与恢复 | `docs/TECHNICAL_DESIGN.md` |
 | 序列化与机器协议 | `schemas/*.schema.json` |
-| personal 模板执行契约 | `docs/template-design/personal-1.4.0/TEMPLATE_SPEC.md` |
+| personal 模板执行契约 | `docs/template-design/personal-2.0.0/TEMPLATE_SPEC.md` |
 | 内置模板文件清单 | `resources/vault-templates/personal/template.toml` |
-| 构建与验收命令 | `Makefile`、`.goreleaser.yaml` |
+| 构建、安装与验收命令 | `Makefile` |
 
 ## 3. 构建基线
 
 | 项目 | 当前要求 |
 | --- | --- |
 | Go | 1.25+ |
-| 正式目标 | `darwin/arm64` |
-| CGO | `CGO_ENABLED=1 CC=clang CXX=clang++` |
+| 构建目标 | 当前机器的 `GOOS/GOARCH` |
+| CGO | `CGO_ENABLED=1`，使用 Go 当前 C/C++ 工具链或显式 `CC`/`CXX` |
 | 必需标签 | `fts5 sqlite_omit_load_extension` |
-| 分发物 | 单个二进制、校验和、SBOM |
+| 分发方式 | 拉取源码后执行 `make build`、`make install` |
 | 运行时依赖 | 不依赖 MCP、常驻服务、外部数据库、解释器、Homebrew SQLite 或网络服务 |
 
 正式测试和构建必须使用上述 CGO 配置与标签；裸跑 `go test ./...` 不构成验收。
@@ -47,8 +47,8 @@
 | `internal/document` | `fsutil` |
 | `internal/governance` | `config`、`document`、`fsutil` |
 | `internal/vault` | `config`、`document`、`fsutil`；初始化装配可依赖 `templates` |
-| `internal/raw` | `config`、`document`、`fsutil`、`vault` |
-| `internal/publish` | `config`、`document`、`fsutil`、`governance`、`vault` |
+| `internal/inbox` | `config`、`document`、`fsutil`、`vault` |
+| `internal/promote` | `config`、`document`、`fsutil`、`governance`、`inbox`、`vault` |
 | `internal/index` | `config`、`document`、`fsutil`、`governance`、`sqlite3simple`、`vault` |
 | `internal/templates` | `config`、`document`、`fsutil`、`governance`、`resources` |
 | `internal/skill` | `document`、`fsutil`、`resources` |
@@ -60,19 +60,19 @@
 
 | 数据层 | 性质 | 唯一合法写入路径 |
 | --- | --- | --- |
-| `raw/` | 原始证据 | `internal/raw` 的受控导入 |
-| `knowledge/` | 唯一最终事实源 | `publish apply` |
+| `inbox/` | 临时输入与初步整理 | `internal/inbox` 的受控写入与清理 |
+| `knowledge/` | 唯一最终事实源 | `promote apply` |
 | `.llm-wiki/index.sqlite` | 可重建候选索引 | `internal/index` |
 | 模板受管文件 | 治理与草稿资源 | `internal/templates` 的安装或升级 |
 
 必须保持以下不变量：
 
-1. 发布绑定 raw ID 与发布时内容哈希。raw 后续漂移只能报告，不能改写已发布事实。
+1. Knowledge 的 lineage 绑定 Inbox ID 与发布时 payload 哈希；Inbox 清理后 Knowledge 必须独立健康。
 2. SQLite 不得保存无法从受管文件恢复的唯一数据；删除后必须可重建。
 3. `query/show` 返回事实前必须回读 knowledge Markdown，并校验 ID、规范路径、完整文件哈希和正文哈希；`query` 还必须校验 chunk 哈希与行边界。
 4. 关系只依赖稳定 ID。重复 ID、路径漂移、关系目标不一致或索引快照不一致必须失败，禁止猜测或自动修复。
 5. 实例写操作必须在首次持久化前完成全部预检并持有独占写锁。多文件事实写入必须使用可恢复事务。
-6. 模板升级禁止写入 `raw/` 或 `knowledge/`。
+6. 模板升级禁止写入 `inbox/` 或 `knowledge/`。
 
 ## 6. 实现约束
 
@@ -89,7 +89,7 @@
 - Cobra、`AppError`、稳定错误码、退出码及 stdout/stderr 映射只属于 `internal/app`。
 - `--json` 时 stdout 必须且只能输出一个 JSON 对象；诊断写 stderr；颜色和交互自动关闭；`warnings` 与 `affected_files` 必须是数组。
 - `--dry-run` 禁止写文件、创建锁、更新索引、注册实例或安装 Skill。预览与真实执行必须复用同一规划和校验逻辑。
-- `--no-interactive` 禁止等待输入；只有显式 `raw add -` 可以读取 stdin。
+- `--no-interactive` 禁止等待输入；只有显式 `inbox add -` 可以读取 stdin。
 
 ### 文件与事务
 
@@ -104,11 +104,11 @@
 
 | 改动 | 必须同步 |
 | --- | --- |
-| 命令、参数、错误码、退出码或 JSON 字段 | `internal/app`、`README.md`、`schemas/response-v1.schema.json`、协议测试、e2e |
-| instance 配置 | `internal/config`、`schemas/instance-v1.schema.json`、技术设计、配置测试 |
-| frontmatter 或 governance | `internal/document`、`internal/governance`、`schemas/frontmatter-v1.schema.json`、模板契约、publish/query/index 测试 |
-| proposal 格式 | `internal/publish`、`schemas/change-v1.schema.json`、事务与 e2e 测试 |
-| index Schema、planner 或 tokenizer | 版本常量、rebuild 判定、召回/排序/漂移测试、release build |
+| 命令、参数、错误码、退出码或 JSON 字段 | `internal/app`、`README.md`、`schemas/response-v2.schema.json`、协议测试、e2e |
+| instance 配置 | `internal/config`、`schemas/instance-v2.schema.json`、技术设计、配置测试 |
+| frontmatter 或 governance | `internal/document`、`internal/governance`、`schemas/frontmatter-v2.schema.json`、模板契约、promote/query/index 测试 |
+| Promotion 格式 | `internal/promote`、`schemas/promotion-v1.schema.json`、事务与 e2e 测试 |
+| index Schema、planner 或 tokenizer | 版本常量、rebuild 判定、召回/排序/漂移测试、本机构建 |
 | personal 受管模板 | `template.toml`、resources 与当前 design baseline 的同路径同字节副本、模板版本、init/upgrade/e2e |
 | 嵌入 Skill | Skill 版本、所有权、冲突、symlink、dry-run、安装/更新/卸载测试 |
 
@@ -126,10 +126,10 @@ git diff --check
 
 | 风险范围 | 追加验收 |
 | --- | --- |
-| 路径、写入、raw、publish、事务 | 安全拒绝、零写入、锁冲突、恢复测试；`make test-race` |
-| index、query、tokenizer | 严格/宽松召回、稳定排序、索引漂移、删除重建；`make release-build` |
+| 路径、写入、inbox、promote、事务 | 安全拒绝、零写入、锁冲突、恢复测试；`make test-race` |
+| index、query、tokenizer | 严格/宽松召回、稳定排序、索引漂移、删除重建；`make build` |
 | template、governance、Schema | `make schema-check`、真实文件解析、双目录一致、init/upgrade/e2e |
-| 发布配置 | `go mod verify`、race、`make release-build`、`goreleaser check`、产物 smoke |
+| 构建或安装配置 | `go mod verify`、race、`make build`、`make install` 与版本 smoke |
 
 无法执行的验收必须明确报告。测试使用 `t.TempDir()`；修改进程环境或全局状态的测试不得并行。
 

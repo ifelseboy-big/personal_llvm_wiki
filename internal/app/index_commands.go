@@ -15,7 +15,7 @@ import (
 	"llm-wiki/internal/fsutil"
 	"llm-wiki/internal/governance"
 	indexstore "llm-wiki/internal/index"
-	"llm-wiki/internal/publish"
+	"llm-wiki/internal/promote"
 	"llm-wiki/internal/vault"
 )
 
@@ -39,7 +39,7 @@ type queryEvidence struct {
 	RetrievalMode string                         `json:"retrieval_mode"`
 	ContentHash   string                         `json:"content_hash"`
 	FileHash      string                         `json:"file_hash"`
-	Sources       []document.SourceRef           `json:"sources"`
+	Lineage       []document.LineageRef          `json:"lineage"`
 	Metadata      document.Metadata              `json:"metadata"`
 	Lifecycle     governance.LifecycleAssessment `json:"lifecycle"`
 }
@@ -95,7 +95,11 @@ func newIndexCommand(rt *Runtime) *cobra.Command {
 					return rt.Success("index.update", ref, result, recoveryWarnings, files)
 				}
 				if rt.DryRun {
-					return rt.Success("index.rebuild", ref, map[string]any{"dry_run": true, "mode": "full"}, recoveryWarnings, nil)
+					preview, previewErr := indexstore.Update(cfg, true)
+					if previewErr != nil {
+						return E("INDEX_REBUILD_FAILED", "cannot rebuild index from files", ExitIndex, previewErr)
+					}
+					return rt.Success("index.rebuild", ref, map[string]any{"dry_run": true, "mode": "full", "validation": preview}, recoveryWarnings, nil)
 				}
 				result, err := indexstore.Rebuild(cfg)
 				if err != nil {
@@ -122,12 +126,12 @@ func newQueryCommand(rt *Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			pending, err := publish.PendingOperations(cfg)
+			pending, err := promote.PendingOperations(cfg)
 			if err != nil {
 				return E("RECOVERY_INSPECTION_FAILED", "cannot inspect interrupted wiki transactions", ExitIO, err)
 			}
 			if len(pending) > 0 {
-				recoveryErr := E("RECOVERY_REQUIRED", "query is read-only and cannot continue while publication recovery is required", ExitConflict, nil)
+				recoveryErr := E("RECOVERY_REQUIRED", "query is read-only and cannot continue while promotion recovery is required", ExitConflict, nil)
 				recoveryErr.Details = map[string]any{"operations": pending}
 				return recoveryErr
 			}
@@ -215,7 +219,7 @@ func hydrateQueryCandidates(cfg *config.Instance, candidates []indexstore.Candid
 			RetrievalMode: candidate.RetrievalMode,
 			ContentHash:   loaded.doc.Metadata.ContentHash,
 			FileHash:      loaded.fileHash,
-			Sources:       loaded.doc.Metadata.Sources,
+			Lineage:       loaded.doc.Metadata.Lineage,
 			Metadata:      loaded.doc.Metadata,
 			Lifecycle:     assessments[candidate.KnowledgeID],
 		})
@@ -225,8 +229,7 @@ func hydrateQueryCandidates(cfg *config.Instance, candidates []indexstore.Candid
 
 func loadIndexedKnowledge(cfg *config.Instance, candidate indexstore.Candidate) (*loadedQueryDocument, error) {
 	cleanPath := filepath.ToSlash(filepath.Clean(filepath.FromSlash(candidate.Path)))
-	knowledgeRoot := filepath.ToSlash(filepath.Clean(cfg.Paths.Knowledge))
-	if cleanPath != candidate.Path || !strings.HasPrefix(cleanPath, knowledgeRoot+"/") {
+	if cleanPath != candidate.Path {
 		return nil, fmt.Errorf("%w: candidate path %q is outside knowledge", errQueryIndexStale, candidate.Path)
 	}
 	target := filepath.Join(cfg.Root, filepath.FromSlash(cleanPath))
@@ -240,8 +243,11 @@ func loadIndexedKnowledge(cfg *config.Instance, candidate indexstore.Candidate) 
 	if err != nil {
 		return nil, fmt.Errorf("%w: cannot read %s: %v", errQueryIndexStale, cleanPath, err)
 	}
-	if err := doc.Validate("knowledge", cfg.Publish.RequireSources); err != nil {
+	if err := doc.Validate("knowledge", true); err != nil {
 		return nil, fmt.Errorf("%w: %s is invalid: %v", errQueryIndexStale, cleanPath, err)
+	}
+	if cleanPath != document.KnowledgePath(cfg.Paths.Knowledge, doc.Metadata) {
+		return nil, fmt.Errorf("%w: non-canonical knowledge path %s", errQueryIndexStale, cleanPath)
 	}
 	if doc.Metadata.ID != candidate.KnowledgeID || doc.Metadata.ContentHash != candidate.IndexedContentHash {
 		return nil, fmt.Errorf("%w: identity or content hash changed for %s", errQueryIndexStale, cleanPath)
@@ -308,8 +314,12 @@ func newShowCommand(rt *Runtime) *cobra.Command {
 			if err != nil {
 				return E("KNOWLEDGE_READ_FAILED", "cannot read published knowledge", ExitIO, err)
 			}
-			if err := doc.Validate("knowledge", cfg.Publish.RequireSources); err != nil {
+			if err := doc.Validate("knowledge", true); err != nil {
 				return E("KNOWLEDGE_INVALID", "published knowledge failed file validation", ExitValidation, err)
+			}
+			rel, _ := filepath.Rel(cfg.Root, doc.Path)
+			if filepath.ToSlash(rel) != document.KnowledgePath(cfg.Paths.Knowledge, doc.Metadata) {
+				return E("KNOWLEDGE_INVALID", "published knowledge path is not canonical", ExitValidation, nil)
 			}
 			if governanceErr := governance.ValidateStored(cfg, doc, time.Now()); governanceErr != nil {
 				return E("KNOWLEDGE_INVALID", "published knowledge failed governance validation", ExitValidation, governanceErr)
@@ -318,72 +328,11 @@ func newShowCommand(rt *Runtime) *cobra.Command {
 			if assessmentErr != nil {
 				return E("KNOWLEDGE_INVALID", "published knowledge has invalid lifecycle metadata", ExitValidation, assessmentErr)
 			}
-			rel, _ := filepath.Rel(cfg.Root, doc.Path)
 			warnings := append([]string(nil), assessment.Warnings...)
 			return rt.Success("show", ref, map[string]any{
 				"path": filepath.ToSlash(rel), "metadata": doc.Metadata, "body": string(doc.Body),
 				"facts_from": "knowledge_markdown", "lifecycle": assessment,
 			}, governance.SortedWarnings(warnings), nil)
-		},
-	}
-}
-
-func newTraceCommand(rt *Runtime) *cobra.Command {
-	return &cobra.Command{
-		Use: "trace <knowledge-id>", Args: cobra.ExactArgs(1), Short: "Trace published knowledge to raw evidence",
-		RunE: func(_ *cobra.Command, args []string) error {
-			cfg, ref, err := resolveWiki(rt)
-			if err != nil {
-				return err
-			}
-			knowledge, err := document.FindByID(cfg.KnowledgeDir(), args[0])
-			if errors.Is(err, os.ErrNotExist) {
-				return E("KNOWLEDGE_NOT_FOUND", "published knowledge not found", ExitNotFound, err)
-			}
-			if err != nil {
-				return E("TRACE_FAILED", "cannot read published knowledge", ExitIO, err)
-			}
-			type rawEvidence struct {
-				ID           string `json:"id"`
-				Path         string `json:"path,omitempty"`
-				ExpectedHash string `json:"expected_hash"`
-				ActualHash   string `json:"actual_hash,omitempty"`
-				Valid        bool   `json:"valid"`
-				Missing      bool   `json:"missing"`
-			}
-			actualKnowledgeHash, actualErr := knowledge.ActualContentHash()
-			if actualErr != nil {
-				return E("TRACE_FAILED", "cannot hash published knowledge", ExitIO, actualErr)
-			}
-			knowledgeValid := actualKnowledgeHash == knowledge.Metadata.ContentHash
-			items := make([]rawEvidence, 0, len(knowledge.Metadata.Sources))
-			allValid := knowledgeValid
-			for _, source := range knowledge.Metadata.Sources {
-				item := rawEvidence{ID: source.ID, ExpectedHash: source.ContentHash}
-				rawDoc, rawErr := document.FindByID(cfg.RawDir(), source.ID)
-				if errors.Is(rawErr, os.ErrNotExist) {
-					item.Missing = true
-					allValid = false
-				} else if rawErr != nil {
-					return E("TRACE_FAILED", "cannot read raw source", ExitIO, rawErr)
-				} else {
-					rel, _ := filepath.Rel(cfg.Root, rawDoc.Path)
-					item.Path = filepath.ToSlash(rel)
-					actual, hashErr := rawDoc.ActualContentHash()
-					if hashErr != nil {
-						return E("TRACE_FAILED", "cannot hash raw source", ExitIO, hashErr)
-					}
-					item.ActualHash = actual
-					item.Valid = item.ActualHash == item.ExpectedHash && rawDoc.Metadata.ContentHash == actual
-					allValid = allValid && item.Valid
-				}
-				items = append(items, item)
-			}
-			return rt.Success("trace", ref, map[string]any{
-				"knowledge_id": knowledge.Metadata.ID, "knowledge_hash": knowledge.Metadata.ContentHash,
-				"knowledge_actual_hash": actualKnowledgeHash, "knowledge_valid": knowledgeValid,
-				"sources": items, "valid": allValid,
-			}, nil, nil)
 		},
 	}
 }

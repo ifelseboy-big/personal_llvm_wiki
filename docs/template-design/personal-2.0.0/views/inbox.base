@@ -1,0 +1,10 @@
+filters:
+  and:
+    - file.path.startsWith("inbox/")
+views:
+  - type: table
+    name: Inbox
+    order:
+      - file.name
+      - status
+      - captured_at

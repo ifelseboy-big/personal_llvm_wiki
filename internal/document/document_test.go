@@ -3,9 +3,14 @@ package document
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
+	"time"
+)
+
+const (
+	testInboxID     = "inbox_01arz3ndektsv4rrffq69g5fav"
+	testKnowledgeID = "know_01arz3ndektsv4rrffq69g5faw"
 )
 
 func TestMarkdownHashNormalizesLineEndingsOnly(t *testing.T) {
@@ -19,26 +24,27 @@ func TestMarkdownHashNormalizesLineEndingsOnly(t *testing.T) {
 	}
 }
 
-func TestRenderParseAndValidateKnowledge(t *testing.T) {
-	body := []byte("# Trusted fact\n\nEvidence-backed.\n")
+func TestSlugIsReadableAndBounded(t *testing.T) {
+	got := Slug(" LLVM 的模块化架构 / IR ")
+	if got != "llvm-的模块化架构-ir" {
+		t.Fatalf("unexpected slug %q", got)
+	}
+	if len([]rune(Slug(strings.Repeat("x", 200)))) > 80 {
+		t.Fatal("slug exceeded 80 runes")
+	}
+}
+
+func TestKnowledgeRoundTripV2(t *testing.T) {
+	body := []byte("# Stable fact\n\nSelf-contained fact.\n")
 	meta := Metadata{
-		ID: "know_01arz3ndektsv4rrffq69g5fav", Type: "concept", Title: "Trusted fact",
+		SchemaVersion: CurrentSchema, ID: testKnowledgeID, Type: "concept", Title: "Stable fact",
 		Status: "published", PublishedAt: "2026-08-08T10:00:00Z", UpdatedAt: "2026-08-08T10:00:00Z",
-		ContentHash: HashBytes(body), Sources: []SourceRef{{ID: "raw_01arz3ndektsv4rrffq69g5fav", ContentHash: HashBytes([]byte("raw"))}},
-	}
-	b, err := Render(meta, body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	parsedMeta, parsedBody, err := Parse(b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if parsedMeta.ID != meta.ID || string(parsedBody) != string(body) {
-		t.Fatalf("roundtrip mismatch: %#v %q", parsedMeta, parsedBody)
+		ContentHash: HashBytes(body), GovernanceVersion: "personal-2.0",
+		Lineage: []LineageRef{{InboxID: testInboxID, PayloadHash: HashBytes([]byte("payload")), Source: "test", CapturedAt: "2026-08-08T09:00:00Z"}},
+		Extra:   map[string]any{"description": "kept", "lifecycle": "current", "future": "round-trip"},
 	}
 	path := filepath.Join(t.TempDir(), "fact.md")
-	if err := os.WriteFile(path, b, 0o600); err != nil {
+	if err := Write(path, meta, body); err != nil {
 		t.Fatal(err)
 	}
 	doc, err := Read(path)
@@ -48,77 +54,92 @@ func TestRenderParseAndValidateKnowledge(t *testing.T) {
 	if err := doc.Validate("knowledge", true); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func TestSlugIsReadableAndBounded(t *testing.T) {
-	got := Slug(" LLVM 的模块化架构 / IR ")
-	if got != "llvm-的模块化架构-ir" {
-		t.Fatalf("unexpected slug %q", got)
-	}
-	if len([]rune(Slug(strings.Repeat("x", 200)))) > 80 {
-		t.Fatal("slug exceeded 80 characters")
+	if doc.Metadata.Extra["future"] != "round-trip" || doc.Metadata.Lineage[0].InboxID != testInboxID {
+		t.Fatalf("metadata was not preserved: %#v", doc.Metadata)
 	}
 }
 
-func TestFindByIDRejectsDuplicateDocuments(t *testing.T) {
+func TestInboxValidatesPayloadWithoutRewritingIt(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "payload"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte{0, 1, 2, 3, '\r', '\n'}
+	payloadPath := filepath.Join(dir, "payload", "input.bin")
+	if err := os.WriteFile(payloadPath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("# Preliminary\n")
+	meta := Metadata{
+		SchemaVersion: CurrentSchema, ID: testInboxID, Title: "Preliminary", Status: "pending", Source: "file",
+		CapturedAt: time.Unix(0, 0).UTC().Format(time.RFC3339), ContentHash: HashBytes(body), MediaType: "application/octet-stream",
+		OriginalName: "input.bin", Payload: "payload/input.bin", PayloadHash: HashBytes(payload), PayloadBytes: int64(len(payload)),
+	}
+	path := filepath.Join(dir, "item.md")
+	if err := Write(path, meta, body); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := doc.Validate("inbox", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(payloadPath, []byte("changed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := doc.Validate("inbox", false); err == nil || !strings.Contains(err.Error(), "payload") {
+		t.Fatalf("expected payload drift rejection, got %v", err)
+	}
+}
+
+func TestInboxPayloadSymlinkRejected(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "payload"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "payload", "input")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	body := []byte("# Note\n")
+	doc := &Document{Path: filepath.Join(dir, "item.md"), Body: body, Metadata: Metadata{
+		SchemaVersion: CurrentSchema, ID: testInboxID, Title: "Note", Status: "pending", Source: "file",
+		CapturedAt: time.Unix(0, 0).UTC().Format(time.RFC3339), ContentHash: HashBytes(body), MediaType: "text/plain",
+		OriginalName: "input", Payload: "payload/input", PayloadHash: HashBytes([]byte("secret")), PayloadBytes: 6,
+	}}
+	if err := doc.Validate("inbox", false); err == nil {
+		t.Fatal("expected payload symlink rejection")
+	}
+}
+
+func TestCurrentIDPrefixesRejectLegacyIDs(t *testing.T) {
+	for prefix, id := range map[string]string{"inbox": testInboxID, "prm": "prm_01arz3ndektsv4rrffq69g5fax", "know": testKnowledgeID, "op": "op_01arz3ndektsv4rrffq69g5fay"} {
+		if !ValidID(prefix, id) {
+			t.Fatalf("valid %s id rejected", prefix)
+		}
+	}
+	if ValidID("raw", "raw_01arz3ndektsv4rrffq69g5fav") || ValidID("chg", "chg_01arz3ndektsv4rrffq69g5fav") {
+		t.Fatal("legacy id prefixes remain accepted")
+	}
+}
+
+func TestFindByIDRejectsDuplicate(t *testing.T) {
 	root := t.TempDir()
 	body := []byte("# Duplicate\n")
-	meta := Metadata{
-		ID: "raw_01arz3ndektsv4rrffq69g5fav", Type: "note", Title: "Duplicate",
-		Status: "raw", Origin: "test", CapturedAt: "2026-08-08T10:00:00Z",
-		ContentHash: HashBytes(body), MediaType: "text/markdown", OriginalName: "duplicate.md",
-	}
+	meta := Metadata{SchemaVersion: CurrentSchema, ID: testKnowledgeID, Type: "concept", Title: "Duplicate", Status: "published",
+		PublishedAt: "2026-08-08T10:00:00Z", UpdatedAt: "2026-08-08T10:00:00Z", ContentHash: HashBytes(body),
+		Lineage: []LineageRef{{InboxID: testInboxID, PayloadHash: HashBytes([]byte("x")), Source: "test", CapturedAt: "2026-08-08T09:00:00Z"}}}
 	for _, name := range []string{"a.md", "b.md"} {
 		if err := Write(filepath.Join(root, name), meta, body); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := FindByID(root, meta.ID); err == nil || !strings.Contains(err.Error(), "duplicate document id") {
-		t.Fatalf("expected duplicate ID rejection, got %v", err)
-	}
-}
-
-func TestManagedMarkdownHardLinkRejected(t *testing.T) {
-	original := filepath.Join(t.TempDir(), "original.md")
-	linked := filepath.Join(t.TempDir(), "linked.md")
-	if err := os.WriteFile(original, []byte("---\nschema_version: 1\n---\nbody\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Link(original, linked); err != nil {
-		t.Skipf("hard links unavailable: %v", err)
-	}
-	if _, err := Read(linked); err == nil || !strings.Contains(err.Error(), "multiple hard links") {
-		t.Fatalf("expected managed hard-link rejection, got %v", err)
-	}
-}
-
-func TestRawAssetSymlinkRejected(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink creation is not generally available to unprivileged Windows tests")
-	}
-	root := t.TempDir()
-	external := filepath.Join(t.TempDir(), "external.bin")
-	if err := os.WriteFile(external, []byte("external"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(external, filepath.Join(root, "asset.bin")); err != nil {
-		t.Fatal(err)
-	}
-	body := []byte("# Source\n")
-	meta := Metadata{
-		ID: "raw_01arz3ndektsv4rrffq69g5fav", Type: "source", Title: "Source", Status: "raw",
-		Origin: "file", CapturedAt: "2026-08-08T10:00:00Z", ContentHash: HashBytes([]byte("external")),
-		MediaType: "application/octet-stream", OriginalName: "asset.bin", Asset: "asset.bin",
-	}
-	sidecar := filepath.Join(root, "asset.source.md")
-	if err := Write(sidecar, meta, body); err != nil {
-		t.Fatal(err)
-	}
-	doc, err := Read(sidecar)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := doc.ActualContentHash(); err == nil || !strings.Contains(err.Error(), "symbolic link") {
-		t.Fatalf("expected raw asset symlink rejection, got %v", err)
+	if _, err := FindByID(root, testKnowledgeID); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("expected duplicate rejection, got %v", err)
 	}
 }

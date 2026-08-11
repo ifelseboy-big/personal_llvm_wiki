@@ -1,93 +1,132 @@
 # llm-wiki
 
-`llm-wiki` 是一个本地优先、基于 Markdown、兼容 Obsidian 的可信个人知识库 CLI。它允许人和 AI CLI 通过同一套受控协议采集、整理、发布、检索和追溯知识，无需 MCP 或常驻服务。
+`llm-wiki` 是本地优先、AI 辅助整理、人工确认沉淀的个人知识库 CLI。它不调用模型；它负责文件安全、Schema、哈希、冻结审阅、事务恢复和 Knowledge 检索。
 
-## 事实边界
+```text
+用户输入 -> Add Skill -> inbox/ -> Vault 内整理 -> Promotion 审阅
+         -> promote apply -> knowledge/ -> 可重建 SQLite 索引
+```
 
-- `raw/`：原始证据，内容变化可检测。
-- `knowledge/`：经 `publish apply` 明确确认的可信知识，唯一最终事实源。
-- `.llm-wiki/index.sqlite`：可删除、可重建的全文检索索引，不是知识或元数据来源。
+`knowledge/` 中由 `promote apply` 写入的 Markdown 是唯一可信事实源。`inbox/` 是可清理的临时工作区，不进入查询。Obsidian 是可选展示工具，不是运行依赖。
 
-## 构建
+## 源码安装
 
-目标平台为 macOS Apple Silicon。构建需要 Go 1.25 或更高版本，以及 Xcode Command Line Tools 提供的 `clang/clang++`：
+- Go 1.25+
+- 当前平台可用的 C/C++ 编译器
+- CGO 与内嵌 SQLite FTS5/simple tokenizer
 
 ```bash
+git clone https://github.com/ifelseboy-big/personal_llvm_wiki.git
+cd personal_llvm_wiki
 make build
-make test
-make verify
+make install
+llm-wiki --version
 ```
 
-构建过程使用 CGO，将固定版本的 SQLite 和 `simple` tokenizer 静态集成到二进制；用户运行时不需要 Node、Python、Homebrew 或单独安装 SQLite/tokenizer。完整开发验收 `make verify` 还需要 `jq` 和 GoReleaser v2。
+`make build` 在当前机器生成 `./llm-wiki`；`make install` 将已构建文件复制到 `go env GOBIN`，未设置时复制到 `$(go env GOPATH)/bin`。自定义安装目录可执行 `make install INSTALL_DIR=/path/to/bin`。该目录需在 `PATH` 中。
 
-## 快速使用
+构建工具链可覆盖：`make build CC=gcc CXX=g++`。项目不提供预构建归档或交叉编译发布；运行时不需要系统 SQLite、Homebrew、Node、Python、MCP、后台服务或网络服务。
+
+开发验收使用：
 
 ```bash
-llm-wiki init ~/Knowledge/personal --name personal --register --default
-llm-wiki raw add ./article.md --wiki personal
-llm-wiki publish propose --source <raw-id> --file ./draft.md --wiki personal
-llm-wiki publish diff <change-id> --wiki personal
-llm-wiki publish apply <change-id> --wiki personal
-llm-wiki query "文章的核心结论" --wiki personal --json --no-interactive
-llm-wiki trace <knowledge-id> --wiki personal --json --no-interactive
+make test
+make vet
 ```
 
-外部 AI 通过按 query、add、publish、maintain 分离的 Skill 调用 CLI；每个 Skill 先用 `locate --json --no-interactive` 定位知识库，再读取该 Vault 的 `AGENTS.md` 管理规则。CLI 调用只依赖版本化 JSON 字段与错误码。
-
-raw 正文不进入全文检索。人工确认 `publish diff` 并执行 `publish apply` 后，生成的 knowledge 才成为唯一可信内容并进入 SQLite FTS。`query` 只用 SQLite 选择候选，返回前重新读取并验证原始 knowledge Markdown；需要完整内容时使用 `show <knowledge-id>`。索引快照不一致时返回 `INDEX_STALE`，不会把旧缓存冒充事实。
-
-## 命令面
+## 命令
 
 ```text
 init, locate, status, doctor
-raw add|list|show
-publish propose|diff|apply|reject
-query, show, trace
+inbox add|list|show|clean
+promote plan|diff|apply|reject
+query, show
 index status|update|rebuild
 template list|show|create|upgrade
 skill status|install|update|uninstall
 ```
 
-所有命令支持 `--wiki` 和 `--json`；写命令支持 `--dry-run`。`publish apply` 是唯一可信知识提交点，成功后自动增量刷新索引；索引刷新失败只产生明确 warning，不回滚已经提交的事实。
+所有命令支持 `--wiki`、`--json`、`--no-interactive` 和 `--dry-run`。JSON 协议版本为 `2.0`；stdout 只输出一个 JSON 对象，diagnostic 写 stderr。
 
-## 初始化模板
-
-内置 `personal` 模板会生成：
-
-- `.gitignore`：自动忽略 SQLite 索引和本地运行目录；保留 `.llm-wiki/changes/`、模板状态及模板基线供 Git 追踪。已有 `.gitignore` 时只追加缺失规则，不覆盖用户内容。
-- `AGENTS.md`、`LLM-WIKI.md`：AI 治理入口和人的使用首页。
-- `rules/`：采集、类型、元数据、生命周期、引用、发布、索引和质量规则。
-- `templates/raw/`：人工记录和文件来源模板。
-- `templates/knowledge/`：claim、concept、guide、tutorial、reference、decision、project 模板。
-- `views/`：可选的 Obsidian Bases 当前知识、复核和 raw 视图。
-
-personal 1.4.0 模板明确 raw 不可检索、knowledge 可信检索、raw 待整理收件箱、“已采集/已提案/已发布”状态和发布后自动刷新流程。frontmatter 兼容 Obsidian Properties，并保留 lifecycle、有效期、复核日期、稳定关系和 raw-ID 命名脚注。`template create` 可展开 Obsidian 核心变量并生成可编辑草稿；用户 Properties 在采集和发布时保留并可检索，系统字段仍只能由 CLI 管理。当前只接受 `personal-1.3` 治理标记，不读取旧治理版本。
-
-`template upgrade --plan` 使用安装时基线、用户当前文件和新内置版本进行三方判断；用户修改的文件不会被静默覆盖。
-
-从 personal 1.3.0 升级时运行 `template upgrade --apply`；未修改的旧 `rules/derived.md` 会被删除并替换为 `rules/index.md`。旧 Vault 中已有的 `llm-wiki/` 目录可直接删除，旧 `paths.derived` 配置会被兼容读取但不再参与任何命令。
-
-## Codex Skill
+## 初始化与采集
 
 ```bash
-llm-wiki skill status codex
-llm-wiki skill install codex --dry-run
-llm-wiki skill install codex --yes
+llm-wiki init ~/wiki --name personal --no-interactive
+llm-wiki inbox add ./article.pdf --note-file ./article-note.md --wiki ~/wiki
+printf '%s' '原始输入' | llm-wiki inbox add - --name note.txt --note-file ./note.md --wiki ~/wiki
+llm-wiki inbox list --status pending --wiki ~/wiki --json --no-interactive
 ```
 
-默认安装根目录为 `$HOME/.agents/skills`，其中生成 `llm-wiki-query`、`llm-wiki-add`、`llm-wiki-publish` 和 `llm-wiki-maintain` 四个独立 Skill。所有权 manifest 位于安装根目录；升级和卸载只处理哈希匹配的四个自有 Skill 文件。
+每条 Inbox 同时保存：
 
-## 设计与协议
+- `item.md`：系统元数据与初步整理；
+- `payload/<original>`：完全不改写的原始字节。
 
-- [技术设计](docs/TECHNICAL_DESIGN.md)
-- `schemas/`：实例、frontmatter、发布提案和 CLI 响应 JSON Schema。
+目录批量采集使用 `--batch-manifest`，manifest 为每个 input 指定独立 `note_file`；任何条目预检失败时零写入。直接供人使用时可省略 note，Add Skill 不得省略。
 
-## 发布
+## Promotion
 
-唯一发布目标是 macOS Apple Silicon（arm64）。`.goreleaser.yaml` 和 GitHub Actions 生成单文件归档、SHA-256 校验和及 SBOM；Homebrew 模板在确定真实仓库和发布地址后填充，避免写入虚构地址。源码中的可移植实现不构成其他平台支持承诺。
+Promotion manifest 示例：
 
-发布和普通 CI 均使用原生 `macos-15` ARM64 runner。普通 CI 通过 `make release-snapshot` 提前验证 GoReleaser 归档、校验和、SBOM、二进制架构和可执行性，tag 工作流只负责正式生成 draft release。
+```json
+{
+  "schema_version": 1,
+  "inboxes": [
+    {
+      "id": "inbox_01arz3ndektsv4rrffq69g5fav",
+      "payload_hash": "sha256:...",
+      "item_hash": "sha256:...",
+      "consume": true
+    }
+  ],
+  "targets": [
+    {
+      "operation": "create",
+      "draft_file": "drafts/concept.md",
+      "inbox_ids": ["inbox_01arz3ndektsv4rrffq69g5fav"]
+    }
+  ]
+}
+```
 
-## 检索评测
+更新目标还必须提供 `knowledge_id`、`base_content_hash` 和 `base_file_hash`。
 
-`make eval` 对固定多文档语料分别统计自然语言查询和关键词改写查询的 Recall@5、Precision@5、MRR 与 nDCG@5。`make benchmark-index` 显式运行 1k/10k 文档的完整索引一致性检查与检索性能基准；性能基准不放入普通 CI，避免共享 runner 波动形成错误门禁。
+```bash
+llm-wiki promote plan --manifest ./promotion.json --wiki ~/wiki
+llm-wiki promote diff <promotion-id> --wiki ~/wiki
+llm-wiki promote apply <promotion-id> --approve <plan-hash> --wiki ~/wiki
+```
+
+Plan 会冻结所有最终文件并生成完整 diff。Apply 只接受完全相同的 plan hash，且只读取冻结副本；Inbox、Knowledge、plan 或冻结文件漂移会使 Promotion 进入 `stale`，不会写入事实。
+
+一次 Promotion 可多输入、多输出，可同时创建和更新多篇 Knowledge。成功 Apply 将声明 consume 的 Inbox 标记为 processed，并自动增量更新索引；清理仍是独立动作。
+
+## 查询与清理
+
+```bash
+llm-wiki query "问题" --wiki ~/wiki --json --no-interactive
+llm-wiki show <knowledge-id> --wiki ~/wiki --json --no-interactive
+llm-wiki inbox clean <inbox-id> --dry-run --wiki ~/wiki --json --no-interactive
+llm-wiki inbox clean <inbox-id> --yes --wiki ~/wiki --no-interactive
+```
+
+Query 只从 SQLite 选择 Knowledge 候选，并在返回前回读 Markdown 校验文件、正文和 chunk。它不会搜索 Inbox，也不会自动修复索引。processed Inbox 清理后，Knowledge、query、show、doctor 和索引重建仍应正常。
+
+## Skill
+
+```bash
+llm-wiki skill install --client codex --yes
+llm-wiki skill update --client codex --yes
+```
+
+只安装 `llm-wiki-add` 与 `llm-wiki-query`。二次整理和审批由 Vault 内 `AGENTS.md` 约束，不安装额外 Skill。更新旧版本时，只删除旧 manifest 拥有且 hash 匹配的 Publish/Maintain 文件；用户修改保留并报告。
+
+## 安全与版本
+
+- instance/frontmatter 只接受 v2；Promotion 只接受 v1；不读取或迁移旧契约。
+- 所有批量写入先全量预检；受管路径拒绝逃逸、symlink、hardlink、非普通文件和超限输入。
+- `--dry-run` 不创建目录、锁、Promotion、事务、索引、注册或 Skill 文件。
+- 私有目录默认 `0700`，受管文件默认 `0600`。
+- 中断事务按 `prepared -> files_committed -> complete` 恢复；SQLite 不覆盖 Markdown。
+
+架构与恢复细节见 [docs/TECHNICAL_DESIGN.md](docs/TECHNICAL_DESIGN.md)。

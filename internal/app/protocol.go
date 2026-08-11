@@ -6,12 +6,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 )
 
-const ProtocolVersion = "1.0"
+const ProtocolVersion = "2.0"
 
 const (
 	ExitOK          = 0
@@ -99,6 +100,10 @@ func (r *Runtime) Success(command string, wiki *WikiRef, data any, warnings, fil
 	if files == nil {
 		files = []string{}
 	}
+	warnings = append([]string(nil), warnings...)
+	files = append([]string(nil), files...)
+	sort.Strings(warnings)
+	sort.Strings(files)
 	if r.JSON {
 		return json.NewEncoder(r.Stdout).Encode(Response{
 			SchemaVersion: ProtocolVersion,

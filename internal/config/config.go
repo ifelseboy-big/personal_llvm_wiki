@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	CurrentSchema = 1
+	CurrentSchema = 2
 	FileName      = "llm-wiki.toml"
 )
 
@@ -30,15 +30,11 @@ type TemplateConfig struct {
 }
 
 type PathsConfig struct {
-	Raw       string `toml:"raw" json:"raw"`
+	Inbox     string `toml:"inbox" json:"inbox"`
 	Knowledge string `toml:"knowledge" json:"knowledge"`
 	Templates string `toml:"templates" json:"templates"`
 	Rules     string `toml:"rules" json:"rules"`
 	Runtime   string `toml:"runtime" json:"runtime"`
-}
-
-type PublishConfig struct {
-	RequireSources bool `toml:"require_sources" json:"require_sources"`
 }
 
 type IndexConfig struct {
@@ -60,11 +56,10 @@ type Instance struct {
 	CreatedAt     string         `toml:"created_at" json:"created_at"`
 	Template      TemplateConfig `toml:"template" json:"template"`
 	Paths         PathsConfig    `toml:"paths" json:"paths"`
-	Publish       PublishConfig  `toml:"publish" json:"publish"`
 	Index         IndexConfig    `toml:"index" json:"index"`
 	Security      SecurityConfig `toml:"security" json:"security"`
 	Root          string         `toml:"-" json:"root"`
-	raw           map[string]any
+	preserved     map[string]any
 }
 
 func DefaultInstance(name, id string, now time.Time) *Instance {
@@ -73,12 +68,11 @@ func DefaultInstance(name, id string, now time.Time) *Instance {
 		InstanceID:    id,
 		Name:          name,
 		CreatedAt:     now.Format(time.RFC3339),
-		Template:      TemplateConfig{Name: "personal", Version: "1.4.0"},
+		Template:      TemplateConfig{Name: "personal", Version: "2.0.0"},
 		Paths: PathsConfig{
-			Raw: "raw", Knowledge: "knowledge",
+			Inbox: "inbox", Knowledge: "knowledge",
 			Templates: "templates", Rules: "rules", Runtime: ".llm-wiki",
 		},
-		Publish:  PublishConfig{RequireSources: true},
 		Index:    IndexConfig{ChunkMaxChars: 1800, ChunkOverlapChars: 180, ChineseTokenizer: "simple"},
 		Security: SecurityConfig{MaxInputBytes: 50 * 1024 * 1024, BlockSensitiveFiles: true},
 	}
@@ -97,7 +91,7 @@ func Load(root string) (*Instance, error) {
 	if err := toml.Unmarshal(b, &cfg); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", FileName, err)
 	}
-	if err := toml.Unmarshal(b, &cfg.raw); err != nil {
+	if err := toml.Unmarshal(b, &cfg.preserved); err != nil {
 		return nil, fmt.Errorf("preserve unknown fields in %s: %w", FileName, err)
 	}
 	cfg.Root = filepath.Clean(abs)
@@ -115,18 +109,18 @@ func Save(cfg *Instance) error {
 	if err != nil {
 		return err
 	}
-	if cfg.raw != nil {
+	if cfg.preserved != nil {
 		var known map[string]any
 		if err := toml.Unmarshal(b, &known); err != nil {
 			return err
 		}
-		merged := cloneMap(cfg.raw)
+		merged := cloneMap(cfg.preserved)
 		mergeMap(merged, known)
 		b, err = toml.Marshal(merged)
 		if err != nil {
 			return err
 		}
-		cfg.raw = merged
+		cfg.preserved = merged
 	}
 	return fsutil.AtomicWrite(filepath.Join(cfg.Root, FileName), b, 0o600)
 }
@@ -168,7 +162,7 @@ func (c *Instance) Validate() error {
 	if c.Template.Name == "" || !validTemplateVersion.MatchString(c.Template.Version) {
 		return errors.New("template name or semantic version is invalid")
 	}
-	paths := []string{c.Paths.Raw, c.Paths.Knowledge, c.Paths.Templates, c.Paths.Rules, c.Paths.Runtime}
+	paths := []string{c.Paths.Inbox, c.Paths.Knowledge, c.Paths.Templates, c.Paths.Rules, c.Paths.Runtime}
 	cleanPaths := make([]string, 0, len(paths))
 	seen := map[string]bool{}
 	for _, p := range paths {
@@ -198,9 +192,6 @@ func (c *Instance) Validate() error {
 	}
 	if c.Index.ChineseTokenizer != "simple" {
 		return errors.New("unsupported index tokenizer")
-	}
-	if !c.Publish.RequireSources {
-		return errors.New("published knowledge must require raw sources")
 	}
 	if c.Security.FollowSymlinks {
 		return errors.New("following symbolic links is not supported")
@@ -235,7 +226,7 @@ func pathsOverlap(a, b string) bool {
 }
 
 func (c *Instance) Path(relative string) string { return filepath.Join(c.Root, relative) }
-func (c *Instance) RawDir() string              { return c.Path(c.Paths.Raw) }
+func (c *Instance) InboxDir() string            { return c.Path(c.Paths.Inbox) }
 func (c *Instance) KnowledgeDir() string        { return c.Path(c.Paths.Knowledge) }
 func (c *Instance) TemplatesDir() string        { return c.Path(c.Paths.Templates) }
 func (c *Instance) RulesDir() string            { return c.Path(c.Paths.Rules) }

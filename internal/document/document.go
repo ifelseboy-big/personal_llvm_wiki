@@ -22,18 +22,18 @@ import (
 	"llm-wiki/internal/fsutil"
 )
 
-const CurrentSchema = 1
+const CurrentSchema = 2
 
 const MaxFrontmatterBytes = 256 * 1024
 
 const MaxMarkdownBytes = 64 * 1024 * 1024
 
 var validIDPatterns = map[string]*regexp.Regexp{
-	"wiki": regexp.MustCompile(`^wiki_[0-9a-hjkmnp-tv-z]{26}$`),
-	"raw":  regexp.MustCompile(`^raw_[0-9a-hjkmnp-tv-z]{26}$`),
-	"know": regexp.MustCompile(`^know_[0-9a-hjkmnp-tv-z]{26}$`),
-	"chg":  regexp.MustCompile(`^chg_[0-9a-hjkmnp-tv-z]{26}$`),
-	"op":   regexp.MustCompile(`^op_[0-9a-hjkmnp-tv-z]{26}$`),
+	"wiki":  regexp.MustCompile(`^wiki_[0-9a-hjkmnp-tv-z]{26}$`),
+	"inbox": regexp.MustCompile(`^inbox_[0-9a-hjkmnp-tv-z]{26}$`),
+	"know":  regexp.MustCompile(`^know_[0-9a-hjkmnp-tv-z]{26}$`),
+	"prm":   regexp.MustCompile(`^prm_[0-9a-hjkmnp-tv-z]{26}$`),
+	"op":    regexp.MustCompile(`^op_[0-9a-hjkmnp-tv-z]{26}$`),
 }
 
 func ValidID(prefix, id string) bool {
@@ -41,9 +41,11 @@ func ValidID(prefix, id string) bool {
 	return pattern != nil && pattern.MatchString(id)
 }
 
-type SourceRef struct {
-	ID          string `yaml:"id" json:"id"`
-	ContentHash string `yaml:"content_hash" json:"content_hash"`
+type LineageRef struct {
+	InboxID     string `yaml:"inbox_id" json:"inbox_id"`
+	PayloadHash string `yaml:"payload_hash" json:"payload_hash"`
+	Source      string `yaml:"source" json:"source"`
+	CapturedAt  string `yaml:"captured_at" json:"captured_at"`
 }
 
 type Metadata struct {
@@ -52,15 +54,19 @@ type Metadata struct {
 	Type              string         `yaml:"type,omitempty" json:"type,omitempty"`
 	Title             string         `yaml:"title,omitempty" json:"title,omitempty"`
 	Status            string         `yaml:"status,omitempty" json:"status,omitempty"`
-	Origin            string         `yaml:"origin,omitempty" json:"origin,omitempty"`
+	Source            string         `yaml:"source,omitempty" json:"source,omitempty"`
 	CapturedAt        string         `yaml:"captured_at,omitempty" json:"captured_at,omitempty"`
 	PublishedAt       string         `yaml:"published_at,omitempty" json:"published_at,omitempty"`
 	UpdatedAt         string         `yaml:"updated_at,omitempty" json:"updated_at,omitempty"`
 	ContentHash       string         `yaml:"content_hash,omitempty" json:"content_hash,omitempty"`
 	MediaType         string         `yaml:"media_type,omitempty" json:"media_type,omitempty"`
 	OriginalName      string         `yaml:"original_name,omitempty" json:"original_name,omitempty"`
-	Asset             string         `yaml:"asset,omitempty" json:"asset,omitempty"`
-	Sources           []SourceRef    `yaml:"sources,omitempty" json:"sources,omitempty"`
+	Payload           string         `yaml:"payload,omitempty" json:"payload,omitempty"`
+	PayloadHash       string         `yaml:"payload_hash,omitempty" json:"payload_hash,omitempty"`
+	PayloadBytes      int64          `yaml:"payload_bytes,omitempty" json:"payload_bytes,omitempty"`
+	ProcessedAt       string         `yaml:"processed_at,omitempty" json:"processed_at,omitempty"`
+	KnowledgeIDs      []string       `yaml:"knowledge_ids,omitempty" json:"knowledge_ids,omitempty"`
+	Lineage           []LineageRef   `yaml:"lineage,omitempty" json:"lineage,omitempty"`
 	Tags              []string       `yaml:"tags,omitempty" json:"tags,omitempty"`
 	Aliases           []string       `yaml:"aliases,omitempty" json:"aliases,omitempty"`
 	GovernanceVersion string         `yaml:"governance_version,omitempty" json:"governance_version,omitempty"`
@@ -84,6 +90,19 @@ func NewID(prefix string, now time.Time) (string, error) {
 func HashBytes(data []byte) string {
 	sum := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func HashFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func NormalizeMarkdownBody(body []byte) []byte {
@@ -171,28 +190,36 @@ func AtomicWrite(path string, data []byte, mode os.FileMode) error {
 }
 
 func (d *Document) ActualContentHash() (string, error) {
-	if d.Metadata.Asset == "" {
-		return HashBytes(NormalizeMarkdownBody(d.Body)), nil
+	return HashBytes(NormalizeMarkdownBody(d.Body)), nil
+}
+
+func (d *Document) ActualPayloadHash() (string, error) {
+	if d.Metadata.Payload == "" {
+		return "", errors.New("inbox payload path is required")
 	}
-	assetPath := filepath.Join(filepath.Dir(d.Path), filepath.Clean(d.Metadata.Asset))
-	rel, err := filepath.Rel(filepath.Dir(d.Path), assetPath)
-	if err != nil || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
-		return "", errors.New("asset path escapes sidecar directory")
+	payloadPath := filepath.Join(filepath.Dir(d.Path), filepath.Clean(d.Metadata.Payload))
+	payloadRoot := filepath.Join(filepath.Dir(d.Path), "payload")
+	if err := fsutil.EnsureNoSymlinkPath(payloadRoot, payloadPath); err != nil {
+		return "", errors.New("payload path must stay inside the inbox payload directory")
 	}
-	if err := fsutil.EnsureNoSymlinkPath(filepath.Dir(d.Path), assetPath); err != nil {
-		return "", err
+	rel, err := filepath.Rel(payloadRoot, payloadPath)
+	if err != nil || rel == "." || filepath.Dir(rel) != "." {
+		return "", errors.New("payload path must name one file directly inside the inbox payload directory")
 	}
-	info, err := os.Lstat(assetPath)
+	info, err := os.Lstat(payloadPath)
 	if err != nil {
 		return "", err
 	}
 	if !info.Mode().IsRegular() {
-		return "", errors.New("raw asset is not a regular file")
+		return "", errors.New("inbox payload is not a regular file")
 	}
-	if err := fsutil.EnsureSingleLink(assetPath); err != nil {
+	if info.Size() != d.Metadata.PayloadBytes {
+		return "", fmt.Errorf("payload byte count mismatch: recorded %d actual %d", d.Metadata.PayloadBytes, info.Size())
+	}
+	if err := fsutil.EnsureSingleLink(payloadPath); err != nil {
 		return "", err
 	}
-	f, err := os.Open(assetPath)
+	f, err := os.Open(payloadPath)
 	if err != nil {
 		return "", err
 	}
@@ -204,14 +231,14 @@ func (d *Document) ActualContentHash() (string, error) {
 	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func (d *Document) Validate(layer string, requireSources bool) error {
+func (d *Document) Validate(layer string, strict bool) error {
 	if d.Metadata.SchemaVersion != CurrentSchema {
 		return fmt.Errorf("unsupported frontmatter schema_version %d", d.Metadata.SchemaVersion)
 	}
 	if d.Metadata.ID == "" || !ValidHash(d.Metadata.ContentHash) {
 		return errors.New("id and content_hash are required")
 	}
-	prefix := map[string]string{"raw": "raw", "knowledge": "know"}[layer]
+	prefix := map[string]string{"inbox": "inbox", "knowledge": "know"}[layer]
 	if prefix == "" || !ValidID(prefix, d.Metadata.ID) {
 		return fmt.Errorf("id %q does not match layer %s", d.Metadata.ID, layer)
 	}
@@ -223,13 +250,42 @@ func (d *Document) Validate(layer string, requireSources bool) error {
 		return fmt.Errorf("content hash mismatch: recorded %s actual %s", d.Metadata.ContentHash, actual)
 	}
 	switch layer {
-	case "raw":
-		if d.Metadata.Status != "raw" || !documentTypePattern.MatchString(d.Metadata.Type) || strings.TrimSpace(d.Metadata.Title) == "" ||
-			strings.TrimSpace(d.Metadata.Origin) == "" || strings.TrimSpace(d.Metadata.MediaType) == "" || strings.TrimSpace(d.Metadata.OriginalName) == "" {
-			return errors.New("raw status, type, title, origin, media_type, and original_name are required")
+	case "inbox":
+		if (d.Metadata.Status != "pending" && d.Metadata.Status != "processed") || strings.TrimSpace(d.Metadata.Title) == "" ||
+			strings.TrimSpace(d.Metadata.Source) == "" || strings.TrimSpace(d.Metadata.MediaType) == "" ||
+			strings.TrimSpace(d.Metadata.OriginalName) == "" || !ValidHash(d.Metadata.PayloadHash) || d.Metadata.PayloadBytes < 0 {
+			return errors.New("inbox status, title, source, media_type, original_name, payload hash, and byte count are required")
 		}
 		if _, err := time.Parse(time.RFC3339, d.Metadata.CapturedAt); err != nil {
-			return errors.New("raw captured_at must be RFC3339")
+			return errors.New("inbox captured_at must be RFC3339")
+		}
+		if d.Metadata.Status == "pending" || strict {
+			payloadHash, err := d.ActualPayloadHash()
+			if err != nil {
+				return err
+			}
+			if payloadHash != d.Metadata.PayloadHash {
+				return fmt.Errorf("payload hash mismatch: recorded %s actual %s", d.Metadata.PayloadHash, payloadHash)
+			}
+		}
+		if d.Metadata.Status == "pending" {
+			if d.Metadata.ProcessedAt != "" || len(d.Metadata.KnowledgeIDs) != 0 {
+				return errors.New("pending inbox cannot have processed_at or knowledge_ids")
+			}
+		} else {
+			if _, err := time.Parse(time.RFC3339, d.Metadata.ProcessedAt); err != nil {
+				return errors.New("processed inbox requires RFC3339 processed_at")
+			}
+			if len(d.Metadata.KnowledgeIDs) == 0 {
+				return errors.New("processed inbox requires at least one knowledge id")
+			}
+		}
+		seenKnowledge := map[string]bool{}
+		for _, id := range d.Metadata.KnowledgeIDs {
+			if !ValidID("know", id) || seenKnowledge[id] {
+				return errors.New("inbox knowledge_ids must contain unique knowledge ids")
+			}
+			seenKnowledge[id] = true
 		}
 	case "knowledge":
 		if d.Metadata.Status != "published" || !documentTypePattern.MatchString(d.Metadata.Type) || strings.TrimSpace(d.Metadata.Title) == "" {
@@ -241,15 +297,18 @@ func (d *Document) Validate(layer string, requireSources bool) error {
 		if _, err := time.Parse(time.RFC3339, d.Metadata.UpdatedAt); err != nil {
 			return errors.New("knowledge updated_at must be RFC3339")
 		}
-		if requireSources && len(d.Metadata.Sources) == 0 {
-			return errors.New("published knowledge requires at least one source")
+		if strict && len(d.Metadata.Lineage) == 0 {
+			return errors.New("published knowledge requires lineage")
 		}
-		seenSources := map[string]bool{}
-		for _, source := range d.Metadata.Sources {
-			if !ValidID("raw", source.ID) || !ValidHash(source.ContentHash) || seenSources[source.ID] {
-				return errors.New("knowledge source requires raw id and content hash")
+		seenLineage := map[string]bool{}
+		for _, item := range d.Metadata.Lineage {
+			if !ValidID("inbox", item.InboxID) || !ValidHash(item.PayloadHash) || strings.TrimSpace(item.Source) == "" || seenLineage[item.InboxID] {
+				return errors.New("knowledge lineage requires unique inbox id, payload hash, source, and captured_at")
 			}
-			seenSources[source.ID] = true
+			if _, err := time.Parse(time.RFC3339, item.CapturedAt); err != nil {
+				return errors.New("knowledge lineage captured_at must be RFC3339")
+			}
+			seenLineage[item.InboxID] = true
 		}
 	}
 	return nil
@@ -336,6 +395,10 @@ func Slug(s string) string {
 		out = string([]rune(out)[:80])
 	}
 	return strings.Trim(out, "-")
+}
+
+func KnowledgePath(knowledgeRoot string, meta Metadata) string {
+	return filepath.ToSlash(filepath.Join(knowledgeRoot, meta.Type, Slug(meta.Title)+"--"+meta.ID+".md"))
 }
 
 func SafeBaseName(name string) string {

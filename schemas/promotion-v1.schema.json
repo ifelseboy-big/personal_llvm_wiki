@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://llm-wiki.dev/schemas/promotion-v1.schema.json",
+  "title": "Frozen promotion plan v1",
+  "type": "object",
+  "required": ["schema_version", "id", "created_at", "manifest_hash", "diff_hash", "inboxes", "targets"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "id": { "type": "string", "pattern": "^prm_[0-9a-hjkmnp-tv-z]{26}$" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "manifest_hash": { "$ref": "#/$defs/hash" },
+    "diff_hash": { "$ref": "#/$defs/hash" },
+    "inboxes": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/inbox" } },
+    "targets": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/target" } }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "inboxId": { "type": "string", "pattern": "^inbox_[0-9a-hjkmnp-tv-z]{26}$" },
+    "knowledgeId": { "type": "string", "pattern": "^know_[0-9a-hjkmnp-tv-z]{26}$" },
+    "inbox": {
+      "type": "object",
+      "required": ["id", "payload_hash", "item_hash", "consume"],
+      "properties": {
+        "id": { "$ref": "#/$defs/inboxId" },
+        "payload_hash": { "$ref": "#/$defs/hash" },
+        "item_hash": { "$ref": "#/$defs/hash" },
+        "consume": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "target": {
+      "type": "object",
+      "required": ["operation", "knowledge_id", "target_path", "frozen_file", "inbox_ids", "new_content_hash", "file_hash"],
+      "properties": {
+        "operation": { "enum": ["create", "update"] },
+        "knowledge_id": { "$ref": "#/$defs/knowledgeId" },
+        "target_path": { "type": "string", "minLength": 1 },
+        "frozen_file": { "type": "string", "pattern": "^files/know_[0-9a-hjkmnp-tv-z]{26}\\.md$" },
+        "inbox_ids": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/inboxId" }, "uniqueItems": true },
+        "base_content_hash": { "$ref": "#/$defs/hash" },
+        "base_file_hash": { "$ref": "#/$defs/hash" },
+        "new_content_hash": { "$ref": "#/$defs/hash" },
+        "file_hash": { "$ref": "#/$defs/hash" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
