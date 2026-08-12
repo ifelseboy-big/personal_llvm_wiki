@@ -19,8 +19,6 @@ func TestCompleteInboxPromotionKnowledgeCleanWorkflow(t *testing.T) {
 	}
 	added := runCLI(t, "Stable IR decouples compiler components.", "inbox", "add", "-", "--name", "source.txt", "--source", "user", "--note-file", note, "--wiki", root, "--json", "--no-interactive")
 	inboxID := nestedString(t, added.Data, "items", 0, "id")
-	payloadHash := nestedString(t, added.Data, "items", 0, "payload_hash")
-	itemHash := nestedString(t, added.Data, "items", 0, "item_hash")
 	if status := nestedString(t, added.Data, "items", 0, "status"); status != "pending" {
 		t.Fatalf("add did not create pending inbox: %#v", added.Data)
 	}
@@ -28,7 +26,14 @@ func TestCompleteInboxPromotionKnowledgeCleanWorkflow(t *testing.T) {
 	if nestedFloat(t, before.Data, "count") != 0 {
 		t.Fatalf("query returned Inbox content: %#v", before.Data)
 	}
-	runCLI(t, "", "inbox", "show", inboxID, "--wiki", root, "--json", "--no-interactive")
+	shownInbox := runCLI(t, "", "inbox", "show", inboxID, "--wiki", root, "--json", "--no-interactive")
+	payloadHash := nestedString(t, shownInbox.Data, "payload_hash")
+	itemHash := nestedString(t, shownInbox.Data, "item_hash")
+	payloadPath := filepath.Join(root, filepath.FromSlash(nestedString(t, shownInbox.Data, "payload_path")))
+	payload, err := os.ReadFile(payloadPath)
+	if err != nil || string(payload) != "Stable IR decouples compiler components." {
+		t.Fatalf("inbox show did not expose the verified original payload: %q %v", payload, err)
+	}
 
 	knowledgeID := "know_01arz3ndektsv4rrffq69g5faw"
 	draft := filepath.Join(work, "draft.md")
@@ -49,6 +54,9 @@ func TestCompleteInboxPromotionKnowledgeCleanWorkflow(t *testing.T) {
 	planned := runCLI(t, "", "promote", "plan", "--manifest", manifest, "--wiki", root, "--json", "--no-interactive")
 	promotionID := nestedString(t, planned.Data, "promotion_id")
 	planHash := nestedString(t, planned.Data, "plan_hash")
+	if nestedString(t, planned.Data, "content_pack", "version") != "3.0.1" || nestedString(t, planned.Data, "content_pack", "policy_hash") == "" {
+		t.Fatalf("plan omitted its frozen content-pack identity: %#v", planned.Data)
+	}
 	diff := runCLI(t, "", "promote", "diff", promotionID, "--wiki", root, "--json", "--no-interactive")
 	if nestedString(t, diff.Data, "plan_hash") != planHash || !bytes.Contains([]byte(nestedString(t, diff.Data, "diff")), []byte("Stable IR")) {
 		t.Fatalf("diff is not bound to plan: %#v", diff.Data)
@@ -56,6 +64,9 @@ func TestCompleteInboxPromotionKnowledgeCleanWorkflow(t *testing.T) {
 	apply := runCLI(t, "", "promote", "apply", promotionID, "--approve", planHash, "--wiki", root, "--json", "--no-interactive")
 	if nestedString(t, apply.Data, "targets", 0, "knowledge_id") != knowledgeID {
 		t.Fatalf("promotion did not publish target: %#v", apply.Data)
+	}
+	if nestedString(t, apply.Data, "transaction_state") != "complete" {
+		t.Fatalf("promotion did not report a complete transaction: %#v", apply.Data)
 	}
 	listed := runCLI(t, "", "inbox", "list", "--status", "processed", "--wiki", root, "--json", "--no-interactive")
 	if nestedFloat(t, listed.Data, "count") != 1 {
@@ -69,6 +80,9 @@ func TestCompleteInboxPromotionKnowledgeCleanWorkflow(t *testing.T) {
 		t.Fatalf("query lost extension metadata: %#v", query.Data)
 	}
 	show := runCLI(t, "", "show", knowledgeID, "--wiki", root, "--json", "--no-interactive")
+	if nestedString(t, show.Data, "file_hash") == "" || nestedString(t, show.Data, "content_hash") == "" {
+		t.Fatalf("show omitted safe update baselines: %#v", show.Data)
+	}
 	lineageID := nestedString(t, show.Data, "metadata", "lineage", 0, "inbox_id")
 	if lineageID != inboxID {
 		t.Fatalf("Knowledge lineage missing: %#v", show.Data)
@@ -129,6 +143,63 @@ func TestPromotionApprovalAndStaleErrorsAreStable(t *testing.T) {
 	}
 }
 
+func TestProposedKnowledgeIDEnablesAtomicReciprocalPromotion(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "wiki")
+	runCLI(t, "", "init", root, "--name", "reciprocal", "--json", "--no-interactive")
+	work := t.TempDir()
+	originalID := "know_01arz3ndektsv4rrffq69g5faw"
+
+	first := runCLI(t, "original evidence", "inbox", "add", "-", "--name", "original.txt", "--wiki", root, "--json", "--no-interactive")
+	firstID := nestedString(t, first.Data, "items", 0, "id")
+	firstDraft := filepath.Join(work, "original.md")
+	if err := os.WriteFile(firstDraft, []byte("---\ntype: concept\ncategory: learning\ntitle: Original\ndescription: Original concept\nlifecycle: current\nrelated: []\nsupersedes: []\nsuperseded_by: []\n---\n# Original\n\nOriginal verified fact.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	firstManifest := filepath.Join(work, "first.json")
+	firstManifestData := fmt.Sprintf(`{"schema_version":1,"inboxes":[{"id":%q,"payload_hash":%q,"item_hash":%q,"consume":true}],"targets":[{"operation":"create","draft_file":"original.md","knowledge_id":%q,"inbox_ids":[%q]}]}`,
+		firstID, nestedString(t, first.Data, "items", 0, "payload_hash"), nestedString(t, first.Data, "items", 0, "item_hash"), originalID, firstID)
+	if err := os.WriteFile(firstManifest, []byte(firstManifestData), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	firstPlan := runCLI(t, "", "promote", "plan", "--manifest", firstManifest, "--wiki", root, "--json", "--no-interactive")
+	runCLI(t, "", "promote", "apply", nestedString(t, firstPlan.Data, "promotion_id"), "--approve", nestedString(t, firstPlan.Data, "plan_hash"), "--wiki", root, "--json", "--no-interactive")
+
+	maintenance := runCLI(t, "replacement evidence", "inbox", "add", "-", "--name", "replacement.txt", "--wiki", root, "--json", "--no-interactive")
+	maintenanceID := nestedString(t, maintenance.Data, "items", 0, "id")
+	maintenanceShow := runCLI(t, "", "inbox", "show", maintenanceID, "--wiki", root, "--json", "--no-interactive")
+	originalShow := runCLI(t, "", "show", originalID, "--wiki", root, "--json", "--no-interactive")
+
+	newDraft := filepath.Join(work, "replacement.md")
+	createdDraft := runCLI(t, "", "template", "create", "concept", "--title", "Replacement", "--output", newDraft,
+		"--set", "category=learning", "--set", "description=Replacement concept", "--wiki", root, "--json", "--no-interactive")
+	newID := nestedString(t, createdDraft.Data, "proposed_knowledge_id")
+	if err := os.WriteFile(newDraft, []byte(fmt.Sprintf("---\ntype: concept\ncategory: learning\ntitle: Replacement\ndescription: Replacement concept\nlifecycle: current\nrelated: []\nsupersedes: [%s]\nsuperseded_by: []\n---\n# Replacement\n\nReplacement verified fact.\n", originalID)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	updateDraft := filepath.Join(work, "original-update.md")
+	if err := os.WriteFile(updateDraft, []byte(fmt.Sprintf("---\ntype: concept\ncategory: learning\ntitle: Original\ndescription: Original concept\nlifecycle: superseded\nrelated: []\nsupersedes: []\nsuperseded_by: [%s]\n---\n# Original\n\nOriginal verified fact, retained as superseded history.\n", newID)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(work, "maintenance.json")
+	manifestData := fmt.Sprintf(`{"schema_version":1,"inboxes":[{"id":%q,"payload_hash":%q,"item_hash":%q,"consume":true}],"targets":[{"operation":"create","draft_file":"replacement.md","knowledge_id":%q,"inbox_ids":[%q]},{"operation":"update","draft_file":"original-update.md","knowledge_id":%q,"base_content_hash":%q,"base_file_hash":%q,"inbox_ids":[%q]}]}`,
+		maintenanceID, nestedString(t, maintenanceShow.Data, "payload_hash"), nestedString(t, maintenanceShow.Data, "item_hash"),
+		newID, maintenanceID, originalID, nestedString(t, originalShow.Data, "content_hash"), nestedString(t, originalShow.Data, "file_hash"), maintenanceID)
+	if err := os.WriteFile(manifestPath, []byte(manifestData), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	planned := runCLI(t, "", "promote", "plan", "--manifest", manifestPath, "--wiki", root, "--json", "--no-interactive")
+	applied := runCLI(t, "", "promote", "apply", nestedString(t, planned.Data, "promotion_id"), "--approve", nestedString(t, planned.Data, "plan_hash"), "--wiki", root, "--json", "--no-interactive")
+	if nestedString(t, applied.Data, "transaction_state") != "complete" {
+		t.Fatalf("reciprocal promotion did not complete: %#v", applied.Data)
+	}
+	updatedOriginal := runCLI(t, "", "show", originalID, "--wiki", root, "--json", "--no-interactive")
+	publishedReplacement := runCLI(t, "", "show", newID, "--wiki", root, "--json", "--no-interactive")
+	if nestedString(t, updatedOriginal.Data, "metadata", "extra", "superseded_by", 0) != newID ||
+		nestedString(t, publishedReplacement.Data, "metadata", "extra", "supersedes", 0) != originalID {
+		t.Fatalf("reciprocal relation was not atomically published: original=%#v replacement=%#v", updatedOriginal.Data, publishedReplacement.Data)
+	}
+}
+
 func TestIndexFailureAfterPromotionReturnsWarningAndRecovers(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "wiki")
 	runCLI(t, "", "init", root, "--name", "index-failure", "--json", "--no-interactive")
@@ -154,7 +225,7 @@ func TestIndexFailureAfterPromotionReturnsWarningAndRecovers(t *testing.T) {
 		t.Fatal(err)
 	}
 	applied := runCLI(t, "", "promote", "apply", nestedString(t, planned.Data, "promotion_id"), "--approve", nestedString(t, planned.Data, "plan_hash"), "--wiki", root, "--json", "--no-interactive")
-	if len(applied.Warnings) != 1 || nestedString(t, applied.Data, "targets", 0, "knowledge_id") == "" {
+	if len(applied.Warnings) != 1 || nestedString(t, applied.Data, "targets", 0, "knowledge_id") == "" || nestedString(t, applied.Data, "transaction_state") != "files_committed" {
 		t.Fatalf("index failure did not preserve promotion result and warning: %#v", applied)
 	}
 	processed := runCLI(t, "", "inbox", "list", "--status", "processed", "--wiki", root, "--json", "--no-interactive")

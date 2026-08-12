@@ -47,9 +47,9 @@ Go Core 不得出现内容包中的 category、type、模板名、类型字段�
 | content pack policy | 1 |
 | Promotion plan | 1 |
 | JSON response | 2.0 |
-| personal content pack | 3.0.0 |
+| personal content pack | 3.0.1 |
 | personal governance | personal-3.0 |
-| Skill | 4.0.0 |
+| Skill | 4.0.1 |
 | index schema | 6 |
 | query planner | 4 |
 
@@ -146,11 +146,11 @@ Manifest 包含：
 - Inbox ID、预期 payload hash、完整 item file hash、consume 标记；
 - 每个 target 的 create/update、draft_file、lineage Inbox 集合；
 - update 的 Knowledge ID、正文基线 hash 和完整文件基线 hash；
-- 可选 create Knowledge ID 与目标路径。
+- 可选 create Knowledge ID 与目标路径；内置 Workflow 使用 `template create` 返回的 CLI 生成 ID，以支持同计划 reciprocal 关系。
 
 冻结 Plan 额外绑定内容包 name、version、governance version 与规范策略 hash；同版本策略内容漂移也必须使 apply 失败并标记 stale。
 
-Create draft 必须显式提供内容包允许的 type；Core 不猜测默认类型。Plan 先校验内容包版本、全部 Inbox、draft、Knowledge baseline、声明式治理、关系、路径和重复目标。然后生成 `prm_` ID，将最终渲染文件复制到 Promotion 的 `files/`，生成覆盖所有 target 的 diff，并以规范 plan JSON 的 SHA-256 作为 plan hash 写入 state。
+Create draft 必须显式提供内容包允许的 type；Core 不猜测默认类型。`template create` 为 Knowledge 草稿返回一个 `proposed_knowledge_id`，该 ID 尚未写入事实或保留，但由 CLI 使用加密随机源生成，Plan 会再次校验格式、唯一性和目标冲突；manifest 未提供时 Plan 仍可生成 ID。Plan 先校验内容包版本、全部 Inbox、draft、Knowledge baseline、声明式治理、关系、路径和重复目标。然后生成 `prm_` ID，将最终渲染文件复制到 Promotion 的 `files/`，生成覆盖所有 target 的 diff，并以规范 plan JSON 的 SHA-256 作为 plan hash 写入 state。
 
 状态机固定为：
 
@@ -178,11 +178,15 @@ prepared -> files_committed -> complete
 
 prepared 恢复只在当前文件等于 backup 或 new hash 时回滚；外部漂移拒绝恢复。files_committed 恢复以已提交文件为准，校验全部 new hash，重建索引后 complete。索引失败不会回滚 Knowledge 或 processed 状态。
 
+`promote apply` 的 JSON 结果返回 `transaction_state`。dry-run 为 `preview`；事实文件提交后为 `files_committed`；索引更新与 journal 完成后为 `complete`。调用方必须保留 warning，禁止把 `files_committed` 报告为全流程完成。
+
 ## 8. 查询与索引
 
 索引 schema 只含 Knowledge documents、files、chunks、FTS、完整可回读 metadata 和可重建 metadata；不含 Inbox 文档、正文或生命周期唯一数据。
 
 Rebuild 在 runtime 同文件系统创建临时 SQLite，完整扫描、验证 Knowledge 与内容包策略，再原子替换。Update 从 Knowledge 文件集合推导 added/changed/deleted；schema、tokenizer、planner、wiki ID 或内容包 identity 不匹配时完整重建。
+
+`inbox show` 在返回前验证 pending payload，并返回规范 payload path、payload hash 和完整 item hash。`show` 返回经回读验证的正文、content hash 与当前完整 file hash；Workflow 只使用这些值构造更新 baseline。
 
 索引时由通用生命周期声明计算静态 `retrieval_active` 和可选生效/失效时间边界；默认查询按当前时间筛选这些派生列，`--include-inactive` 可用于审计。category、type 和扩展元数据完整存入 `metadata_json`，不受固定枚举限制。
 

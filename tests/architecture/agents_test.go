@@ -33,7 +33,7 @@ func TestAgentInstructionTopology(t *testing.T) {
 	root := repositoryRoot(t)
 	want := []string{
 		"AGENTS.md",
-		"docs/template-design/personal-3.0.0/AGENTS.md",
+		"docs/template-design/personal-3.0.1/AGENTS.md",
 		"resources/vault-templates/personal/AGENTS.md",
 	}
 
@@ -64,7 +64,7 @@ func TestAgentInstructionTopology(t *testing.T) {
 
 	assertSameFile(t,
 		filepath.Join(root, "resources/vault-templates/personal/AGENTS.md"),
-		filepath.Join(root, "docs/template-design/personal-3.0.0/AGENTS.md"),
+		filepath.Join(root, "docs/template-design/personal-3.0.1/AGENTS.md"),
 	)
 }
 

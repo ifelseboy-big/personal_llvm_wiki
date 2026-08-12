@@ -35,6 +35,7 @@ type CreateOptions struct {
 type CreateResult struct {
 	Template        ContentTemplate `json:"template"`
 	TemplateVersion string          `json:"template_version"`
+	ProposedID      string          `json:"proposed_knowledge_id,omitempty"`
 	Output          string          `json:"output"`
 	DryRun          bool            `json:"dry_run"`
 	Overwritten     bool            `json:"overwritten"`
@@ -182,13 +183,21 @@ func CreateDraft(cfg *config.Instance, opts CreateOptions) (*CreateResult, error
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
+	proposedID := ""
 	nextCommand := fmt.Sprintf("prepare a promotion manifest using %q, then run llm-wiki promote plan --manifest <file>", target)
+	if opts.Kind == "knowledge" {
+		proposedID, err = document.NewID("know", opts.Now)
+		if err != nil {
+			return nil, fmt.Errorf("generate proposed knowledge id: %w", err)
+		}
+		nextCommand = fmt.Sprintf("use proposed knowledge_id %s with draft %q in a promotion manifest, then run llm-wiki promote plan --manifest <file>", proposedID, target)
+	}
 	if opts.Kind == "inbox" {
 		nextCommand = fmt.Sprintf("llm-wiki inbox add <input> --note-file %q", target)
 	}
 	result := &CreateResult{
 		Template: item, TemplateVersion: cfg.Template.Version,
-		Output: target, DryRun: opts.DryRun, Overwritten: overwritten,
+		ProposedID: proposedID, Output: target, DryRun: opts.DryRun, Overwritten: overwritten,
 		UnfilledFields:  unfilledFields(mapping),
 		PromptCount:     strings.Count(string(body), "llm-wiki:prompt"),
 		UnresolvedVars:  uniqueSorted(variablePattern.FindAllString(string(rendered), -1)),

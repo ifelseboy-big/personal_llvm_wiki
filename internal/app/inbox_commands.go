@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"llm-wiki/internal/document"
 	"llm-wiki/internal/governance"
 	"llm-wiki/internal/inbox"
 	"llm-wiki/internal/promote"
@@ -97,9 +98,16 @@ func newInboxListCommand(rt *Runtime) *cobra.Command {
 			items := make([]map[string]any, 0, len(docs))
 			for _, doc := range docs {
 				rel, _ := filepath.Rel(cfg.Root, doc.Path)
+				payloadPath := filepath.Join(filepath.Dir(doc.Path), filepath.FromSlash(doc.Metadata.Payload))
+				payloadRel, _ := filepath.Rel(cfg.Root, payloadPath)
+				itemHash, hashErr := document.HashFile(doc.Path)
+				if hashErr != nil {
+					warnings = append(warnings, "cannot hash inbox item "+doc.Metadata.ID+": "+hashErr.Error())
+				}
 				items = append(items, map[string]any{
 					"id": doc.Metadata.ID, "title": doc.Metadata.Title, "status": doc.Metadata.Status,
 					"path": filepath.ToSlash(rel), "captured_at": doc.Metadata.CapturedAt,
+					"item_hash": itemHash, "payload_path": filepath.ToSlash(payloadRel),
 					"payload_hash": doc.Metadata.PayloadHash, "active_promotion": active[doc.Metadata.ID],
 				})
 			}
@@ -126,7 +134,20 @@ func newInboxShowCommand(rt *Runtime) *cobra.Command {
 				return E("INBOX_READ_FAILED", "cannot read inbox item", ExitValidation, err)
 			}
 			rel, _ := filepath.Rel(cfg.Root, doc.Path)
-			return rt.Success("inbox.show", ref, map[string]any{"path": filepath.ToSlash(rel), "metadata": doc.Metadata, "body": string(doc.Body)}, nil, nil)
+			payloadPath := filepath.Join(filepath.Dir(doc.Path), filepath.FromSlash(doc.Metadata.Payload))
+			payloadRel, relErr := filepath.Rel(cfg.Root, payloadPath)
+			if relErr != nil {
+				return E("INBOX_READ_FAILED", "cannot resolve inbox payload path", ExitValidation, relErr)
+			}
+			itemHash, hashErr := document.HashFile(doc.Path)
+			if hashErr != nil {
+				return E("INBOX_READ_FAILED", "cannot hash inbox item", ExitIO, hashErr)
+			}
+			return rt.Success("inbox.show", ref, map[string]any{
+				"path": filepath.ToSlash(rel), "payload_path": filepath.ToSlash(payloadRel),
+				"item_hash": itemHash, "payload_hash": doc.Metadata.PayloadHash,
+				"metadata": doc.Metadata, "body": string(doc.Body),
+			}, nil, nil)
 		},
 	}
 }

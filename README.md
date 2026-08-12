@@ -57,6 +57,7 @@ llm-wiki init ~/wiki --name personal --no-interactive
 llm-wiki inbox add ./article.pdf --note-file ./article-note.md --wiki ~/wiki
 printf '%s' '原始输入' | llm-wiki inbox add - --name note.txt --note-file ./note.md --wiki ~/wiki
 llm-wiki inbox list --status pending --wiki ~/wiki --json --no-interactive
+llm-wiki inbox show <inbox-id> --wiki ~/wiki --json --no-interactive
 ```
 
 每条 Inbox 同时保存：
@@ -65,6 +66,8 @@ llm-wiki inbox list --status pending --wiki ~/wiki --json --no-interactive
 - `payload/<original>`：完全不改写的原始字节。
 
 目录批量采集使用 `--batch-manifest`，manifest 为每个 input 指定独立 `note_file`；任何条目预检失败时零写入。直接供人使用时可省略 note，Add Skill 不得省略。
+
+`inbox show` 会校验 pending payload，并返回规范 `payload_path`、`payload_hash` 和完整 `item_hash`，供 Agent 阅读原始输入和构造 Promotion manifest；不得根据 Inbox 目录结构猜路径。
 
 初始化出的 Vault 包含 Capture、Organize、Publish、Maintain、Query Workflow。Agent 根据 `content-pack.json.workflows` 路由；禁止直接创建、修改或移动 `knowledge/`。
 
@@ -77,6 +80,8 @@ llm-wiki template create requirement --title "导出审计记录" --output ./dra
 ```
 
 category 表示知识领域，type 表示正文结构和主要用途，两者不能互相代替。内容包的公共字段、类型字段、条件必填、关系和生命周期召回语义由 CLI 通用执行器强制校验；未知扩展属性在 draft、Promotion、索引、query/show 中往返保留。
+
+知识草稿的 JSON 结果包含 CLI 生成的 `proposed_knowledge_id`。Agent 应将它写入 create target 的 `knowledge_id`；这样同一 Promotion 中的新建和更新草稿可以预先建立 reciprocal 稳定 ID，Plan 仍会检查格式、唯一性和冲突。
 
 配置类草稿禁止包含密码、Token、私钥、cookie、恢复码等秘密，只记录非敏感配置、影响、验证和安全引用位置。
 
@@ -99,13 +104,14 @@ Promotion manifest 示例：
     {
       "operation": "create",
       "draft_file": "drafts/requirement.md",
+      "knowledge_id": "know_01arz3ndektsv4rrffq69g5faw",
       "inbox_ids": ["inbox_01arz3ndektsv4rrffq69g5fav"]
     }
   ]
 }
 ```
 
-更新目标还必须提供 `knowledge_id`、`base_content_hash` 和 `base_file_hash`。
+更新目标还必须提供 `knowledge_id`、`base_content_hash` 和 `base_file_hash`；两个 baseline 可从 `show` 的 JSON 结果取得，不得猜测或使用过期查询快照。
 
 ```bash
 llm-wiki promote plan --manifest ./promotion.json --wiki ~/wiki
@@ -115,7 +121,7 @@ llm-wiki promote apply <promotion-id> --approve <plan-hash> --wiki ~/wiki
 
 Plan 会冻结所有最终文件和内容包 identity/策略 hash，并生成完整 diff。Apply 只接受完全相同的 plan hash，且只读取冻结副本；内容包、Inbox、Knowledge、plan 或冻结文件漂移会使 Promotion 进入 `stale`，不会写入事实。
 
-一次 Promotion 可多输入、多输出，可同时创建和更新多篇 Knowledge。成功 Apply 将声明 consume 的 Inbox 标记为 processed，并自动增量更新索引；清理仍是独立动作。
+一次 Promotion 可多输入、多输出，可同时创建和更新多篇 Knowledge。成功 Apply 将声明 consume 的 Inbox 标记为 processed，并自动增量更新索引；结果中的 `transaction_state` 明确区分 `complete` 与仍需恢复的 `files_committed`。清理仍是独立动作。
 
 ## 查询与清理
 

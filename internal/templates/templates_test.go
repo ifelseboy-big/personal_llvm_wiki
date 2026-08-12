@@ -82,7 +82,7 @@ func TestPersonalTemplatesExposeInboxPromotionAndOptionalViews(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Version != "3.0.0" || manifest.ContentPack != "content-pack.json" {
+	if manifest.Version != "3.0.1" || manifest.ContentPack != "content-pack.json" {
 		t.Fatalf("unexpected personal template version %s", manifest.Version)
 	}
 	agents, err := templates.ReadFile("personal", "AGENTS.md")
@@ -91,12 +91,36 @@ func TestPersonalTemplatesExposeInboxPromotionAndOptionalViews(t *testing.T) {
 	}
 	if !strings.Contains(string(agents), "`knowledge/` 中由 `promote apply` 写入的 Markdown 是唯一可信事实源") ||
 		!strings.Contains(string(agents), "Inbox -> Promotion -> Knowledge") ||
-		!strings.Contains(string(agents), "禁止直接创建、修改或移动 `knowledge/` 文件") {
+		!strings.Contains(string(agents), "禁止直接创建、修改、移动或删除 `knowledge/` 文件") ||
+		!strings.Contains(string(agents), "用户只要求检查、解释或预览时不得生成草稿") ||
+		!strings.Contains(string(agents), "--wiki <vault-root> --json --no-interactive") {
 		t.Fatalf("personal AGENTS.md omitted its management-only or retrieval boundary: %s", agents)
 	}
+	workflowRequirements := map[string][]string{
+		"capture":  {"stdin 输入时必须提供", "--name <name>", "--batch-manifest", "不得自动添加 `--allow-sensitive`"},
+		"organize": {"规范 `payload_path`", "`content_hash` 和 `file_hash`", "`proposed_knowledge_id`", "Organize 不运行 `promote plan/apply`"},
+		"publish":  {"plan hash 完全一致", "然后停止", "`transaction_state`", "不得重建一个“相似计划”沿用旧批准"},
+		"maintain": {"检查阶段", "零写入", "通过 Capture 保存为 pending Inbox", "同一 Promotion"},
+		"query":    {"没有足够的已发布证据", "Query 零写入", "`RECOVERY_REQUIRED`"},
+	}
 	for _, workflow := range []string{"capture", "organize", "publish", "maintain", "query"} {
-		if _, err := templates.ReadFile("personal", "workflows/"+workflow+".md"); err != nil {
+		content, err := templates.ReadFile("personal", "workflows/"+workflow+".md")
+		if err != nil {
 			t.Fatalf("personal template omitted %s workflow: %v", workflow, err)
+		}
+		for _, required := range workflowRequirements[workflow] {
+			if !strings.Contains(string(content), required) {
+				t.Fatalf("%s workflow omitted executable contract %q: %s", workflow, required, content)
+			}
+		}
+	}
+	promoteRule, err := templates.ReadFile("personal", "rules/promote.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"\"operation\": \"create\"", "\"operation\": \"update\"", "\"base_content_hash\"", "\"base_file_hash\"", "`proposed_knowledge_id`"} {
+		if !strings.Contains(string(promoteRule), required) {
+			t.Fatalf("promotion rule omitted manifest contract %q: %s", required, promoteRule)
 		}
 	}
 	for _, name := range []string{"requirement", "design", "decision", "runbook", "retrospective", "learning-note", "concept", "configuration", "business-rule", "business-process"} {
@@ -164,8 +188,11 @@ func TestCreateDraftRendersSafelyAndProtectsManagedPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.TemplateVersion != "3.0.0" || !strings.Contains(result.NextCommandHint, "promote plan") {
+	if result.TemplateVersion != "3.0.1" || !strings.Contains(result.NextCommandHint, "promote plan") {
 		t.Fatalf("unexpected result: %#v", result)
+	}
+	if !document.ValidID("know", result.ProposedID) || !strings.Contains(result.NextCommandHint, result.ProposedID) {
+		t.Fatalf("knowledge draft omitted its CLI-generated proposed id: %#v", result)
 	}
 	b, err := os.ReadFile(output)
 	if err != nil {
@@ -205,6 +232,9 @@ func TestCreateDraftRendersSafelyAndProtectsManagedPaths(t *testing.T) {
 	}
 	if !strings.Contains(inboxResult.NextCommandHint, "inbox add") || !strings.Contains(inboxResult.NextCommandHint, "--note-file") {
 		t.Fatalf("inbox template returned wrong next command: %s", inboxResult.NextCommandHint)
+	}
+	if inboxResult.ProposedID != "" {
+		t.Fatalf("inbox draft unexpectedly received a knowledge id: %#v", inboxResult)
 	}
 	if _, err := templates.ReadContent(cfg, "knowledge", "../../concept"); err == nil {
 		t.Fatal("template name traversal was silently normalized")

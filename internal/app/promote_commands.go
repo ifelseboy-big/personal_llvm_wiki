@@ -17,7 +17,8 @@ import (
 
 type promoteApplyCommandResult struct {
 	*promote.ApplyResult
-	Index *indexstore.UpdateResult `json:"index,omitempty"`
+	Index            *indexstore.UpdateResult `json:"index,omitempty"`
+	TransactionState string                   `json:"transaction_state"`
 }
 
 func newPromoteCommand(rt *Runtime) *cobra.Command {
@@ -56,7 +57,8 @@ func newPromotePlanCommand(rt *Runtime) *cobra.Command {
 			}
 			return rt.Success("promote.plan", ref, map[string]any{
 				"promotion_id": result.Plan.ID, "status": result.State.Status, "plan_hash": result.PlanHash,
-				"targets": result.Plan.Targets, "inboxes": result.Plan.Inboxes, "diff": result.Diff, "dry_run": rt.DryRun,
+				"content_pack": result.Plan.ContentPack, "targets": result.Plan.Targets,
+				"inboxes": result.Plan.Inboxes, "diff": result.Diff, "dry_run": rt.DryRun,
 			}, recoveryWarnings, files)
 		},
 	}
@@ -119,7 +121,11 @@ func newPromoteApplyCommand(rt *Runtime) *cobra.Command {
 			}
 			warnings := recoveryWarnings
 			files := []string{}
-			commandResult := &promoteApplyCommandResult{ApplyResult: result}
+			transactionState := "preview"
+			if !rt.DryRun {
+				transactionState = "files_committed"
+			}
+			commandResult := &promoteApplyCommandResult{ApplyResult: result, TransactionState: transactionState}
 			for _, target := range result.Targets {
 				files = append(files, target.TargetPath)
 			}
@@ -136,6 +142,8 @@ func newPromoteApplyCommand(rt *Runtime) *cobra.Command {
 					files = append(files, filepath.ToSlash(filepath.Join(cfg.Paths.Runtime, "index.sqlite")))
 					if completeErr := promote.CompleteOperation(cfg, result.OperationID); completeErr != nil {
 						warnings = append(warnings, "promotion and index were committed but transaction finalization failed: "+completeErr.Error())
+					} else {
+						commandResult.TransactionState = "complete"
 					}
 				}
 			}

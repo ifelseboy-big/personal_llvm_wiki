@@ -1,4 +1,4 @@
-# personal 3.0.0 内容包契约
+# personal 3.0.1 内容包契约
 
 ## 目录与所有权
 
@@ -26,7 +26,9 @@ Markdown 规则只能解释如何使用该文件，不维护第二份枚举。Co
 
 ## Agent Workflow
 
-Vault `AGENTS.md` 必须根据机器策略路由：Capture 完整保存原始输入；Organize 查重并选择正交 category/type；Publish 运行 plan/diff、展示完整冻结计划并停止，明确批准后才 apply；Maintain 也只通过 Promotion 改事实；Query 只使用 CLI 回读验证后的 Knowledge。
+Vault `AGENTS.md` 必须根据机器策略路由，并把解析出的 Vault root 显式传给后续所有 CLI 命令。Capture 完整保存原始输入并正确处理 stdin/batch；Organize 从 `inbox show` 返回的规范路径读取 payload、用 CLI 返回的哈希构造 manifest，并选择正交 category/type；Publish 运行 plan/diff、展示完整冻结计划并停止，明确批准后才 apply；Maintain 检查阶段零写入，处理阶段先 Capture 维护依据并只通过 Promotion 改事实；Query 只使用 CLI 回读验证后的 Knowledge。
+
+`template create` 返回 CLI 生成的 `proposed_knowledge_id`，供同一 Promotion 中的新建目标和 reciprocal 关系使用。`promote apply` 返回事务状态；Agent 不得隐藏 `files_committed`、索引失败或恢复 warning。
 
 ## 独立性
 

@@ -33,12 +33,16 @@ func TestInstallUpdateAndUninstallOwnedFiles(t *testing.T) {
 	queryText := string(queryBytes)
 	if !strings.Contains(queryText, "读取 Vault `AGENTS.md`") ||
 		!strings.Contains(queryText, "禁止调用 `inbox list/show`") ||
-		!strings.Contains(queryText, "llm-wiki show <id>") {
+		!strings.Contains(queryText, "llm-wiki show <id>") ||
+		!strings.Contains(queryText, "--wiki <vault-root>") ||
+		!strings.Contains(queryText, "version: "+SkillVersion) {
 		t.Fatalf("query skill omitted Vault bootstrap or knowledge-only hydration: %s", queryText)
 	}
 	addBytes, err := os.ReadFile(filepath.Join(result.Target, "llm-wiki-add", "SKILL.md"))
 	if err != nil || !strings.Contains(string(addBytes), "pending") ||
-		!strings.Contains(string(addBytes), "不得用摘要替换用户输入") {
+		!strings.Contains(string(addBytes), "不得用摘要替换用户输入") ||
+		!strings.Contains(string(addBytes), "--wiki <vault-root>") ||
+		!strings.Contains(string(addBytes), "--batch-manifest") {
 		t.Fatalf("add skill blurred capture and retrieval boundaries: %s err=%v", addBytes, err)
 	}
 	status, err := GetStatus("codex")

@@ -18,7 +18,7 @@
 | 产品入口、命令面 | `README.md` |
 | 架构、事实边界、事务与恢复 | `docs/TECHNICAL_DESIGN.md` |
 | 序列化与机器协议 | `schemas/*.schema.json` |
-| personal 内容包执行契约 | `docs/template-design/personal-3.0.0/TEMPLATE_SPEC.md` |
+| personal 内容包执行契约 | `docs/template-design/personal-3.0.1/TEMPLATE_SPEC.md` |
 | 内置内容包文件清单与机器策略 | `resources/vault-templates/personal/template.toml`、`resources/vault-templates/personal/content-pack.json` |
 | 构建、安装与验收命令 | `Makefile` |
 

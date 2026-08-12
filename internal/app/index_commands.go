@@ -329,8 +329,13 @@ func newShowCommand(rt *Runtime) *cobra.Command {
 				return E("KNOWLEDGE_INVALID", "published knowledge has invalid lifecycle metadata", ExitValidation, assessmentErr)
 			}
 			warnings := append([]string(nil), assessment.Warnings...)
+			fileHash, hashErr := document.HashFile(doc.Path)
+			if hashErr != nil {
+				return E("KNOWLEDGE_READ_FAILED", "cannot hash published knowledge", ExitIO, hashErr)
+			}
 			return rt.Success("show", ref, map[string]any{
 				"path": filepath.ToSlash(rel), "metadata": doc.Metadata, "body": string(doc.Body),
+				"content_hash": doc.Metadata.ContentHash, "file_hash": fileHash,
 				"facts_from": "knowledge_markdown", "lifecycle": assessment,
 			}, governance.SortedWarnings(warnings), nil)
 		},
