@@ -11,7 +11,42 @@
 
 category、type、类型字段、模板和 Agent Workflow 全部来自 Vault 的 `content-pack.json`。新增或修改这些内容不需要改 Go。内置 `personal` 内容包提供四个正交领域（需求开发、个人学习、配置信息、业务知识）和十种知识结构；该 JSON 是当前值域的唯一机器权威来源。
 
-## 源码安装
+## 一键安装与升级
+
+仓库当前为 Private。新电脑先安装 [GitHub CLI](https://cli.github.com/) 并执行一次 `gh auth login`，然后在 macOS 或 Linux 执行：
+
+```bash
+gh api -H 'Accept: application/vnd.github.raw+json' \
+  'repos/ifelseboy-big/personal_llvm_wiki/contents/install.sh?ref=main' | sh
+```
+
+首次执行安装最新正式版本；以后再次执行同一命令即升级。安装器复用 `gh` 的登录身份，只从本项目 GitHub Release 下载源码，在本机使用正式 CGO 与 FTS5 参数构建，版本自检通过后才原子替换 `~/.local/bin/llm-wiki`。下载、构建或校验失败时保留原有版本，不修改已有 Vault，不使用 `sudo`，也不改 shell 配置。自动化环境可不用 `gh`，改为提供具有仓库只读权限的 `GH_TOKEN`。
+
+安装器会检查 GitHub 身份、Go 1.25+、C/C++ 编译器和 `tar`，缺少依赖时直接给出错误。指定版本或安装目录：
+
+```bash
+gh api -H 'Accept: application/vnd.github.raw+json' \
+  'repos/ifelseboy-big/personal_llvm_wiki/contents/install.sh?ref=main' \
+  | sh -s -- --version 0.0.2 --install-dir "$HOME/.local/bin"
+```
+
+安装目录不在 `PATH` 时，安装器会明确提示。可直接用完整路径验证：
+
+```bash
+~/.local/bin/llm-wiki --version
+```
+
+首次创建个人 Vault：
+
+```bash
+~/.local/bin/llm-wiki init "$HOME/Documents/llm-wiki" \
+  --name personal --template personal --register --default \
+  --install-skill --yes --json --no-interactive
+```
+
+初始化只用于全新目录；升级 CLI 不需要也不得重新初始化已有 Vault。内容包版本变化时，使用 `template upgrade` 的显式三方比较流程，不做隐式迁移。
+
+## 开发者源码构建
 
 - Go 1.25+
 - 当前平台可用的 C/C++ 编译器
@@ -27,7 +62,7 @@ llm-wiki --version
 
 `make build` 在当前机器生成 `./llm-wiki`；`make install` 将已构建文件复制到 `~/.local/bin/llm-wiki`。自定义安装目录可执行 `make install INSTALL_DIR=/path/to/bin`。`~/.local/bin` 需在 `PATH` 中。
 
-构建工具链可覆盖：`make build CC=gcc CXX=g++`。项目不提供预构建归档或交叉编译发布；运行时不需要系统 SQLite、Homebrew、Node、Python、MCP、后台服务或网络服务。
+构建工具链可覆盖：`make build CC=gcc CXX=g++`。项目不提供预构建二进制或交叉编译发布；一键安装器同样在目标机器从正式 Release 源码构建。运行时不需要系统 SQLite、Homebrew、Node、Python、MCP、后台服务或网络服务。
 
 开发验收使用：
 

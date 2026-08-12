@@ -30,7 +30,7 @@
 | 构建目标 | 当前机器的 `GOOS/GOARCH` |
 | CGO | `CGO_ENABLED=1`，使用 Go 当前 C/C++ 工具链或显式 `CC`/`CXX` |
 | 必需标签 | `fts5 sqlite_omit_load_extension` |
-| 分发方式 | 拉取源码后执行 `make build`、`make install` |
+| 分发方式 | 一键安装器下载正式 Release 源码并在目标机原子构建安装；开发者可执行 `make build`、`make install` |
 | 运行时依赖 | 不依赖 MCP、常驻服务、外部数据库、解释器、Homebrew SQLite 或网络服务 |
 
 正式测试和构建必须使用上述 CGO 配置与标签；裸跑 `go test ./...` 不构成验收。
@@ -130,7 +130,7 @@ git diff --check
 | 路径、写入、inbox、promote、事务 | 安全拒绝、零写入、锁冲突、恢复测试；`make test-race` |
 | index、query、tokenizer | 严格/宽松召回、稳定排序、索引漂移、删除重建；`make build` |
 | content pack、governance、Schema | `make schema-check`、真实策略与模板解析、双目录一致、init/upgrade/e2e |
-| 构建或安装配置 | `go mod verify`、race、`make build`、`make install` 与版本 smoke |
+| 构建或安装配置 | `make installer-check`、`go mod verify`、race、`make build`、`make install` 与版本 smoke |
 
 无法执行的验收必须明确报告。测试使用 `t.TempDir()`；修改进程环境或全局状态的测试不得并行。
 

@@ -30,7 +30,7 @@ jobs:
         with:
           go-version: '1.25.x'
           cache: true
-      - run: make fmt-check schema-check agents-check mod-verify vet test
+      - run: make fmt-check schema-check agents-check installer-check mod-verify vet test
         env:
           CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}

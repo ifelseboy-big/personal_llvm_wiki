@@ -1,4 +1,4 @@
-.PHONY: build install test test-race vet fmt-check schema-check agents-check mod-verify verify eval benchmark-index clean
+.PHONY: build install installer-check test test-race vet fmt-check schema-check agents-check mod-verify verify eval benchmark-index clean
 
 GO_TAGS := fts5 sqlite_omit_load_extension
 CC := $(if $(filter default,$(origin CC)),$(shell go env CC),$(CC))
@@ -18,6 +18,10 @@ install:
 	test -x "$(BUILD_OUTPUT)"
 	mkdir -p "$(INSTALL_DIR)"
 	install -m 0755 "$(BUILD_OUTPUT)" "$(INSTALL_DIR)/llm-wiki"
+
+installer-check:
+	sh -n install.sh
+	sh tests/install/install_test.sh
 
 test:
 	$(CGO_ENV) go test -tags "$(GO_TAGS)" ./...
@@ -42,7 +46,7 @@ agents-check:
 mod-verify:
 	go mod verify
 
-verify: fmt-check schema-check agents-check mod-verify vet test test-race
+verify: fmt-check schema-check agents-check installer-check mod-verify vet test test-race
 	git diff --check
 
 eval:
