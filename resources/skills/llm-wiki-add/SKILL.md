@@ -1,11 +1,11 @@
 ---
 name: llm-wiki-add
 description: 用户明确要求记住、收集、保存或加入稍后整理的信息时使用。
-version: 3.0.0
+version: 4.0.0
 ---
 
 1. 运行 `llm-wiki locate --json --no-interactive` 定位 Vault。
-2. 读取 Vault `AGENTS.md` 与 `rules/inbox.md`。
+2. 读取 Vault `AGENTS.md` 与 `content-pack.json`，从 `workflows` 路由并完整执行 Capture Workflow。
 3. 完整保留用户明确提供的文本、文件或目录内容，生成不丢信息的初步标题、摘要、来源和可选标签到临时 note 文件。
 4. 单输入调用 `llm-wiki inbox add <file|-> --note-file <note> --json --no-interactive`；stdin 必须带 `--name`。目录批量采集使用 batch manifest，为每个 payload 映射独立 note。
 5. 不查询 Inbox，不写 `knowledge/`，不创建或批准 Promotion。

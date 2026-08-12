@@ -169,7 +169,7 @@ func newQueryCommand(rt *Runtime) *cobra.Command {
 		},
 	}
 	cmd.Flags().IntVar(&limit, "limit", 8, "maximum evidence chunks")
-	cmd.Flags().BoolVar(&includeInactive, "include-inactive", false, "include superseded and retracted knowledge for audit")
+	cmd.Flags().BoolVar(&includeInactive, "include-inactive", false, "include knowledge marked inactive by the content pack for audit")
 	return cmd
 }
 

@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -47,13 +48,21 @@ type ManifestTarget struct {
 }
 
 type Plan struct {
-	SchemaVersion int         `json:"schema_version"`
-	ID            string      `json:"id"`
-	CreatedAt     string      `json:"created_at"`
-	ManifestHash  string      `json:"manifest_hash"`
-	DiffHash      string      `json:"diff_hash"`
-	Inboxes       []PlanInbox `json:"inboxes"`
-	Targets       []Target    `json:"targets"`
+	SchemaVersion int             `json:"schema_version"`
+	ID            string          `json:"id"`
+	CreatedAt     string          `json:"created_at"`
+	ManifestHash  string          `json:"manifest_hash"`
+	DiffHash      string          `json:"diff_hash"`
+	ContentPack   PlanContentPack `json:"content_pack"`
+	Inboxes       []PlanInbox     `json:"inboxes"`
+	Targets       []Target        `json:"targets"`
+}
+
+type PlanContentPack struct {
+	Name              string `json:"name"`
+	Version           string `json:"version"`
+	GovernanceVersion string `json:"governance_version"`
+	PolicyHash        string `json:"policy_hash"`
 }
 
 type PlanInbox struct {
@@ -144,7 +153,11 @@ type RecoveryAction struct {
 	Action      string `json:"action"`
 }
 
-var ErrApplyConflict = errors.New("promotion apply conflict")
+var (
+	ErrApplyConflict       = errors.New("promotion apply conflict")
+	contentPackNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
+	semanticVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+)
 
 type ApplyConflictError struct {
 	Kind  string
@@ -171,8 +184,15 @@ func PlanPromotion(cfg *config.Instance, opts PlanOptions) (*PlanResult, error) 
 	if opts.Now.IsZero() {
 		opts.Now = time.Now()
 	}
+	policy, err := governance.Load(cfg)
+	if err != nil {
+		return nil, err
+	}
+	policyHash, err := policy.Hash()
+	if err != nil {
+		return nil, err
+	}
 	var lock *vault.Lock
-	var err error
 	if !opts.DryRun {
 		lock, err = vault.AcquireWrite(cfg, 5*time.Second)
 		if err != nil {
@@ -224,7 +244,7 @@ func PlanPromotion(cfg *config.Instance, opts PlanOptions) (*PlanResult, error) 
 	seenTargetPaths := map[string]bool{}
 	seenKnowledge := map[string]bool{}
 	for _, spec := range manifest.Targets {
-		target, finalBytes, oldBytes, doc, err := prepareTarget(cfg, spec, manifestBase, inboxDocs, opts.Now)
+		target, finalBytes, oldBytes, doc, err := prepareTarget(cfg, spec, manifestBase, inboxDocs, policy.GovernanceVersion, opts.Now)
 		if err != nil {
 			return nil, err
 		}
@@ -241,15 +261,24 @@ func PlanPromotion(cfg *config.Instance, opts PlanOptions) (*PlanResult, error) 
 	}
 	for _, target := range targets {
 		doc := prospective[target.KnowledgeID]
-		if err := governance.ValidateForPromotion(cfg, doc, prospective, opts.Now); err != nil {
+		if err := governance.ValidateForPromotionWithPolicy(policy, cfg, doc, prospective, opts.Now); err != nil {
 			return nil, fmt.Errorf("knowledge %s governance: %w", target.KnowledgeID, err)
 		}
+	}
+	currentPolicyHash, err := governance.Hash(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if currentPolicyHash != policyHash {
+		return nil, errors.New("content pack changed while preparing promotion plan")
 	}
 	sort.Slice(targets, func(i, j int) bool { return targets[i].TargetPath < targets[j].TargetPath })
 	diff := promotionDiff(targets, oldFiles, frozen)
 	plan := Plan{
 		SchemaVersion: SchemaVersion, ID: promotionID, CreatedAt: opts.Now.Format(time.RFC3339),
-		ManifestHash: document.HashBytes(manifestBytes), DiffHash: document.HashBytes([]byte(diff)), Inboxes: planInboxes, Targets: targets,
+		ManifestHash: document.HashBytes(manifestBytes), DiffHash: document.HashBytes([]byte(diff)),
+		ContentPack: PlanContentPack{Name: policy.Name, Version: policy.Version, GovernanceVersion: policy.GovernanceVersion, PolicyHash: policyHash},
+		Inboxes:     planInboxes, Targets: targets,
 	}
 	planBytes, err := marshalJSON(plan)
 	if err != nil {
@@ -299,7 +328,7 @@ func PlanPromotion(cfg *config.Instance, opts PlanOptions) (*PlanResult, error) 
 	return result, nil
 }
 
-func prepareTarget(cfg *config.Instance, spec ManifestTarget, base string, inboxDocs map[string]*document.Document, now time.Time) (Target, []byte, []byte, *document.Document, error) {
+func prepareTarget(cfg *config.Instance, spec ManifestTarget, base string, inboxDocs map[string]*document.Document, governanceVersion string, now time.Time) (Target, []byte, []byte, *document.Document, error) {
 	draftPath := spec.DraftFile
 	if !filepath.IsAbs(draftPath) {
 		draftPath = filepath.Join(base, draftPath)
@@ -371,7 +400,7 @@ func prepareTarget(cfg *config.Instance, spec ManifestTarget, base string, inbox
 			return Target{}, nil, nil, nil, err
 		}
 		if draftMeta.Type == "" {
-			draftMeta.Type = "concept"
+			return Target{}, nil, nil, nil, errors.New("create target draft requires an explicit content-pack type")
 		}
 		if draftMeta.Title == "" {
 			draftMeta.Title = firstHeading(body)
@@ -417,7 +446,7 @@ func prepareTarget(cfg *config.Instance, spec ManifestTarget, base string, inbox
 	meta := document.Metadata{
 		SchemaVersion: document.CurrentSchema, ID: knowledgeID, Type: draftMeta.Type, Title: draftMeta.Title,
 		Status: "published", PublishedAt: publishedAt, UpdatedAt: now.Format(time.RFC3339), ContentHash: document.HashBytes(body),
-		Lineage: lineage, Tags: cleanStrings(tags), Aliases: cleanStrings(aliases), GovernanceVersion: governance.PersonalGovernanceVersion, Extra: extra,
+		Lineage: lineage, Tags: cleanStrings(tags), Aliases: cleanStrings(aliases), GovernanceVersion: governanceVersion, Extra: extra,
 	}
 	if expected := document.KnowledgePath(cfg.Paths.Knowledge, meta); targetPath != expected {
 		return Target{}, nil, nil, nil, fmt.Errorf("knowledge target path is not canonical: expected %s", expected)
@@ -604,6 +633,18 @@ func markStaleAfterLoadFailure(cfg *config.Instance, promotionID string, cause e
 func validateApplyBase(cfg *config.Instance, plan Plan, now time.Time) (map[string][]byte, map[string]*document.Document, error) {
 	files := map[string][]byte{}
 	inboxDocs := map[string]*document.Document{}
+	policy, err := governance.Load(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	policyHash, err := policy.Hash()
+	if err != nil {
+		return nil, nil, err
+	}
+	if plan.ContentPack.Name != policy.Name || plan.ContentPack.Version != policy.Version ||
+		plan.ContentPack.GovernanceVersion != policy.GovernanceVersion || plan.ContentPack.PolicyHash != policyHash {
+		return nil, nil, errors.New("content pack changed after plan")
+	}
 	diffBytes, err := readRegularExact(filepath.Join(promotionDir(cfg, plan.ID), "diff.patch"))
 	if err != nil || document.HashBytes(diffBytes) != plan.DiffHash {
 		return nil, nil, errors.New("promotion diff changed after plan")
@@ -669,9 +710,10 @@ func validateApplyBase(cfg *config.Instance, plan Plan, now time.Time) (map[stri
 		prospective[target.KnowledgeID] = doc
 		files[target.TargetPath] = data
 	}
-	for id, doc := range prospective {
-		if err := governance.ValidateForPromotion(cfg, doc, prospective, now); err != nil {
-			return nil, nil, fmt.Errorf("knowledge %s governance: %w", id, err)
+	for _, target := range plan.Targets {
+		doc := prospective[target.KnowledgeID]
+		if err := governance.ValidateForPromotionWithPolicy(policy, cfg, doc, prospective, now); err != nil {
+			return nil, nil, fmt.Errorf("knowledge %s governance: %w", target.KnowledgeID, err)
 		}
 	}
 	return files, inboxDocs, nil
@@ -975,7 +1017,8 @@ func validateManifest(manifest Manifest) error {
 			return errors.New("create target cannot declare baseline hashes")
 		}
 	}
-	for id := range declared {
+	for _, input := range manifest.Inboxes {
+		id := input.ID
 		used := false
 		for _, target := range manifest.Targets {
 			for _, targetID := range target.InboxIDs {
@@ -990,7 +1033,10 @@ func validateManifest(manifest Manifest) error {
 }
 
 func validatePlan(cfg *config.Instance, plan Plan, expected string) error {
-	if plan.SchemaVersion != SchemaVersion || plan.ID != expected || !document.ValidID("prm", plan.ID) || !document.ValidHash(plan.ManifestHash) || !document.ValidHash(plan.DiffHash) || len(plan.Inboxes) == 0 || len(plan.Targets) == 0 {
+	if plan.SchemaVersion != SchemaVersion || plan.ID != expected || !document.ValidID("prm", plan.ID) || !document.ValidHash(plan.ManifestHash) || !document.ValidHash(plan.DiffHash) ||
+		!contentPackNamePattern.MatchString(plan.ContentPack.Name) || !semanticVersionPattern.MatchString(plan.ContentPack.Version) ||
+		strings.TrimSpace(plan.ContentPack.GovernanceVersion) == "" || plan.ContentPack.GovernanceVersion != strings.TrimSpace(plan.ContentPack.GovernanceVersion) || !document.ValidHash(plan.ContentPack.PolicyHash) ||
+		len(plan.Inboxes) == 0 || len(plan.Targets) == 0 {
 		return errors.New("invalid promotion plan")
 	}
 	if _, err := time.Parse(time.RFC3339, plan.CreatedAt); err != nil {
@@ -1038,7 +1084,8 @@ func validatePlan(cfg *config.Instance, plan Plan, expected string) error {
 		seenIDs[target.KnowledgeID] = true
 		seenPaths[target.TargetPath] = true
 	}
-	for id := range inboxes {
+	for _, input := range plan.Inboxes {
+		id := input.ID
 		if !usedInboxes[id] {
 			return errors.New("promotion plan has an unused inbox")
 		}

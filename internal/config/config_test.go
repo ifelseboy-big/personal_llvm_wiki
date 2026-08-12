@@ -108,6 +108,19 @@ func TestRejectEscapingManagedPath(t *testing.T) {
 	}
 }
 
+func TestRejectOldInstanceSchemaAndUnsafeContentPackPath(t *testing.T) {
+	cfg := DefaultInstance("test", "wiki_01arz3ndektsv4rrffq69g5fav", time.Now())
+	cfg.SchemaVersion = 2
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("old instance schema was accepted")
+	}
+	cfg.SchemaVersion = CurrentSchema
+	cfg.Template.ContentPack = "../content-pack.json"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("escaping content pack path was accepted")
+	}
+}
+
 func TestRejectOverlappingManagedPaths(t *testing.T) {
 	cfg := DefaultInstance("test", "wiki_01arz3ndektsv4rrffq69g5fav", time.Now())
 	cfg.Paths.Knowledge = filepath.Join(cfg.Paths.Inbox, "published")

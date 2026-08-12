@@ -32,7 +32,7 @@ func TestCompleteInboxPromotionKnowledgeCleanWorkflow(t *testing.T) {
 
 	knowledgeID := "know_01arz3ndektsv4rrffq69g5faw"
 	draft := filepath.Join(work, "draft.md")
-	draftData := "---\ntype: concept\ntitle: \"Stable IR\"\ndescription: \"Stable IR decouples compiler components\"\nlifecycle: current\n---\n# Stable IR\n\nStable IR decouples compiler frontends and backends while preserving a common contract.\n"
+	draftData := "---\ntype: concept\ncategory: development\ntitle: \"Stable IR\"\ndescription: \"Stable IR decouples compiler components\"\nlifecycle: current\ncustom_context: round-trip-extension\n---\n# Stable IR\n\nStable IR decouples compiler frontends and backends while preserving a common contract.\n"
 	if err := os.WriteFile(draft, []byte(draftData), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -65,10 +65,16 @@ func TestCompleteInboxPromotionKnowledgeCleanWorkflow(t *testing.T) {
 	if nestedFloat(t, query.Data, "count") < 1 || nestedString(t, query.Data, "evidence", 0, "knowledge_id") != knowledgeID {
 		t.Fatalf("query missed applied Knowledge: %#v", query.Data)
 	}
+	if nestedString(t, query.Data, "evidence", 0, "metadata", "extra", "custom_context") != "round-trip-extension" {
+		t.Fatalf("query lost extension metadata: %#v", query.Data)
+	}
 	show := runCLI(t, "", "show", knowledgeID, "--wiki", root, "--json", "--no-interactive")
 	lineageID := nestedString(t, show.Data, "metadata", "lineage", 0, "inbox_id")
 	if lineageID != inboxID {
 		t.Fatalf("Knowledge lineage missing: %#v", show.Data)
+	}
+	if nestedString(t, show.Data, "metadata", "extra", "custom_context") != "round-trip-extension" {
+		t.Fatalf("show lost extension metadata: %#v", show.Data)
 	}
 	preview := runCLI(t, "", "inbox", "clean", inboxID, "--dry-run", "--wiki", root, "--json", "--no-interactive")
 	if len(preview.AffectedFiles) != 2 {
@@ -91,7 +97,7 @@ func TestPromotionApprovalAndStaleErrorsAreStable(t *testing.T) {
 	id := nestedString(t, added.Data, "items", 0, "id")
 	payloadHash := nestedString(t, added.Data, "items", 0, "payload_hash")
 	itemHash := nestedString(t, added.Data, "items", 0, "item_hash")
-	if err := os.WriteFile(filepath.Join(work, "draft.md"), []byte("---\ntype: concept\ntitle: Conflict\ndescription: Complete\nlifecycle: current\n---\n# Conflict\n\nComplete fact.\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(work, "draft.md"), []byte("---\ntype: concept\ncategory: learning\ntitle: Conflict\ndescription: Complete\nlifecycle: current\n---\n# Conflict\n\nComplete fact.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	manifest := fmt.Sprintf(`{"schema_version":1,"inboxes":[{"id":%q,"payload_hash":%q,"item_hash":%q,"consume":true}],"targets":[{"operation":"create","draft_file":"draft.md","knowledge_id":"know_01arz3ndektsv4rrffq69g5faw","inbox_ids":[%q]}]}`, id, payloadHash, itemHash, id)
@@ -131,7 +137,7 @@ func TestIndexFailureAfterPromotionReturnsWarningAndRecovers(t *testing.T) {
 	id := nestedString(t, added.Data, "items", 0, "id")
 	payloadHash := nestedString(t, added.Data, "items", 0, "payload_hash")
 	itemHash := nestedString(t, added.Data, "items", 0, "item_hash")
-	if err := os.WriteFile(filepath.Join(work, "draft.md"), []byte("---\ntype: concept\ntitle: Recoverable\ndescription: Complete knowledge\nlifecycle: current\n---\n# Recoverable\n\nCommitted before index recovery.\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(work, "draft.md"), []byte("---\ntype: concept\ncategory: learning\ntitle: Recoverable\ndescription: Complete knowledge\nlifecycle: current\n---\n# Recoverable\n\nCommitted before index recovery.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	manifest := fmt.Sprintf(`{"schema_version":1,"inboxes":[{"id":%q,"payload_hash":%q,"item_hash":%q,"consume":true}],"targets":[{"operation":"create","draft_file":"draft.md","knowledge_id":"know_01arz3ndektsv4rrffq69g5faw","inbox_ids":[%q]}]}`, id, payloadHash, itemHash, id)

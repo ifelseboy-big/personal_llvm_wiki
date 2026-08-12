@@ -3,6 +3,7 @@ package index
 import (
 	"bytes"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -168,6 +169,34 @@ func TestChineseRankingFallbackLifecycleAndMetadataDrift(t *testing.T) {
 	if !foundInactive {
 		t.Fatalf("include-inactive omitted superseded knowledge: %#v", withInactive)
 	}
+	inactive.Metadata.Extra["lifecycle"] = "current"
+	inactive.Metadata.Extra["valid_from"] = "2999-01-01"
+	if err := document.Write(inactive.Path, inactive.Metadata, inactive.Body); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Update(cfg, false); err != nil {
+		t.Fatal(err)
+	}
+	beforeValidity, err := Search(cfg, "团队会议记录", 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range beforeValidity.Candidates {
+		if candidate.KnowledgeID == unrelatedID {
+			t.Fatal("default query returned knowledge before its declared valid_from")
+		}
+	}
+	withInactive, err = SearchWithOptions(cfg, "团队会议记录", SearchOptions{Limit: 8, IncludeInactive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundInactive = false
+	for _, candidate := range withInactive.Candidates {
+		foundInactive = foundInactive || candidate.KnowledgeID == unrelatedID
+	}
+	if !foundInactive {
+		t.Fatalf("include-inactive omitted not-yet-valid knowledge: %#v", withInactive)
+	}
 	db, err := openDB(DBPath(cfg))
 	if err != nil {
 		t.Fatal(err)
@@ -249,6 +278,33 @@ func TestSearchDetectsCompleteKnowledgeSnapshotDrift(t *testing.T) {
 	})
 }
 
+func TestSearchRejectsContentPackPolicyDrift(t *testing.T) {
+	cfg := indexWiki(t)
+	writeKnowledgeForTest(t, cfg, 1, "Policy drift", "# Policy drift\n\nPolicyHashNeedle remains searchable.\n")
+	if _, err := Rebuild(cfg); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := governance.Load(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy.Categories = append(policy.Categories, governance.NamedDefinition{Name: "test-added-domain", Description: "Added only by test data"})
+	data, err := json.MarshalIndent(policy, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.ContentPackPath(), append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Search(cfg, "PolicyHashNeedle", 8); !errors.Is(err, ErrStale) {
+		t.Fatalf("content pack drift returned %v, expected ErrStale", err)
+	}
+	updated, err := Update(cfg, false)
+	if err != nil || !updated.FullRebuild {
+		t.Fatalf("content pack drift did not force rebuild: %#v %v", updated, err)
+	}
+}
+
 func TestIncrementalUpdateDerivesAddChangeDeleteFromKnowledge(t *testing.T) {
 	cfg := indexWiki(t)
 	first := writeKnowledge(t, cfg, 1, "First", "# First\n\nFirstNeedle.\n")
@@ -325,12 +381,16 @@ func writeKnowledgeForTest(t fataler, cfg *config.Instance, ordinal int, title, 
 		id = "know_01arz3ndektsv4rrffq69g5fa" + string(alphabet[ordinal%len(alphabet)])
 	}
 	data := []byte(body)
+	governanceVersion, err := governance.Version(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	meta := document.Metadata{
 		SchemaVersion: document.CurrentSchema, ID: id, Type: "concept", Title: title, Status: "published",
 		PublishedAt: "2026-08-09T00:00:00Z", UpdatedAt: "2026-08-09T00:00:00Z", ContentHash: document.HashBytes(data),
-		GovernanceVersion: governance.PersonalGovernanceVersion,
+		GovernanceVersion: governanceVersion,
 		Lineage:           []document.LineageRef{{InboxID: "inbox_01arz3ndektsv4rrffq69g5fav", PayloadHash: document.HashBytes([]byte("payload")), Source: "test", CapturedAt: "2026-08-08T00:00:00Z"}},
-		Extra:             map[string]any{"description": title + " description", "lifecycle": "current"},
+		Extra:             map[string]any{"category": "learning", "description": title + " description", "lifecycle": "current"},
 	}
 	dir := filepath.Join(cfg.KnowledgeDir(), "concept")
 	if err := os.MkdirAll(dir, 0o700); err != nil {

@@ -17,6 +17,7 @@ import (
 	"llm-wiki/internal/config"
 	"llm-wiki/internal/document"
 	"llm-wiki/internal/fsutil"
+	"llm-wiki/internal/governance"
 )
 
 type CreateOptions struct {
@@ -47,7 +48,7 @@ var (
 	propertyNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
 	variablePattern     = regexp.MustCompile(`\{\{[^{}]+\}\}`)
 	systemProperties    = map[string]bool{
-		"schema_version": true, "id": true, "status": true,
+		"schema_version": true, "id": true, "type": true, "status": true,
 		"captured_at": true, "published_at": true, "updated_at": true, "processed_at": true,
 		"payload": true, "payload_hash": true, "payload_bytes": true, "knowledge_ids": true, "lineage": true,
 		"content_hash": true, "media_type": true, "original_name": true,
@@ -74,6 +75,10 @@ func CreateDraft(cfg *config.Instance, opts CreateOptions) (*CreateResult, error
 	if opts.Now.IsZero() {
 		opts.Now = time.Now()
 	}
+	policy, err := governance.Load(cfg)
+	if err != nil {
+		return nil, err
+	}
 	item, err := ReadContent(cfg, opts.Kind, opts.Name)
 	if err != nil {
 		return nil, err
@@ -87,6 +92,22 @@ func CreateDraft(cfg *config.Instance, opts CreateOptions) (*CreateResult, error
 	mapping, body, err := parseTemplate(content)
 	if err != nil {
 		return nil, err
+	}
+	if opts.Kind == "knowledge" {
+		var declaredType string
+		for _, rule := range policy.Types {
+			if rule.Template == item.Path {
+				declaredType = rule.Name
+				break
+			}
+		}
+		if declaredType == "" {
+			return nil, fmt.Errorf("knowledge template %s is not declared by content pack %s@%s", item.Path, policy.Name, policy.Version)
+		}
+		templateType, ok := mappingString(mapping, "type")
+		if !ok || templateType != declaredType {
+			return nil, fmt.Errorf("knowledge template %s type must be %q", item.Path, declaredType)
+		}
 	}
 	setMappingValue(mapping, "title", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: strings.TrimSpace(opts.Title)})
 	body = []byte(strings.ReplaceAll(string(body), "{{title}}", strings.TrimSpace(opts.Title)))
@@ -109,7 +130,11 @@ func CreateDraft(cfg *config.Instance, opts CreateOptions) (*CreateResult, error
 		setMappingValue(mapping, key, valueNode)
 	}
 	if len(opts.Related) > 0 {
-		links, err := mappingStringList(mapping, "related")
+		relationField, ok := policy.DefaultCreateRelation()
+		if !ok {
+			return nil, errors.New("content pack does not declare a default_for_create relation for --related")
+		}
+		links, err := mappingStringList(mapping, relationField)
 		if err != nil {
 			return nil, err
 		}
@@ -119,14 +144,14 @@ func CreateDraft(cfg *config.Instance, opts CreateOptions) (*CreateResult, error
 		}
 		for _, id := range opts.Related {
 			if _, err := document.FindByID(cfg.KnowledgeDir(), id); err != nil {
-				return nil, fmt.Errorf("resolve related knowledge %s: %w", id, err)
+				return nil, fmt.Errorf("resolve relation target knowledge %s: %w", id, err)
 			}
 			if !seen[id] {
 				seen[id] = true
 				links = append(links, id)
 			}
 		}
-		setMappingValue(mapping, "related", stringSequence(links))
+		setMappingValue(mapping, relationField, stringSequence(links))
 	}
 	rendered, err := renderTemplate(mapping, body)
 	if err != nil {
@@ -254,6 +279,20 @@ func mappingStringList(mapping *yaml.Node, key string) ([]string, error) {
 		return out, nil
 	}
 	return nil, nil
+}
+
+func mappingString(mapping *yaml.Node, key string) (string, bool) {
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value != key {
+			continue
+		}
+		value := mapping.Content[i+1]
+		if value.Kind != yaml.ScalarNode || value.Tag != "!!str" {
+			return "", false
+		}
+		return value.Value, true
+	}
+	return "", false
 }
 
 func stringSequence(items []string) *yaml.Node {

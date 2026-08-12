@@ -65,7 +65,7 @@ func newTemplateCreateCommand(rt *Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&title, "title", "", "draft title used for {{title}}")
 	cmd.Flags().StringVar(&output, "output", "", "explicit draft output path")
 	cmd.Flags().StringArrayVar(&set, "set", nil, "set a draft property as name=YAML-value; may be repeated")
-	cmd.Flags().StringArrayVar(&related, "related", nil, "stable knowledge ID to add to related; may be repeated")
+	cmd.Flags().StringArrayVar(&related, "related", nil, "stable knowledge ID to add through the content pack's default draft relation; may be repeated")
 	cmd.Flags().BoolVar(&overwrite, "overwrite", false, "allow replacing an existing output file")
 	cmd.Flags().BoolVar(&yes, "yes", false, "confirm overwriting an existing output file")
 	_ = cmd.MarkFlagRequired("title")

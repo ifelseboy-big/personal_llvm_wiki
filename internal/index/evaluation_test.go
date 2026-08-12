@@ -139,12 +139,16 @@ func writeEvaluationKnowledge(tb testing.TB, cfg *config.Instance, at time.Time,
 		tb.Fatal(err)
 	}
 	body := []byte(fmt.Sprintf("# %s\n\n%s\n", title, text))
+	governanceVersion, err := governance.Version(cfg)
+	if err != nil {
+		tb.Fatal(err)
+	}
 	meta := document.Metadata{
 		SchemaVersion: document.CurrentSchema, ID: id, Type: "concept", Title: title, Status: "published",
 		PublishedAt: at.Format(time.RFC3339), UpdatedAt: at.Format(time.RFC3339), ContentHash: document.HashBytes(body),
-		Tags: tags, Aliases: aliases, GovernanceVersion: governance.PersonalGovernanceVersion,
+		Tags: tags, Aliases: aliases, GovernanceVersion: governanceVersion,
 		Lineage: []document.LineageRef{{InboxID: "inbox_01arz3ndektsv4rrffq69g5fav", PayloadHash: document.HashBytes([]byte("evaluation-source")), Source: "retrieval-evaluation", CapturedAt: at.Format(time.RFC3339)}},
-		Extra:   map[string]any{"description": "Retrieval evaluation fixture", "lifecycle": "current"},
+		Extra:   map[string]any{"category": "learning", "description": "Retrieval evaluation fixture", "lifecycle": "current"},
 	}
 	path := filepath.Join(cfg.Root, filepath.FromSlash(document.KnowledgePath(cfg.Paths.Knowledge, meta)))
 	if err := document.Write(path, meta, body); err != nil {

@@ -34,12 +34,12 @@ func TestSlugIsReadableAndBounded(t *testing.T) {
 	}
 }
 
-func TestKnowledgeRoundTripV2(t *testing.T) {
+func TestKnowledgeRoundTripV3(t *testing.T) {
 	body := []byte("# Stable fact\n\nSelf-contained fact.\n")
 	meta := Metadata{
 		SchemaVersion: CurrentSchema, ID: testKnowledgeID, Type: "concept", Title: "Stable fact",
 		Status: "published", PublishedAt: "2026-08-08T10:00:00Z", UpdatedAt: "2026-08-08T10:00:00Z",
-		ContentHash: HashBytes(body), GovernanceVersion: "personal-2.0",
+		ContentHash: HashBytes(body), GovernanceVersion: "personal-3.0",
 		Lineage: []LineageRef{{InboxID: testInboxID, PayloadHash: HashBytes([]byte("payload")), Source: "test", CapturedAt: "2026-08-08T09:00:00Z"}},
 		Extra:   map[string]any{"description": "kept", "lifecycle": "current", "future": "round-trip"},
 	}
@@ -56,6 +56,17 @@ func TestKnowledgeRoundTripV2(t *testing.T) {
 	}
 	if doc.Metadata.Extra["future"] != "round-trip" || doc.Metadata.Lineage[0].InboxID != testInboxID {
 		t.Fatalf("metadata was not preserved: %#v", doc.Metadata)
+	}
+}
+
+func TestRejectOldFrontmatterSchema(t *testing.T) {
+	body := []byte("# Old\n")
+	doc := &Document{Metadata: Metadata{
+		SchemaVersion: CurrentSchema - 1, ID: testKnowledgeID, Type: "any-declared-type", Title: "Old", Status: "published",
+		PublishedAt: "2026-08-09T00:00:00Z", UpdatedAt: "2026-08-09T00:00:00Z", ContentHash: HashBytes(body),
+	}, Body: body}
+	if err := doc.Validate("knowledge", false); err == nil {
+		t.Fatal("old frontmatter schema was accepted")
 	}
 }
 

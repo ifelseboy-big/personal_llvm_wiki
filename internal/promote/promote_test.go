@@ -100,11 +100,15 @@ func TestOnePromotionCreatesAndUpdatesKnowledgeTogether(t *testing.T) {
 	existingID := "know_01arz3ndektsv4rrffq69g5faw"
 	createdID := "know_01arz3ndektsv4rrffq69g5fax"
 	existingBody := []byte("# Existing knowledge\n\nOriginal fact.\n")
+	governanceVersion, err := governance.Version(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	existingMeta := document.Metadata{
 		SchemaVersion: document.CurrentSchema, ID: existingID, Type: "concept", Title: "Existing knowledge", Status: "published",
 		PublishedAt: time.Unix(50, 0).UTC().Format(time.RFC3339), UpdatedAt: time.Unix(50, 0).UTC().Format(time.RFC3339), ContentHash: document.HashBytes(existingBody),
-		GovernanceVersion: governance.PersonalGovernanceVersion, Lineage: []document.LineageRef{{InboxID: first.ID, PayloadHash: first.PayloadHash, Source: "test", CapturedAt: time.Unix(100, 0).UTC().Format(time.RFC3339)}},
-		Extra: map[string]any{"description": "Existing self-contained knowledge", "lifecycle": "current"},
+		GovernanceVersion: governanceVersion, Lineage: []document.LineageRef{{InboxID: first.ID, PayloadHash: first.PayloadHash, Source: "test", CapturedAt: time.Unix(100, 0).UTC().Format(time.RFC3339)}},
+		Extra: map[string]any{"category": "learning", "description": "Existing self-contained knowledge", "lifecycle": "current"},
 	}
 	existingPath := filepath.Join(cfg.Root, filepath.FromSlash(document.KnowledgePath(cfg.Paths.Knowledge, existingMeta)))
 	if err := document.Write(existingPath, existingMeta, existingBody); err != nil {
@@ -178,6 +182,42 @@ func TestApplyDriftMarksPromotionStaleWithoutFactWrites(t *testing.T) {
 	_, state, _, err := Load(cfg, planned.Plan.ID)
 	if err != nil || state.Status != "stale" {
 		t.Fatalf("promotion was not marked stale: %#v %v", state, err)
+	}
+}
+
+func TestContentPackDriftMarksPromotionStaleWithoutFactWrites(t *testing.T) {
+	cfg := initPromotionWiki(t)
+	input := addInbox(t, cfg, "source.txt", "payload", 100)
+	base := t.TempDir()
+	writeDraft(t, filepath.Join(base, "draft.md"), "concept", "No policy drift", "Frozen fact.")
+	knowledgeID := "know_01arz3ndektsv4rrffq69g5faw"
+	manifest := Manifest{SchemaVersion: 1, Inboxes: []ManifestInbox{{ID: input.ID, PayloadHash: input.PayloadHash, ItemHash: input.ItemHash, Consume: true}},
+		Targets: []ManifestTarget{{Operation: "create", DraftFile: "draft.md", KnowledgeID: knowledgeID, InboxIDs: []string{input.ID}}}}
+	planned, err := PlanPromotion(cfg, PlanOptions{ManifestPath: writeManifest(t, base, manifest), Now: time.Unix(200, 0).UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := governance.Load(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy.Categories[0].Description += " changed after plan"
+	policyBytes, err := json.MarshalIndent(policy, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.ContentPackPath(), append(policyBytes, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Apply(cfg, planned.Plan.ID, planned.PlanHash, false, time.Unix(300, 0).UTC()); !errors.Is(err, ErrApplyConflict) {
+		t.Fatalf("content-pack drift did not return an apply conflict: %v", err)
+	}
+	if _, err := document.FindByID(cfg.KnowledgeDir(), knowledgeID); !os.IsNotExist(err) {
+		t.Fatalf("content-pack drift wrote knowledge: %v", err)
+	}
+	_, state, _, err := Load(cfg, planned.Plan.ID)
+	if err != nil || state.Status != "stale" {
+		t.Fatalf("content-pack drift was not marked stale: %#v %v", state, err)
 	}
 }
 
@@ -388,7 +428,7 @@ func addInbox(t *testing.T, cfg *config.Instance, name, payload string, second i
 
 func writeDraft(t *testing.T, path, kind, title, fact string) {
 	t.Helper()
-	data := []byte("---\ntype: " + kind + "\ntitle: \"" + title + "\"\ndescription: \"Self-contained description\"\nlifecycle: current\n---\n# " + title + "\n\n" + fact + "\n")
+	data := []byte("---\ntype: " + kind + "\ncategory: learning\ntitle: \"" + title + "\"\ndescription: \"Self-contained description\"\nlifecycle: current\n---\n# " + title + "\n\n" + fact + "\n")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}

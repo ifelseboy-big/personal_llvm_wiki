@@ -23,8 +23,8 @@ import (
 )
 
 const (
-	SchemaVersion       = 5
-	QueryPlannerVersion = "3"
+	SchemaVersion       = 6
+	QueryPlannerVersion = "4"
 )
 
 type RebuildResult struct {
@@ -42,6 +42,10 @@ type Status struct {
 	TokenizerVersion    string         `json:"tokenizer_version,omitempty"`
 	TokenizerCommit     string         `json:"tokenizer_commit,omitempty"`
 	QueryPlannerVersion string         `json:"query_planner_version,omitempty"`
+	ContentPackName     string         `json:"content_pack_name,omitempty"`
+	ContentPackVersion  string         `json:"content_pack_version,omitempty"`
+	GovernanceVersion   string         `json:"governance_version,omitempty"`
+	ContentPackHash     string         `json:"content_pack_hash,omitempty"`
 	Documents           map[string]int `json:"documents,omitempty"`
 	Chunks              int            `json:"chunks,omitempty"`
 	Path                string         `json:"path"`
@@ -83,6 +87,7 @@ type SearchResult struct {
 type SearchOptions struct {
 	Limit           int
 	IncludeInactive bool
+	Now             time.Time
 }
 
 var (
@@ -205,9 +210,14 @@ func rebuildLocked(cfg *config.Instance) (*RebuildResult, error) {
 		if err != nil {
 			return nil, err
 		}
-		if _, err := tx.Exec(`INSERT INTO documents(id,layer,path,type,title,status,content_hash,updated_at,metadata_json)
-				VALUES(?,?,?,?,?,?,?,?,?)`, doc.Metadata.ID, "knowledge", rel, doc.Metadata.Type, doc.Metadata.Title,
-			doc.Metadata.Status, doc.Metadata.ContentHash, effectiveUpdatedAt(doc.Metadata), string(metadataJSON)); err != nil {
+		retrieval, err := governance.RetrievalConstraintsForStored(cfg, doc.Metadata)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(`INSERT INTO documents(id,layer,path,type,title,status,content_hash,updated_at,metadata_json,retrieval_active,retrieval_from_unix,retrieval_until_unix)
+				VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, doc.Metadata.ID, "knowledge", rel, doc.Metadata.Type, doc.Metadata.Title,
+			doc.Metadata.Status, doc.Metadata.ContentHash, effectiveUpdatedAt(doc.Metadata), string(metadataJSON), retrieval.Active,
+			nullableInt64(retrieval.NotBeforeUnix), nullableInt64(retrieval.NotAfterUnix)); err != nil {
 			return nil, fmt.Errorf("insert document %s: %w", doc.Metadata.ID, err)
 		}
 		fileBytes, err := os.ReadFile(doc.Path)
@@ -234,6 +244,14 @@ func rebuildLocked(cfg *config.Instance) (*RebuildResult, error) {
 			result.Chunks++
 		}
 	}
+	policy, err := governance.Load(cfg)
+	if err != nil {
+		return nil, err
+	}
+	policyHash, err := policy.Hash()
+	if err != nil {
+		return nil, err
+	}
 	meta := map[string]string{
 		"schema_version":        fmt.Sprintf("%d", SchemaVersion),
 		"built_at":              result.RebuiltAt,
@@ -242,6 +260,10 @@ func rebuildLocked(cfg *config.Instance) (*RebuildResult, error) {
 		"tokenizer_version":     sqlite3simple.TokenizerVersion,
 		"tokenizer_commit":      sqlite3simple.TokenizerCommit,
 		"query_planner_version": QueryPlannerVersion,
+		"content_pack_name":     cfg.Template.Name,
+		"content_pack_version":  cfg.Template.Version,
+		"governance_version":    policy.GovernanceVersion,
+		"content_pack_hash":     policyHash,
 	}
 	for key, value := range meta {
 		if _, err := tx.Exec(`INSERT INTO meta(key,value) VALUES(?,?)`, key, value); err != nil {
@@ -286,6 +308,10 @@ func GetStatus(cfg *config.Instance) (*Status, error) {
 	_ = db.QueryRow(`SELECT value FROM meta WHERE key='tokenizer_version'`).Scan(&status.TokenizerVersion)
 	_ = db.QueryRow(`SELECT value FROM meta WHERE key='tokenizer_commit'`).Scan(&status.TokenizerCommit)
 	_ = db.QueryRow(`SELECT value FROM meta WHERE key='query_planner_version'`).Scan(&status.QueryPlannerVersion)
+	_ = db.QueryRow(`SELECT value FROM meta WHERE key='content_pack_name'`).Scan(&status.ContentPackName)
+	_ = db.QueryRow(`SELECT value FROM meta WHERE key='content_pack_version'`).Scan(&status.ContentPackVersion)
+	_ = db.QueryRow(`SELECT value FROM meta WHERE key='governance_version'`).Scan(&status.GovernanceVersion)
+	_ = db.QueryRow(`SELECT value FROM meta WHERE key='content_pack_hash'`).Scan(&status.ContentPackHash)
 	status.Documents = map[string]int{}
 	rows, err := db.Query(`SELECT layer, count(*) FROM documents GROUP BY layer ORDER BY layer`)
 	if err != nil {
@@ -544,10 +570,15 @@ func insertScanned(tx *sql.Tx, item *scannedDocument, cfg *config.Instance, inde
 	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`INSERT INTO documents(id,layer,path,type,title,status,content_hash,updated_at,metadata_json)
-		VALUES(?,?,?,?,?,?,?,?,?)`, item.doc.Metadata.ID, item.layer, item.rel, item.doc.Metadata.Type,
+	retrieval, err := governance.RetrievalConstraintsForStored(cfg, item.doc.Metadata)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO documents(id,layer,path,type,title,status,content_hash,updated_at,metadata_json,retrieval_active,retrieval_from_unix,retrieval_until_unix)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, item.doc.Metadata.ID, item.layer, item.rel, item.doc.Metadata.Type,
 		item.doc.Metadata.Title, item.doc.Metadata.Status, item.doc.Metadata.ContentHash,
-		effectiveUpdatedAt(item.doc.Metadata), string(metaJSON)); err != nil {
+		effectiveUpdatedAt(item.doc.Metadata), string(metaJSON), retrieval.Active,
+		nullableInt64(retrieval.NotBeforeUnix), nullableInt64(retrieval.NotAfterUnix)); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`INSERT INTO files(path,layer,size,mtime_ns,file_hash,document_id,indexed_at)
@@ -604,6 +635,14 @@ func openDBReadOnly(path string) (*sql.DB, error) {
 }
 
 func validateIndexMetadata(db *sql.DB, cfg *config.Instance) error {
+	policy, err := governance.Load(cfg)
+	if err != nil {
+		return err
+	}
+	policyHash, err := policy.Hash()
+	if err != nil {
+		return err
+	}
 	required := []struct {
 		key   string
 		value string
@@ -614,6 +653,10 @@ func validateIndexMetadata(db *sql.DB, cfg *config.Instance) error {
 		{"tokenizer_version", sqlite3simple.TokenizerVersion},
 		{"tokenizer_commit", sqlite3simple.TokenizerCommit},
 		{"query_planner_version", QueryPlannerVersion},
+		{"content_pack_name", cfg.Template.Name},
+		{"content_pack_version", cfg.Template.Version},
+		{"governance_version", policy.GovernanceVersion},
+		{"content_pack_hash", policyHash},
 	}
 	for _, item := range required {
 		var actual string
@@ -700,8 +743,12 @@ func SearchWithOptions(cfg *config.Instance, question string, opts SearchOptions
 
 	result := &SearchResult{NormalizedQuery: normalized, RetrievalModes: []string{"strict"}}
 	fetchLimit := opts.Limit * 4
-	filterInactive := governance.UsesPersonalGovernance(cfg) && !opts.IncludeInactive
-	strict, err := searchLevel(db, normalized, fetchLimit, true, "strict", filterInactive)
+	filterInactive := !opts.IncludeInactive
+	if opts.Now.IsZero() {
+		opts.Now = time.Now()
+	}
+	nowUnix := opts.Now.Unix()
+	strict, err := searchLevel(db, normalized, fetchLimit, true, "strict", filterInactive, nowUnix)
 	if err != nil {
 		return nil, err
 	}
@@ -709,7 +756,7 @@ func SearchWithOptions(cfg *config.Instance, question string, opts SearchOptions
 	if len(result.Candidates) < opts.Limit {
 		if relaxed := relaxedQuery(normalized); relaxed != "" {
 			result.RetrievalModes = append(result.RetrievalModes, "relaxed")
-			items, err := searchLevel(db, relaxed, fetchLimit, false, "relaxed", filterInactive)
+			items, err := searchLevel(db, relaxed, fetchLimit, false, "relaxed", filterInactive, nowUnix)
 			if err != nil {
 				return nil, err
 			}
@@ -809,15 +856,18 @@ func scanKnowledgeFileHashes(cfg *config.Instance) (map[string]string, error) {
 	return files, nil
 }
 
-func searchLevel(db *sql.DB, query string, limit int, useSimpleQuery bool, mode string, filterInactive bool) ([]Candidate, error) {
+func searchLevel(db *sql.DB, query string, limit int, useSimpleQuery bool, mode string, filterInactive bool, nowUnix int64) ([]Candidate, error) {
 	matchExpression := "?"
 	if useSimpleQuery {
 		matchExpression = "simple_query(?, 0)"
 	}
 	lifecycleFilter := ""
+	args := []any{query}
 	if filterInactive {
-		lifecycleFilter = "AND trim(COALESCE(json_extract(d.metadata_json,'$.extra.lifecycle'),'current')) NOT IN ('superseded','retracted')"
+		lifecycleFilter = "AND d.retrieval_active=1 AND (d.retrieval_from_unix IS NULL OR d.retrieval_from_unix<=?) AND (d.retrieval_until_unix IS NULL OR d.retrieval_until_unix>=?)"
+		args = append(args, nowUnix, nowUnix)
 	}
+	args = append(args, limit)
 	rows, err := db.Query(fmt.Sprintf(`
 		SELECT d.id,d.path,c.id,c.ordinal,c.start_line,c.end_line,c.body_hash,
 		       f.file_hash,d.content_hash,
@@ -827,7 +877,7 @@ func searchLevel(db *sql.DB, query string, limit int, useSimpleQuery bool, mode 
 		JOIN documents d ON d.id=c.document_id
 		JOIN files f ON f.document_id=d.id AND f.path=d.path
 		WHERE chunks_fts MATCH %s AND d.layer='knowledge' %s
-		ORDER BY rank ASC,d.id ASC,c.ordinal ASC LIMIT ?`, matchExpression, lifecycleFilter), query, limit)
+		ORDER BY rank ASC,d.id ASC,c.ordinal ASC LIMIT ?`, matchExpression, lifecycleFilter), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1045,6 +1095,13 @@ func effectiveUpdatedAt(meta document.Metadata) string {
 	return ""
 }
 
+func nullableInt64(value *int64) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
 func swapFile(staged, target string) error {
 	backup := target + ".backup"
 	os.Remove(backup)
@@ -1073,7 +1130,8 @@ const schemaSQL = `
 CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
 CREATE TABLE documents(
   id TEXT PRIMARY KEY,layer TEXT NOT NULL,path TEXT NOT NULL UNIQUE,type TEXT,title TEXT,status TEXT,
-  content_hash TEXT NOT NULL,updated_at TEXT,metadata_json TEXT NOT NULL
+  content_hash TEXT NOT NULL,updated_at TEXT,metadata_json TEXT NOT NULL,
+  retrieval_active INTEGER NOT NULL CHECK(retrieval_active IN (0,1)),retrieval_from_unix INTEGER,retrieval_until_unix INTEGER
 );
 CREATE TABLE files(
   path TEXT PRIMARY KEY,layer TEXT NOT NULL,size INTEGER NOT NULL,mtime_ns INTEGER NOT NULL,

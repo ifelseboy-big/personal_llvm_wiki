@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	SkillVersion    = "3.0.0"
+	SkillVersion    = "4.0.0"
 	manifestSchema  = 3
 	manifestName    = ".llm-wiki-install.json"
 	installLockName = ".llm-wiki-install.lock"

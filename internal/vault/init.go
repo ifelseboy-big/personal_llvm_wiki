@@ -94,6 +94,7 @@ func Init(opts InitOptions) (*InitResult, error) {
 	cfg.Root = root
 	cfg.Template.Name = m.Name
 	cfg.Template.Version = m.Version
+	cfg.Template.ContentPack = m.ContentPack
 
 	dirs := []string{
 		cfg.Paths.Inbox, cfg.Paths.Knowledge,

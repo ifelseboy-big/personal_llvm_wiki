@@ -321,6 +321,10 @@ func newStatusCommand(rt *Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			policy, policyErr := governance.Load(cfg)
+			if policyErr != nil {
+				return E("CONTENT_PACK_INVALID", "cannot load the instance-bound content pack", ExitValidation, policyErr)
+			}
 			counts := map[string]int{"pending_inbox": 0, "processed_inbox": 0, "knowledge": 0}
 			problems := []string{}
 			inboxDocs, inboxProblems := inbox.List(cfg, "")
@@ -340,6 +344,8 @@ func newStatusCommand(rt *Runtime) *cobra.Command {
 				}
 				if validateErr := doc.Validate("knowledge", true); validateErr != nil {
 					problems = append(problems, doc.Path+": "+validateErr.Error())
+				} else if governanceErr := governance.ValidateStored(cfg, doc, time.Now()); governanceErr != nil {
+					problems = append(problems, doc.Path+": "+governanceErr.Error())
 				}
 			}
 			for _, problem := range knowledgeProblems {
@@ -353,7 +359,9 @@ func newStatusCommand(rt *Runtime) *cobra.Command {
 			data := map[string]any{
 				"documents": counts, "problems": problems,
 				"index_exists": indexErr == nil,
-				"template":     cfg.Template, "active_promotions": activePromotions,
+				"template":     cfg.Template, "content_pack": map[string]any{
+					"name": policy.Name, "version": policy.Version, "governance_version": policy.GovernanceVersion,
+				}, "active_promotions": activePromotions,
 			}
 			return rt.Success("status", ref, data, problems, nil)
 		},
@@ -375,7 +383,13 @@ func newDoctorCommand(rt *Runtime) *cobra.Command {
 				OK      bool   `json:"ok"`
 				Message string `json:"message"`
 			}
+			policy, policyErr := governance.Load(cfg)
 			checks := []check{{Name: "config", OK: true, Message: "schema and managed paths are valid"}}
+			if policyErr != nil {
+				checks = append(checks, check{Name: "content-pack", OK: false, Message: policyErr.Error()})
+			} else {
+				checks = append(checks, check{Name: "content-pack", OK: true, Message: policy.Name + "@" + policy.Version + " policy is valid"})
+			}
 			attention := []string{}
 			attention = append(attention, inbox.ProcessedPayloadWarnings(cfg)...)
 			inboxDocs, inboxProblems := inbox.List(cfg, "")
@@ -404,7 +418,7 @@ func newDoctorCommand(rt *Runtime) *cobra.Command {
 				}
 				knowledgeIDs[doc.Metadata.ID] = true
 				checks = append(checks, check{Name: "knowledge:" + doc.Metadata.ID, OK: err == nil, Message: errorMessage(err, "valid")})
-				if err == nil && governance.UsesPersonalGovernance(cfg) {
+				if err == nil && policyErr == nil {
 					if governanceErr := governance.ValidateStored(cfg, doc, time.Now()); governanceErr != nil {
 						checks = append(checks, check{Name: "knowledge-governance:" + doc.Metadata.ID, OK: false, Message: governanceErr.Error()})
 						continue
@@ -417,7 +431,7 @@ func newDoctorCommand(rt *Runtime) *cobra.Command {
 					attention = append(attention, assessment.Warnings...)
 					checks = append(checks, check{
 						Name: "knowledge-governance:" + doc.Metadata.ID, OK: true,
-						Message: "personal 2.0.0 metadata, lineage, and stable relations are valid",
+						Message: "content-pack metadata, lineage, and stable relations are valid",
 					})
 					if reciprocalErr := governance.ValidateReciprocalRelations(cfg, doc); reciprocalErr != nil {
 						checks = append(checks, check{Name: "knowledge-relations:" + doc.Metadata.ID, OK: false, Message: reciprocalErr.Error()})
@@ -432,11 +446,18 @@ func newDoctorCommand(rt *Runtime) *cobra.Command {
 				checks = append(checks, check{Name: "index", OK: false, Message: indexErr.Error() + "; run index rebuild"})
 			} else {
 				expectedCounts := map[string]int{"knowledge": len(knowledgeDocs)}
+				policyHash := ""
+				policyHashErr := policyErr
+				if policyHashErr == nil {
+					policyHash, policyHashErr = policy.Hash()
+				}
 				indexOK := indexStatus.Exists && indexStatus.SchemaVersion == indexstore.SchemaVersion &&
 					indexStatus.Tokenizer == "simple" &&
 					indexStatus.TokenizerVersion != "" && indexStatus.TokenizerCommit != "" &&
-					indexStatus.QueryPlannerVersion == indexstore.QueryPlannerVersion
-				message := "index schema, tokenizer, and document counts match files"
+					indexStatus.QueryPlannerVersion == indexstore.QueryPlannerVersion && policyHashErr == nil &&
+					indexStatus.ContentPackName == policy.Name && indexStatus.ContentPackVersion == policy.Version &&
+					indexStatus.GovernanceVersion == policy.GovernanceVersion && indexStatus.ContentPackHash == policyHash
+				message := "index schema, tokenizer, content pack, and document counts match files"
 				for layer, expected := range expectedCounts {
 					indexOK = indexOK && indexStatus.Documents[layer] == expected
 				}

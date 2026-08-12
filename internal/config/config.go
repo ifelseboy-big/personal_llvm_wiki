@@ -16,17 +16,19 @@ import (
 )
 
 const (
-	CurrentSchema = 2
+	CurrentSchema = 3
 	FileName      = "llm-wiki.toml"
 )
 
 var validInstanceName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 var validInstanceID = regexp.MustCompile(`^wiki_[0-9a-hjkmnp-tv-z]{26}$`)
+var validTemplateName = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 var validTemplateVersion = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
 
 type TemplateConfig struct {
-	Name    string `toml:"name" json:"name"`
-	Version string `toml:"version" json:"version"`
+	Name        string `toml:"name" json:"name"`
+	Version     string `toml:"version" json:"version"`
+	ContentPack string `toml:"content_pack" json:"content_pack"`
 }
 
 type PathsConfig struct {
@@ -68,7 +70,7 @@ func DefaultInstance(name, id string, now time.Time) *Instance {
 		InstanceID:    id,
 		Name:          name,
 		CreatedAt:     now.Format(time.RFC3339),
-		Template:      TemplateConfig{Name: "personal", Version: "2.0.0"},
+		Template:      TemplateConfig{Name: "unbound", Version: "0.0.0", ContentPack: "content-pack.json"},
 		Paths: PathsConfig{
 			Inbox: "inbox", Knowledge: "knowledge",
 			Templates: "templates", Rules: "rules", Runtime: ".llm-wiki",
@@ -159,8 +161,11 @@ func (c *Instance) Validate() error {
 	if _, err := time.Parse(time.RFC3339, c.CreatedAt); err != nil {
 		return errors.New("created_at must be RFC3339")
 	}
-	if c.Template.Name == "" || !validTemplateVersion.MatchString(c.Template.Version) {
+	if !validTemplateName.MatchString(c.Template.Name) || !validTemplateVersion.MatchString(c.Template.Version) {
 		return errors.New("template name or semantic version is invalid")
+	}
+	if err := validateRelativePath(c.Template.ContentPack); err != nil {
+		return fmt.Errorf("template content_pack: %w", err)
 	}
 	paths := []string{c.Paths.Inbox, c.Paths.Knowledge, c.Paths.Templates, c.Paths.Rules, c.Paths.Runtime}
 	cleanPaths := make([]string, 0, len(paths))
@@ -187,6 +192,12 @@ func (c *Instance) Validate() error {
 			}
 		}
 	}
+	contentPack := filepath.Clean(c.Template.ContentPack)
+	for _, index := range []int{0, 1, 4} {
+		if pathsOverlap(contentPack, cleanPaths[index]) {
+			return fmt.Errorf("template content_pack overlaps protected managed path %q", cleanPaths[index])
+		}
+	}
 	if c.Index.ChunkMaxChars < 256 || c.Index.ChunkOverlapChars < 0 || c.Index.ChunkOverlapChars >= c.Index.ChunkMaxChars {
 		return errors.New("invalid index chunk configuration")
 	}
@@ -203,11 +214,11 @@ func (c *Instance) Validate() error {
 }
 
 func validateRelativePath(p string) error {
-	if p == "" || filepath.IsAbs(p) || filepath.VolumeName(p) != "" {
+	if p == "" || strings.Contains(p, `\`) || filepath.IsAbs(p) || filepath.VolumeName(p) != "" {
 		return fmt.Errorf("managed path must be non-empty and relative: %q", p)
 	}
 	clean := filepath.Clean(p)
-	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+	if filepath.ToSlash(clean) != p || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("managed path escapes wiki root: %q", p)
 	}
 	return nil
@@ -231,6 +242,7 @@ func (c *Instance) KnowledgeDir() string        { return c.Path(c.Paths.Knowledg
 func (c *Instance) TemplatesDir() string        { return c.Path(c.Paths.Templates) }
 func (c *Instance) RulesDir() string            { return c.Path(c.Paths.Rules) }
 func (c *Instance) RuntimeDir() string          { return c.Path(c.Paths.Runtime) }
+func (c *Instance) ContentPackPath() string     { return c.Path(c.Template.ContentPack) }
 
 func Find(start string) (string, error) {
 	current, err := filepath.Abs(start)

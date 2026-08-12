@@ -16,6 +16,7 @@ import (
 	"llm-wiki/internal/config"
 	"llm-wiki/internal/document"
 	"llm-wiki/internal/fsutil"
+	"llm-wiki/internal/governance"
 	resourcebundle "llm-wiki/resources"
 )
 
@@ -24,6 +25,7 @@ type Manifest struct {
 	Version       string   `toml:"version" json:"version"`
 	SchemaVersion int      `toml:"schema_version" json:"schema_version"`
 	Description   string   `toml:"description" json:"description"`
+	ContentPack   string   `toml:"content_pack" json:"content_pack"`
 	ManagedFiles  []string `toml:"managed_files" json:"managed_files"`
 }
 
@@ -93,10 +95,74 @@ func LoadManifest(name string) (Manifest, error) {
 	if err := toml.Unmarshal(b, &m); err != nil {
 		return m, err
 	}
-	if m.Name != name || m.Version == "" || m.SchemaVersion != config.CurrentSchema {
+	if m.Name != name || m.Version == "" || m.SchemaVersion != config.CurrentSchema || m.ContentPack == "" {
 		return m, fmt.Errorf("invalid embedded template manifest %q", name)
 	}
+	seen := map[string]bool{}
+	for _, relative := range m.ManagedFiles {
+		clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(relative)))
+		if strings.Contains(relative, `\`) || clean != relative || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || seen[clean] {
+			return m, fmt.Errorf("invalid or duplicate managed template path %q", relative)
+		}
+		first := strings.SplitN(clean, "/", 2)[0]
+		if first == "inbox" || first == "knowledge" || first == ".llm-wiki" || clean == config.FileName {
+			return m, fmt.Errorf("template manifest cannot manage protected path %q", relative)
+		}
+		info, err := fs.Stat(resourcebundle.FS, "vault-templates/"+name+"/"+clean)
+		if err != nil {
+			return m, fmt.Errorf("read managed embedded template path %q: %w", relative, err)
+		}
+		if !info.Mode().IsRegular() {
+			return m, fmt.Errorf("managed template path is not an embedded regular file %q", relative)
+		}
+		seen[clean] = true
+	}
+	if !seen[m.ContentPack] {
+		return m, errors.New("template content_pack must be listed in managed_files")
+	}
+	policy, err := loadEmbeddedPolicy(m)
+	if err != nil {
+		return m, err
+	}
+	if policy.Name != m.Name || policy.Version != m.Version {
+		return m, fmt.Errorf("template manifest identity %s@%s does not match content pack %s@%s", m.Name, m.Version, policy.Name, policy.Version)
+	}
+	for _, item := range policy.Types {
+		if !seen[item.Template] {
+			return m, fmt.Errorf("content pack type %s template is not managed: %s", item.Name, item.Template)
+		}
+	}
+	for _, item := range policy.Workflows {
+		if !seen[item.Path] {
+			return m, fmt.Errorf("content pack workflow %s is not managed: %s", item.Name, item.Path)
+		}
+	}
+	declaredTemplates := map[string]bool{}
+	for _, item := range policy.Types {
+		declaredTemplates[item.Template] = true
+	}
+	declaredWorkflows := map[string]bool{}
+	for _, item := range policy.Workflows {
+		declaredWorkflows[item.Path] = true
+	}
+	for _, relative := range m.ManagedFiles {
+		kind, _, isTemplate := contentTemplatePath(relative)
+		if isTemplate && kind == "knowledge" && !declaredTemplates[relative] {
+			return m, fmt.Errorf("managed knowledge template is not declared by the content pack: %s", relative)
+		}
+		if strings.HasPrefix(relative, "workflows/") && strings.HasSuffix(relative, ".md") && !declaredWorkflows[relative] {
+			return m, fmt.Errorf("managed workflow is not declared by the content pack: %s", relative)
+		}
+	}
 	return m, nil
+}
+
+func loadEmbeddedPolicy(manifest Manifest) (*governance.Policy, error) {
+	policyBytes, err := resourcebundle.FS.ReadFile("vault-templates/" + manifest.Name + "/" + manifest.ContentPack)
+	if err != nil {
+		return nil, err
+	}
+	return governance.Parse(policyBytes)
 }
 
 func ReadFile(templateName, relative string) ([]byte, error) {
@@ -109,23 +175,47 @@ func ReadFile(templateName, relative string) ([]byte, error) {
 
 func ListContent(cfg *config.Instance) ([]ContentTemplate, error) {
 	items := map[string]ContentTemplate{}
-	for _, kind := range []string{"inbox", "knowledge"} {
-		root := "vault-templates/personal/templates/" + kind
-		entries, err := fs.ReadDir(resourcebundle.FS, root)
+	if cfg == nil {
+		manifests, err := List()
 		if err != nil {
 			return nil, err
 		}
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
-				continue
+		for _, manifest := range manifests {
+			policy, err := loadEmbeddedPolicy(manifest)
+			if err != nil {
+				return nil, err
 			}
-			name := strings.TrimSuffix(entry.Name(), ".md")
-			key := kind + "/" + name
-			items[key] = ContentTemplate{Name: name, Kind: kind, Origin: "built-in", Path: key + ".md"}
+			for _, rule := range policy.Types {
+				key := "knowledge/" + rule.Name
+				if _, exists := items[key]; !exists {
+					items[key] = ContentTemplate{
+						Name: rule.Name, Kind: "knowledge", Origin: "built-in:" + manifest.Name, Path: rule.Template,
+					}
+				}
+			}
+			for _, relative := range manifest.ManagedFiles {
+				kind, name, ok := contentTemplatePath(relative)
+				if !ok || kind != "inbox" {
+					continue
+				}
+				key := kind + "/" + name
+				if _, exists := items[key]; !exists {
+					items[key] = ContentTemplate{Name: name, Kind: kind, Origin: "built-in:" + manifest.Name, Path: relative}
+				}
+			}
 		}
 	}
 	if cfg != nil {
-		for _, kind := range []string{"inbox", "knowledge"} {
+		policy, err := governance.Load(cfg)
+		if err != nil {
+			return nil, err
+		}
+		for _, rule := range policy.Types {
+			items["knowledge/"+rule.Name] = ContentTemplate{
+				Name: rule.Name, Kind: "knowledge", Origin: "wiki", Path: rule.Template,
+			}
+		}
+		for _, kind := range []string{"inbox"} {
 			root := filepath.Join(cfg.TemplatesDir(), kind)
 			if err := fsutil.EnsureNoSymlinkPath(cfg.Root, root); err != nil {
 				return nil, err
@@ -171,9 +261,34 @@ func ReadContent(cfg *config.Instance, kind, name string) (ContentTemplate, erro
 	if name == "" || filepath.Base(name) != name || document.SafeBaseName(name) != name {
 		return ContentTemplate{}, fmt.Errorf("invalid content template name %q", name)
 	}
+	if cfg != nil && (kind == "" || kind == "knowledge") {
+		policy, err := governance.Load(cfg)
+		if err != nil {
+			return ContentTemplate{}, err
+		}
+		for _, rule := range policy.Types {
+			if name != rule.Name {
+				continue
+			}
+			path := filepath.Join(cfg.Root, filepath.FromSlash(rule.Template))
+			if err := fsutil.EnsureNoSymlinkPath(cfg.Root, path); err != nil {
+				return ContentTemplate{}, err
+			}
+			b, err := os.ReadFile(path)
+			if err != nil {
+				return ContentTemplate{}, err
+			}
+			return ContentTemplate{Name: rule.Name, Kind: "knowledge", Origin: "wiki", Path: rule.Template, Content: string(b)}, nil
+		}
+		if kind == "knowledge" {
+			return ContentTemplate{}, os.ErrNotExist
+		}
+	}
 	kinds := []string{"inbox", "knowledge"}
 	if kind != "" {
 		kinds = []string{kind}
+	} else if cfg != nil {
+		kinds = []string{"inbox"}
 	}
 	for _, candidateKind := range kinds {
 		if cfg != nil {
@@ -188,9 +303,40 @@ func ReadContent(cfg *config.Instance, kind, name string) (ContentTemplate, erro
 				return ContentTemplate{}, err
 			}
 		}
-		path := "vault-templates/personal/templates/" + candidateKind + "/" + document.SafeBaseName(name) + ".md"
-		if b, err := resourcebundle.FS.ReadFile(path); err == nil {
-			return ContentTemplate{Name: name, Kind: candidateKind, Origin: "built-in", Path: candidateKind + "/" + name + ".md", Content: string(b)}, nil
+		if cfg != nil {
+			continue
+		}
+		manifests, err := List()
+		if err != nil {
+			return ContentTemplate{}, err
+		}
+		for _, manifest := range manifests {
+			relative := ""
+			if candidateKind == "knowledge" {
+				policy, err := loadEmbeddedPolicy(manifest)
+				if err != nil {
+					return ContentTemplate{}, err
+				}
+				for _, rule := range policy.Types {
+					if rule.Name == name {
+						relative = rule.Template
+						break
+					}
+				}
+			} else {
+				relative = "templates/" + candidateKind + "/" + document.SafeBaseName(name) + ".md"
+			}
+			if relative == "" {
+				continue
+			}
+			if !containsManagedFile(manifest.ManagedFiles, relative) {
+				continue
+			}
+			b, err := ReadFile(manifest.Name, relative)
+			if err != nil {
+				return ContentTemplate{}, err
+			}
+			return ContentTemplate{Name: name, Kind: candidateKind, Origin: "built-in:" + manifest.Name, Path: relative, Content: string(b)}, nil
 		}
 	}
 	return ContentTemplate{}, os.ErrNotExist
@@ -470,11 +616,33 @@ func ApplyUpgrade(cfg *config.Instance, keepConflicts, dryRun bool) (*UpgradePla
 	stateRel, _ := filepath.Rel(cfg.Root, statePath)
 	affected = append(affected, filepath.ToSlash(stateRel))
 	cfg.Template.Version = m.Version
+	cfg.Template.ContentPack = m.ContentPack
 	if err := config.Save(cfg); err != nil {
 		return plan, affected, err
 	}
 	affected = append(affected, config.FileName)
 	return plan, affected, nil
+}
+
+func contentTemplatePath(relative string) (string, string, bool) {
+	parts := strings.Split(relative, "/")
+	if len(parts) != 3 || parts[0] != "templates" || (parts[1] != "inbox" && parts[1] != "knowledge") || !strings.HasSuffix(parts[2], ".md") {
+		return "", "", false
+	}
+	name := strings.TrimSuffix(parts[2], ".md")
+	if name == "" || document.SafeBaseName(name) != name {
+		return "", "", false
+	}
+	return parts[1], name, true
+}
+
+func containsManagedFile(items []string, wanted string) bool {
+	for _, item := range items {
+		if item == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func loadInstallState(cfg *config.Instance) (InstallState, error) {

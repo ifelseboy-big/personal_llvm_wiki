@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"llm-wiki/internal/governance"
 	"llm-wiki/internal/inbox"
 	"llm-wiki/internal/promote"
 	"llm-wiki/internal/vault"
@@ -28,6 +29,9 @@ func newInboxAddCommand(rt *Runtime) *cobra.Command {
 			cfg, ref, err := resolveWiki(rt)
 			if err != nil {
 				return err
+			}
+			if _, err := governance.Load(cfg); err != nil {
+				return E("CONTENT_PACK_INVALID", "cannot load the instance-bound content pack", ExitValidation, err)
 			}
 			recoveryWarnings, err := recoverIfNeeded(cfg, rt.DryRun)
 			if err != nil {
@@ -135,6 +139,9 @@ func newInboxCleanCommand(rt *Runtime) *cobra.Command {
 			cfg, ref, err := resolveWiki(rt)
 			if err != nil {
 				return err
+			}
+			if _, err := governance.Load(cfg); err != nil {
+				return E("CONTENT_PACK_INVALID", "cannot load the instance-bound content pack", ExitValidation, err)
 			}
 			recoveryWarnings, err := recoverIfNeeded(cfg, rt.DryRun)
 			if err != nil {

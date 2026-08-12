@@ -14,6 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"llm-wiki/internal/document"
+	"llm-wiki/internal/governance"
 	"llm-wiki/internal/templates"
 	"llm-wiki/internal/vault"
 )
@@ -44,12 +45,44 @@ func TestPersonalTemplateMatchesVersionedDesignBaseline(t *testing.T) {
 	}
 }
 
+func TestPersonalContentPackDeclaresOrthogonalDomainsTypesAndWorkflows(t *testing.T) {
+	initialized, err := vault.Init(vault.InitOptions{Path: filepath.Join(t.TempDir(), "wiki"), Name: "policy-test", Template: "personal"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := governance.Load(initialized.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	categories := map[string]bool{}
+	for _, item := range policy.Categories {
+		categories[item.Name] = true
+	}
+	for _, name := range []string{"development", "learning", "configuration", "business"} {
+		if !categories[name] {
+			t.Fatalf("personal content pack omitted category %s", name)
+		}
+	}
+	types := map[string]bool{}
+	for _, item := range policy.Types {
+		types[item.Name] = true
+	}
+	for _, name := range []string{"requirement", "design", "decision", "runbook", "retrospective", "learning-note", "concept", "configuration", "business-rule", "business-process"} {
+		if !types[name] {
+			t.Fatalf("personal content pack omitted type %s", name)
+		}
+	}
+	if len(policy.Workflows) != 5 {
+		t.Fatalf("personal content pack must route five workflows: %#v", policy.Workflows)
+	}
+}
+
 func TestPersonalTemplatesExposeInboxPromotionAndOptionalViews(t *testing.T) {
 	manifest, err := templates.LoadManifest("personal")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Version != "2.0.0" {
+	if manifest.Version != "3.0.0" || manifest.ContentPack != "content-pack.json" {
 		t.Fatalf("unexpected personal template version %s", manifest.Version)
 	}
 	agents, err := templates.ReadFile("personal", "AGENTS.md")
@@ -58,13 +91,15 @@ func TestPersonalTemplatesExposeInboxPromotionAndOptionalViews(t *testing.T) {
 	}
 	if !strings.Contains(string(agents), "`knowledge/` 中由 `promote apply` 写入的 Markdown 是唯一可信事实源") ||
 		!strings.Contains(string(agents), "Inbox -> Promotion -> Knowledge") ||
-		!strings.Contains(string(agents), "然后停止") {
+		!strings.Contains(string(agents), "禁止直接创建、修改或移动 `knowledge/` 文件") {
 		t.Fatalf("personal AGENTS.md omitted its management-only or retrieval boundary: %s", agents)
 	}
-	if _, err := templates.ReadFile("personal", "rules/lifecycle.md"); err != nil {
-		t.Fatalf("personal template omitted lifecycle routing target: %v", err)
+	for _, workflow := range []string{"capture", "organize", "publish", "maintain", "query"} {
+		if _, err := templates.ReadFile("personal", "workflows/"+workflow+".md"); err != nil {
+			t.Fatalf("personal template omitted %s workflow: %v", workflow, err)
+		}
 	}
-	for _, name := range []string{"claim", "concept", "guide", "tutorial", "reference", "decision", "project"} {
+	for _, name := range []string{"requirement", "design", "decision", "runbook", "retrospective", "learning-note", "concept", "configuration", "business-rule", "business-process"} {
 		item, err := templates.ReadContent(nil, "knowledge", name)
 		if err != nil {
 			t.Fatal(err)
@@ -73,13 +108,28 @@ func TestPersonalTemplatesExposeInboxPromotionAndOptionalViews(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse %s template: %v", name, err)
 		}
-		for _, property := range []string{"description", "lifecycle", "cssclasses", "related"} {
+		if meta.Type != name {
+			t.Fatalf("%s template declares type %q", name, meta.Type)
+		}
+		if category, ok := meta.Extra["category"].(string); !ok || category != "" {
+			t.Fatalf("%s template preselects category instead of keeping category/type orthogonal: %#v", name, meta.Extra["category"])
+		}
+		for _, property := range []string{"category", "description", "lifecycle", "related"} {
 			if _, ok := meta.Extra[property]; !ok {
 				t.Fatalf("%s template is missing %s", name, property)
 			}
 		}
 		if meta.Tags == nil || meta.Aliases == nil {
 			t.Fatalf("%s template must declare tags and aliases lists", name)
+		}
+	}
+	configuration, err := templates.ReadContent(nil, "knowledge", "configuration")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"密码", "Token", "私钥", "秘密"} {
+		if !strings.Contains(configuration.Content, forbidden) {
+			t.Fatalf("configuration template omitted secret prohibition %q", forbidden)
 		}
 	}
 	for _, name := range []string{"knowledge.base", "inbox.base"} {
@@ -107,14 +157,14 @@ func TestCreateDraftRendersSafelyAndProtectsManagedPaths(t *testing.T) {
 	title := `Use "foo" \\ path`
 	output := filepath.Join(t.TempDir(), "draft.md")
 	result, err := templates.CreateDraft(cfg, templates.CreateOptions{
-		Kind: "knowledge", Name: "guide", Title: title, Output: output,
-		Set: []string{"description=Quoted title fixture", "applies_to=[macOS, LLVM]"},
+		Kind: "knowledge", Name: "runbook", Title: title, Output: output,
+		Set: []string{"category=development", "description=Quoted title fixture", "applies_to=[macOS, LLVM]"},
 		Now: time.Date(2026, 8, 9, 12, 34, 0, 0, time.Local),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.TemplateVersion != "2.0.0" || !strings.Contains(result.NextCommandHint, "promote plan") {
+	if result.TemplateVersion != "3.0.0" || !strings.Contains(result.NextCommandHint, "promote plan") {
 		t.Fatalf("unexpected result: %#v", result)
 	}
 	b, err := os.ReadFile(output)
@@ -130,6 +180,12 @@ func TestCreateDraftRendersSafelyAndProtectsManagedPaths(t *testing.T) {
 	}
 	if got, ok := meta.Extra["applies_to"].([]any); !ok || len(got) != 2 {
 		t.Fatalf("YAML list --set was not preserved: %#v", meta.Extra["applies_to"])
+	}
+	if _, err := templates.CreateDraft(cfg, templates.CreateOptions{
+		Kind: "knowledge", Name: "runbook", Title: "Override", Output: filepath.Join(t.TempDir(), "override.md"),
+		Set: []string{"type=concept"},
+	}); err == nil {
+		t.Fatal("template create allowed --set to override the content-pack type")
 	}
 
 	alias := filepath.Join(t.TempDir(), "drafts")
@@ -152,6 +208,79 @@ func TestCreateDraftRendersSafelyAndProtectsManagedPaths(t *testing.T) {
 	}
 	if _, err := templates.ReadContent(cfg, "knowledge", "../../concept"); err == nil {
 		t.Fatal("template name traversal was silently normalized")
+	}
+}
+
+func TestWikiContentPackAddsCategoryTypeAndTemplateUsingDataOnly(t *testing.T) {
+	initialized, err := vault.Init(vault.InitOptions{Path: filepath.Join(t.TempDir(), "wiki"), Name: "data-extension", Template: "personal"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := initialized.Config
+	policy, err := governance.Load(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy.Categories = append(policy.Categories, governance.NamedDefinition{Name: "research-domain", Description: "Declared only by test content data"})
+	policy.Types = append(policy.Types, governance.TypeRule{
+		Name: "field-note", Description: "Declared only by test content data", Template: "templates/knowledge/field-note.md",
+		Fields: []governance.FieldRule{{Name: "confidence", Kind: "enum", Required: true, Values: []string{"observed", "estimated"}}},
+	})
+	policy.Knowledge.Relations[0].Field = "connections"
+	data, err := json.MarshalIndent(policy, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.ContentPackPath(), append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	templatePath := filepath.Join(cfg.TemplatesDir(), "knowledge", "field-note.md")
+	template := "---\ntype: field-note\ncategory: \"\"\ntitle: \"{{title}}\"\ndescription: \"\"\nlifecycle: current\nconfidence: observed\naliases: []\ntags: []\nconnections: []\nsupersedes: []\nsuperseded_by: []\n---\n# {{title}}\n\n%% llm-wiki:prompt Record observed evidence and boundaries. %%\n"
+	if err := os.WriteFile(templatePath, []byte(template), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	items, err := templates.ListContent(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range items {
+		found = found || (item.Kind == "knowledge" && item.Name == "field-note" && item.Path == "templates/knowledge/field-note.md")
+	}
+	if !found {
+		t.Fatalf("data-declared template was not discovered: %#v", items)
+	}
+	output := filepath.Join(t.TempDir(), "field-note.md")
+	relatedID := "know_01arz3ndektsv4rrffq69g5faa"
+	relatedBody := []byte("# Existing\n")
+	relatedMeta := document.Metadata{
+		ID: relatedID, Type: "field-note", Title: "Existing", Status: "published",
+		PublishedAt: "2026-08-09T00:00:00Z", UpdatedAt: "2026-08-09T00:00:00Z", ContentHash: document.HashBytes(relatedBody),
+		GovernanceVersion: policy.GovernanceVersion,
+		Lineage:           []document.LineageRef{{InboxID: "inbox_01arz3ndektsv4rrffq69g5fav", PayloadHash: document.HashBytes([]byte("payload")), Source: "test", CapturedAt: "2026-08-08T00:00:00Z"}},
+		Extra:             map[string]any{"category": "research-domain", "description": "Existing", "lifecycle": "current", "confidence": "observed"},
+	}
+	relatedPath := filepath.Join(cfg.KnowledgeDir(), "field-note", "existing--"+relatedID+".md")
+	if err := document.Write(relatedPath, relatedMeta, relatedBody); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := templates.CreateDraft(cfg, templates.CreateOptions{
+		Kind: "knowledge", Name: "field-note", Title: "Test observation", Output: output,
+		Set: []string{"category=research-domain", "description=Observed only in test data", "confidence=observed"}, Related: []string{relatedID},
+	}); err != nil {
+		t.Fatalf("data-declared template could not create a draft: %v", err)
+	}
+	draftBytes, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draftMeta, _, err := document.Parse(draftBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connections, ok := draftMeta.Extra["connections"].([]any)
+	if !ok || len(connections) != 1 || connections[0] != relatedID {
+		t.Fatalf("--related did not use the data-declared default relation: %#v", draftMeta.Extra["connections"])
 	}
 }
 

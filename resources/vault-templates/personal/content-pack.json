@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "name": "personal",
+  "version": "3.0.0",
+  "governance_version": "personal-3.0",
+  "categories": [
+    { "name": "development", "description": "需求、设计、工程决策、交付运行和研发复盘" },
+    { "name": "learning", "description": "个人学习记录、概念理解、练习结论和知识边界" },
+    { "name": "configuration", "description": "非敏感配置事实、影响范围、验证方法和安全引用位置" },
+    { "name": "business", "description": "业务规则、业务流程、口径、角色和约束" }
+  ],
+  "types": [
+    {
+      "name": "requirement",
+      "description": "记录可验证的需求、范围、约束与验收条件",
+      "template": "templates/knowledge/requirement.md",
+      "fields": [
+        { "name": "requirement_state", "kind": "enum", "required": true, "values": ["draft", "validated", "approved", "implemented", "rejected"] },
+        { "name": "stakeholders", "kind": "string_list", "unique": true },
+        { "name": "target_release", "kind": "string" }
+      ]
+    },
+    {
+      "name": "design",
+      "description": "记录方案结构、接口、约束、权衡与验证设计",
+      "template": "templates/knowledge/design.md",
+      "fields": [
+        { "name": "design_state", "kind": "enum", "required": true, "values": ["proposed", "approved", "implemented", "retired"] },
+        { "name": "applies_to", "kind": "string_list", "unique": true },
+        { "name": "last_verified", "kind": "date" }
+      ]
+    },
+    {
+      "name": "decision",
+      "description": "记录明确选择、备选方案、理由、后果与复审条件",
+      "template": "templates/knowledge/decision.md",
+      "fields": [
+        { "name": "decision_state", "kind": "enum", "required": true, "values": ["proposed", "accepted", "deprecated"] },
+        { "name": "decided_at", "kind": "date", "required_when": { "field": "decision_state", "equals": "accepted" } },
+        { "name": "decision_makers", "kind": "string_list", "unique": true },
+        { "name": "consulted", "kind": "string_list", "unique": true },
+        { "name": "informed", "kind": "string_list", "unique": true }
+      ]
+    },
+    {
+      "name": "runbook",
+      "description": "记录可重复执行、验证、停止和恢复的操作流程",
+      "template": "templates/knowledge/runbook.md",
+      "fields": [
+        { "name": "owner", "kind": "string" },
+        { "name": "applies_to", "kind": "string_list", "unique": true },
+        { "name": "last_verified", "kind": "date" }
+      ]
+    },
+    {
+      "name": "retrospective",
+      "description": "记录一个明确周期的结果、证据、原因、教训与改进行动",
+      "template": "templates/knowledge/retrospective.md",
+      "fields": [
+        { "name": "period_start", "kind": "date", "required": true },
+        { "name": "period_end", "kind": "date", "required": true },
+        { "name": "participants", "kind": "string_list", "unique": true }
+      ]
+    },
+    {
+      "name": "learning-note",
+      "description": "记录学习目标、来源、理解、练习、反馈与待验证问题",
+      "template": "templates/knowledge/learning-note.md",
+      "fields": [
+        { "name": "learning_stage", "kind": "enum", "required": true, "values": ["captured", "understood", "practiced", "mastered"] },
+        { "name": "source_references", "kind": "string_list", "unique": true }
+      ]
+    },
+    {
+      "name": "concept",
+      "description": "解释稳定概念、机制、边界、示例、反例与分歧",
+      "template": "templates/knowledge/concept.md",
+      "fields": []
+    },
+    {
+      "name": "configuration",
+      "description": "记录非敏感配置项、作用域、影响、验证与秘密的安全引用位置",
+      "template": "templates/knowledge/configuration.md",
+      "fields": [
+        { "name": "system", "kind": "string", "required": true },
+        { "name": "environment", "kind": "string", "required": true },
+        { "name": "last_verified", "kind": "date" },
+        { "name": "security_reference", "kind": "string" }
+      ]
+    },
+    {
+      "name": "business-rule",
+      "description": "记录可判定的业务规则、输入、例外、口径、依据与生效范围",
+      "template": "templates/knowledge/business-rule.md",
+      "fields": [
+        { "name": "rule_state", "kind": "enum", "required": true, "values": ["draft", "active", "retired"] },
+        { "name": "rule_owner", "kind": "string" },
+        { "name": "effective_from", "kind": "date" },
+        { "name": "effective_until", "kind": "date" }
+      ]
+    },
+    {
+      "name": "business-process",
+      "description": "记录端到端业务流程、角色、触发、步骤、异常、控制与指标",
+      "template": "templates/knowledge/business-process.md",
+      "fields": [
+        { "name": "process_state", "kind": "enum", "required": true, "values": ["draft", "active", "retired"] },
+        { "name": "process_owner", "kind": "string" },
+        { "name": "last_verified", "kind": "date" }
+      ]
+    }
+  ],
+  "knowledge": {
+    "fields": [
+      { "name": "category", "kind": "enum", "required": true, "values_from": "categories" },
+      { "name": "description", "kind": "string", "required": true },
+      { "name": "lifecycle", "kind": "enum", "required": true, "values": ["current", "disputed", "superseded", "retracted"] },
+      { "name": "valid_from", "kind": "date" },
+      { "name": "valid_until", "kind": "date" },
+      { "name": "review_after", "kind": "date" }
+    ],
+    "relations": [
+      { "field": "related", "default_for_create": true },
+      { "field": "supersedes", "reciprocal": "superseded_by" },
+      { "field": "superseded_by", "reciprocal": "supersedes" }
+    ],
+    "lifecycle": {
+      "field": "lifecycle",
+      "inactive_values": ["superseded", "retracted"],
+      "disputed_values": ["disputed"],
+      "valid_from_field": "valid_from",
+      "valid_until_field": "valid_until",
+      "review_after_field": "review_after",
+      "exclude_not_yet_valid": true,
+      "exclude_expired": true
+    },
+    "quality": {
+      "require_h1_title": true,
+      "reject_template_variables": true,
+      "reject_prompt_comments": true,
+      "require_complete_footnotes": true
+    }
+  },
+  "workflows": [
+    { "name": "capture", "path": "workflows/capture.md" },
+    { "name": "organize", "path": "workflows/organize.md" },
+    { "name": "publish", "path": "workflows/publish.md" },
+    { "name": "maintain", "path": "workflows/maintain.md" },
+    { "name": "query", "path": "workflows/query.md" }
+  ]
+}
