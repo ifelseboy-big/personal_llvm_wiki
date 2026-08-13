@@ -81,7 +81,7 @@ set -eu
 case "${1:-}" in
 	env)
 		case "${2:-}" in
-			GOVERSION) printf '%s\n' 'go1.25.1' ;;
+			GOVERSION) printf '%s\n' "${FAKE_GO_VERSION:-go1.24.0}" ;;
 			CC) printf '%s\n' 'fake-cc' ;;
 			CXX) printf '%s\n' 'fake-cxx' ;;
 			*) exit 2 ;;
@@ -133,6 +133,13 @@ printf '%s\n' "$output" | grep -F "Installed llm-wiki 0.0.1 at $install_dir/llm-
 	|| fail "latest release was not installed"
 [ "$("$install_dir/llm-wiki" --version)" = 'llm-wiki version 0.0.1' ] \
 	|| fail "installed binary did not pass the version smoke test"
+
+if FAKE_GO_VERSION=go1.23.9 run_installer --version 0.0.2 >"$test_root/old-go.out" 2>"$test_root/old-go.err"; then
+	fail "installer accepted Go older than 1.24"
+fi
+unset FAKE_GO_VERSION
+grep -F 'Go 1.24 or newer is required; found 1.23.9' "$test_root/old-go.err" >/dev/null \
+	|| fail "old Go rejection was not explicit"
 
 output=$(run_installer)
 printf '%s\n' "$output" | grep -F 'llm-wiki 0.0.1 is already installed' >/dev/null \

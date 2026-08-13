@@ -5,7 +5,7 @@ set -eu
 PROGRAM="llm-wiki"
 REPOSITORY="ifelseboy-big/personal_llvm_wiki"
 MIN_GO_MAJOR=1
-MIN_GO_MINOR=25
+MIN_GO_MINOR=24
 
 requested_version=${LLM_WIKI_VERSION:-latest}
 install_dir=${LLM_WIKI_INSTALL_DIR:-}

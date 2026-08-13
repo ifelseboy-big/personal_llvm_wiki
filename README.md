@@ -30,7 +30,7 @@ llm-wiki update
 
 `llm-wiki update --json` 返回 `action`、`path`、`previous_version`、`current_version` 和 `dry_run`。稳定失败码为 `UPDATE_UNSUPPORTED`、可重试的 `UPDATE_DOWNLOAD_FAILED` 与 `UPDATE_FAILED`；`--dry-run` 只确认更新目标，不联网、不写文件。
 
-安装器会检查 `curl`、Go 1.25+、C/C++ 编译器和 `tar`，缺少依赖时直接给出错误。自定义安装目录：
+安装器会检查 `curl`、Go 1.24+、C/C++ 编译器和 `tar`，缺少依赖时直接给出错误。自定义安装目录：
 
 ```bash
 curl --proto '=https' --tlsv1.2 -fsSL \
@@ -60,7 +60,7 @@ Claude Code 用户将 `codex` 改为 `claude-code`。
 
 ## 开发者源码构建
 
-- Go 1.25+
+- Go 1.24+
 - 当前平台可用的 C/C++ 编译器
 - CGO 与内嵌 SQLite FTS5/simple tokenizer
 

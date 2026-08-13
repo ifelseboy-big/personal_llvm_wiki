@@ -26,7 +26,7 @@
 
 | 项目 | 当前要求 |
 | --- | --- |
-| Go | 1.25+ |
+| Go | 1.24+ |
 | 构建目标 | 当前机器的 `GOOS/GOARCH` |
 | CGO | `CGO_ENABLED=1`，使用 Go 当前 C/C++ 工具链或显式 `CC`/`CXX` |
 | 必需标签 | `fts5 sqlite_omit_load_extension` |

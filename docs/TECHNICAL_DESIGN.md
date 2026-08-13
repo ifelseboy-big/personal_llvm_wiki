@@ -215,7 +215,7 @@ Skill client 名固定为 `codex` 与 `claude-code`。Codex 个人目标是 `~/.
 
 ## 10. 平台、安全与隐私
 
-项目通过 Public GitHub 仓库的正式 Release 源码匿名分发，不提供预构建二进制。一键安装器通过公开 HTTPS 解析最新版本或接受显式 `MAJOR.MINOR.PATCH`，下载标签归档，拒绝危险归档路径、链接、隐式降级和非本项目 Go module，并在临时目录构建。它使用 Go 1.25、CGO、`fts5 sqlite_omit_load_extension` 与固定 simple tokenizer；新二进制通过版本自检后，才在安装目录内原子替换旧版本。安装失败不得破坏现有 CLI，也不得读取、修改或迁移 Vault。
+项目通过 Public GitHub 仓库的正式 Release 源码匿名分发，不提供预构建二进制。一键安装器通过公开 HTTPS 解析最新版本或接受显式 `MAJOR.MINOR.PATCH`，下载标签归档，拒绝危险归档路径、链接、隐式降级和非本项目 Go module，并在临时目录构建。它使用 Go 1.24+、CGO、`fts5 sqlite_omit_load_extension` 与固定 simple tokenizer；新二进制通过版本自检后，才在安装目录内原子替换旧版本。安装失败不得破坏现有 CLI，也不得读取、修改或迁移 Vault。
 
 安装器不提升权限、不修改 shell 配置，默认目标是 `~/.local/bin/llm-wiki`。普通 Vault 运行时不依赖外部 SQLite、解释器、MCP、常驻服务或网络服务；只有显式 `update` 需要公开 HTTPS、POSIX shell 以及源码构建工具链。
 
