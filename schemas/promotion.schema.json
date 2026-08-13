@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://llm-wiki.dev/schemas/promotion-v1.schema.json",
-  "title": "Frozen promotion plan v1",
+  "$id": "https://llm-wiki.dev/schemas/promotion.schema.json",
+  "title": "Frozen promotion plan",
   "type": "object",
   "required": ["schema_version", "id", "created_at", "manifest_hash", "diff_hash", "content_pack", "inboxes", "targets"],
   "properties": {

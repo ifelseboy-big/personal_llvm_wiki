@@ -47,6 +47,35 @@ func TestIndexContainsOnlyKnowledge(t *testing.T) {
 	}
 }
 
+func TestIndexSchemaMismatchIsStaleAndForcesRebuild(t *testing.T) {
+	cfg := indexWiki(t)
+	if _, err := Rebuild(cfg); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openDB(DBPath(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE meta SET value=? WHERE key='schema_version'`, SchemaVersion+1); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Search(cfg, "schema mismatch", 8); !errors.Is(err, ErrStale) {
+		t.Fatalf("non-current index schema returned %v, expected ErrStale", err)
+	}
+	updated, err := Update(cfg, false)
+	if err != nil || !updated.FullRebuild {
+		t.Fatalf("non-current index schema did not force rebuild: %#v %v", updated, err)
+	}
+	status, err := GetStatus(cfg)
+	if err != nil || status.SchemaVersion != SchemaVersion {
+		t.Fatalf("rebuilt index does not use current schema: %#v %v", status, err)
+	}
+}
+
 func TestQueryNormalizationAndRelaxedBigrams(t *testing.T) {
 	normalized := normalizeQuery("请问：LLVM 的核心结论是什么？")
 	if normalized != "llvm 核心结论" {

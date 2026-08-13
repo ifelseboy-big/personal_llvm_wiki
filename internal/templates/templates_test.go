@@ -19,7 +19,7 @@ import (
 	"llm-wiki/internal/vault"
 )
 
-func TestPersonalTemplateMatchesVersionedDesignBaseline(t *testing.T) {
+func TestPersonalTemplateMatchesDesignBaseline(t *testing.T) {
 	manifest, err := templates.LoadManifest("personal")
 	if err != nil {
 		t.Fatal(err)
@@ -34,7 +34,7 @@ func TestPersonalTemplateMatchesVersionedDesignBaseline(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read embedded %s: %v", relative, err)
 		}
-		baselinePath := filepath.Join(repositoryRoot, "docs", "template-design", "personal-"+manifest.Version, filepath.FromSlash(relative))
+		baselinePath := filepath.Join(repositoryRoot, "docs", "template-design", manifest.Name, filepath.FromSlash(relative))
 		baseline, err := os.ReadFile(baselinePath)
 		if err != nil {
 			t.Fatalf("read design baseline %s: %v", baselinePath, err)
@@ -82,7 +82,7 @@ func TestPersonalTemplatesExposeInboxPromotionAndOptionalViews(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Version != "3.0.1" || manifest.ContentPack != "content-pack.json" {
+	if manifest.Version != "1.0.0" || manifest.ContentPack != "content-pack.json" {
 		t.Fatalf("unexpected personal template version %s", manifest.Version)
 	}
 	agents, err := templates.ReadFile("personal", "AGENTS.md")
@@ -188,7 +188,7 @@ func TestCreateDraftRendersSafelyAndProtectsManagedPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.TemplateVersion != "3.0.1" || !strings.Contains(result.NextCommandHint, "promote plan") {
+	if result.TemplateVersion != "1.0.0" || !strings.Contains(result.NextCommandHint, "promote plan") {
 		t.Fatalf("unexpected result: %#v", result)
 	}
 	if !document.ValidID("know", result.ProposedID) || !strings.Contains(result.NextCommandHint, result.ProposedID) {
@@ -351,7 +351,7 @@ func TestTemplateUpgradeRemovesUnmodifiedObsoleteFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	obsoletePath := filepath.Join(root, "rules", "derived.md")
-	obsoleteContent := []byte("# Legacy derived rule\n")
+	obsoleteContent := []byte("# Obsolete derived rule\n")
 	if err := os.WriteFile(obsoletePath, obsoleteContent, 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -23,8 +23,8 @@ import (
 )
 
 const (
-	SchemaVersion       = 6
-	QueryPlannerVersion = "4"
+	SchemaVersion       = 1
+	QueryPlannerVersion = "1"
 )
 
 type RebuildResult struct {

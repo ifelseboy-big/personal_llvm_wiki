@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://llm-wiki.dev/schemas/frontmatter-v3.schema.json",
-  "title": "llm-wiki Markdown frontmatter v3",
+  "$id": "https://llm-wiki.dev/schemas/frontmatter.schema.json",
+  "title": "llm-wiki Markdown frontmatter",
   "$defs": {
     "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
     "stringList": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
@@ -25,7 +25,7 @@
       "type": "object",
       "required": ["schema_version", "id", "title", "status", "source", "captured_at", "content_hash", "media_type", "original_name", "payload", "payload_hash", "payload_bytes"],
       "properties": {
-        "schema_version": { "const": 3 },
+        "schema_version": { "const": 1 },
         "id": { "$ref": "#/$defs/inboxId" },
         "title": { "type": "string", "minLength": 1 },
         "status": { "enum": ["pending", "processed"] },
@@ -53,11 +53,11 @@
     },
     {
       "title": "Knowledge",
-      "description": "Content fields are validated by the instance-bound content-pack-v1 policy.",
+      "description": "Content fields are validated by the instance-bound content pack policy.",
       "type": "object",
       "required": ["schema_version", "id", "type", "title", "status", "lineage", "published_at", "updated_at", "content_hash", "governance_version"],
       "properties": {
-        "schema_version": { "const": 3 },
+        "schema_version": { "const": 1 },
         "id": { "$ref": "#/$defs/knowledgeId" },
         "type": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,31}$" },
         "title": { "type": "string", "minLength": 1 },

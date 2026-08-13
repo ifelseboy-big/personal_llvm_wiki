@@ -39,22 +39,9 @@ internal/selfupdate -> standard library only
 
 Go Core 不得出现内容包中的 category、type、模板名、类型字段或状态值枚举。内置内容包可以通过 `embed.FS` 分发，但只能由通用 template manifest 和内容包策略发现。
 
-## 3. 版本边界
+## 3. 契约边界
 
-| 契约 | 当前版本 |
-| --- | --- |
-| instance | 3 |
-| frontmatter | 3 |
-| content pack policy | 1 |
-| Promotion plan | 1 |
-| JSON response | 2.0 |
-| personal content pack | 3.0.1 |
-| personal governance | personal-3.0 |
-| Skill | 4.1.0 |
-| index schema | 6 |
-| query planner | 4 |
-
-生产路径只读取当前契约。旧 instance、frontmatter、内容包策略、governance 或 template version 直接拒绝；不猜测字段、不静默转换、不提供迁移读取分支。内容包升级由 `template upgrade` 三方比较显式完成，版本不匹配的实例在升级完成前不能发布、索引或返回事实。
+各机器协议的当前版本只由对应 Schema、实现常量和内容包 manifest 定义，文档不复制数值形成第二事实源。生产路径只读取当前契约；不匹配的 instance、frontmatter、内容包策略、governance、template、Skill 安装清单或索引快照直接拒绝或按其可重建属性重建，不猜测字段、不静默转换、不提供迁移读取分支。内容包升级只通过 `template upgrade` 三方比较显式完成，版本不匹配的实例在升级完成前不能发布、索引或返回事实。
 
 ## 4. Vault 布局与内容包发现
 
@@ -92,7 +79,7 @@ Go Core 不得出现内容包中的 category、type、模板名、类型字段�
 
 `llm-wiki.toml` 的 `template.name`、`template.version` 和 `template.content_pack` 绑定已安装包。内嵌 `template.toml` 是分发清单，声明包版本、机器策略文件和全部受管文件；Core 不根据 name 选择行为。
 
-`content-pack.json` 是 category、type、类型字段、模板映射、关系、生命周期检索语义和 Workflow 路由的唯一机器权威来源。其契约为 `schemas/content-pack-v1.schema.json`：
+`content-pack.json` 是 category、type、类型字段、模板映射、关系、生命周期检索语义和 Workflow 路由的唯一机器权威来源。其契约为 `schemas/content-pack.schema.json`：
 
 - `schema_version`、`name`、`version`、`governance_version` 与实例和安装清单严格相等；
 - `categories` 声明领域，`types` 声明文档结构，两者正交；

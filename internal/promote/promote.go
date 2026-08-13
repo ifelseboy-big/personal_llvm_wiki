@@ -981,7 +981,7 @@ func CompleteOperation(cfg *config.Instance, operationID string) error {
 
 func validateManifest(manifest Manifest) error {
 	if manifest.SchemaVersion != SchemaVersion || len(manifest.Inboxes) == 0 || len(manifest.Targets) == 0 {
-		return errors.New("promotion manifest requires schema_version 1, inboxes, and targets")
+		return fmt.Errorf("promotion manifest requires schema_version %d, inboxes, and targets", SchemaVersion)
 	}
 	seen := map[string]bool{}
 	declared := map[string]bool{}

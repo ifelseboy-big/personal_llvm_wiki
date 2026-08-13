@@ -20,7 +20,10 @@ import (
 	"llm-wiki/internal/vault"
 )
 
-const ItemFile = "item.md"
+const (
+	ItemFile           = "item.md"
+	BatchSchemaVersion = 1
+)
 
 var ErrInputRejected = errors.New("inbox input rejected")
 
@@ -159,8 +162,8 @@ func inputItems(cfg *config.Instance, opts AddOptions) ([]BatchItem, error) {
 		if err := dec.Decode(&manifest); err != nil {
 			return nil, fmt.Errorf("parse batch manifest: %w", err)
 		}
-		if manifest.SchemaVersion != 1 || len(manifest.Items) == 0 {
-			return nil, errors.New("batch manifest schema_version 1 and non-empty items are required")
+		if manifest.SchemaVersion != BatchSchemaVersion || len(manifest.Items) == 0 {
+			return nil, fmt.Errorf("batch manifest schema_version %d and non-empty items are required", BatchSchemaVersion)
 		}
 		base := filepath.Dir(opts.BatchManifest)
 		for i := range manifest.Items {

@@ -22,7 +22,7 @@ import (
 	"llm-wiki/internal/fsutil"
 )
 
-const CurrentSchema = 3
+const CurrentSchema = 1
 
 const MaxFrontmatterBytes = 256 * 1024
 

@@ -62,6 +62,29 @@ func TestContentPackIdentityMismatchIsRejected(t *testing.T) {
 	}
 }
 
+func TestContentPackRejectsNonCurrentSchema(t *testing.T) {
+	cfg := testConfig(t)
+	data, err := os.ReadFile(cfg.ContentPackPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var policy Policy
+	if err := json.Unmarshal(data, &policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.SchemaVersion = PolicySchemaVersion + 1
+	data, err = json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.ContentPackPath(), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(cfg); err == nil {
+		t.Fatal("non-current content pack schema was accepted")
+	}
+}
+
 func TestContentPackRejectsSymlinkedPolicyAndReferences(t *testing.T) {
 	t.Run("policy", func(t *testing.T) {
 		cfg := testConfig(t)

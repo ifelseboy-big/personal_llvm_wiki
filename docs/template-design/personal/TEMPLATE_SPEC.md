@@ -1,4 +1,4 @@
-# personal 3.0.1 内容包契约
+# personal 内容包契约
 
 ## 目录与所有权
 
@@ -8,7 +8,7 @@
 
 ## 唯一机器语义
 
-`content-pack.json` 遵守 `schemas/content-pack-v1.schema.json`，并唯一声明：
+`content-pack.json` 遵守 `schemas/content-pack.schema.json`，并唯一声明：
 
 - content pack/governance identity；
 - category 与 type；

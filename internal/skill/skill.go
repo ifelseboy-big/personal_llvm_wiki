@@ -21,8 +21,8 @@ import (
 )
 
 const (
-	SkillVersion    = "4.1.0"
-	manifestSchema  = 3
+	SkillVersion    = "1.0.0"
+	manifestSchema  = 1
 	manifestName    = ".llm-wiki-install.json"
 	installLockName = ".llm-wiki-install.lock"
 )
@@ -31,8 +31,6 @@ var skillNames = []string{
 	"llm-wiki-add",
 	"llm-wiki-query",
 }
-
-var legacySkillNames = []string{"llm-wiki-add", "llm-wiki-maintain", "llm-wiki-publish", "llm-wiki-query"}
 
 type clientConfig struct {
 	Executable  string
@@ -430,10 +428,10 @@ func readManifest(target, client string) (InstallManifest, error) {
 	if err := json.Unmarshal(b, &manifest); err != nil {
 		return manifest, err
 	}
-	if (manifest.SchemaVersion != 2 && manifest.SchemaVersion != manifestSchema) || manifest.Client != client || manifest.SkillVersion == "" {
+	if manifest.SchemaVersion != manifestSchema || manifest.Client != client || manifest.SkillVersion == "" {
 		return manifest, errors.New("invalid skill installation manifest")
 	}
-	if !validManifestSkills(manifest.Skills) {
+	if !equalStrings(manifest.Skills, skillNames) {
 		return manifest, errors.New("skill installation manifest has an unexpected skill set")
 	}
 	seen := map[string]bool{}
@@ -462,10 +460,6 @@ func equalStrings(left, right []string) bool {
 		}
 	}
 	return true
-}
-
-func validManifestSkills(names []string) bool {
-	return equalStrings(names, skillNames) || equalStrings(names, legacySkillNames)
 }
 
 func contains(items []string, value string) bool {

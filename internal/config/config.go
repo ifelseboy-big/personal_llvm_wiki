@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	CurrentSchema = 3
+	CurrentSchema = 1
 	FileName      = "llm-wiki.toml"
 )
 

@@ -54,7 +54,7 @@ func TestCompleteInboxPromotionKnowledgeCleanWorkflow(t *testing.T) {
 	planned := runCLI(t, "", "promote", "plan", "--manifest", manifest, "--wiki", root, "--json", "--no-interactive")
 	promotionID := nestedString(t, planned.Data, "promotion_id")
 	planHash := nestedString(t, planned.Data, "plan_hash")
-	if nestedString(t, planned.Data, "content_pack", "version") != "3.0.1" || nestedString(t, planned.Data, "content_pack", "policy_hash") == "" {
+	if nestedString(t, planned.Data, "content_pack", "version") != "1.0.0" || nestedString(t, planned.Data, "content_pack", "policy_hash") == "" {
 		t.Fatalf("plan omitted its frozen content-pack identity: %#v", planned.Data)
 	}
 	diff := runCLI(t, "", "promote", "diff", promotionID, "--wiki", root, "--json", "--no-interactive")

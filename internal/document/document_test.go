@@ -34,12 +34,12 @@ func TestSlugIsReadableAndBounded(t *testing.T) {
 	}
 }
 
-func TestKnowledgeRoundTripV3(t *testing.T) {
+func TestKnowledgeRoundTrip(t *testing.T) {
 	body := []byte("# Stable fact\n\nSelf-contained fact.\n")
 	meta := Metadata{
 		SchemaVersion: CurrentSchema, ID: testKnowledgeID, Type: "concept", Title: "Stable fact",
 		Status: "published", PublishedAt: "2026-08-08T10:00:00Z", UpdatedAt: "2026-08-08T10:00:00Z",
-		ContentHash: HashBytes(body), GovernanceVersion: "personal-3.0",
+		ContentHash: HashBytes(body), GovernanceVersion: "personal-1.0.0",
 		Lineage: []LineageRef{{InboxID: testInboxID, PayloadHash: HashBytes([]byte("payload")), Source: "test", CapturedAt: "2026-08-08T09:00:00Z"}},
 		Extra:   map[string]any{"description": "kept", "lifecycle": "current", "future": "round-trip"},
 	}
@@ -59,14 +59,14 @@ func TestKnowledgeRoundTripV3(t *testing.T) {
 	}
 }
 
-func TestRejectOldFrontmatterSchema(t *testing.T) {
+func TestRejectNonCurrentFrontmatterSchema(t *testing.T) {
 	body := []byte("# Old\n")
 	doc := &Document{Metadata: Metadata{
-		SchemaVersion: CurrentSchema - 1, ID: testKnowledgeID, Type: "any-declared-type", Title: "Old", Status: "published",
+		SchemaVersion: CurrentSchema + 1, ID: testKnowledgeID, Type: "any-declared-type", Title: "Non-current", Status: "published",
 		PublishedAt: "2026-08-09T00:00:00Z", UpdatedAt: "2026-08-09T00:00:00Z", ContentHash: HashBytes(body),
 	}, Body: body}
 	if err := doc.Validate("knowledge", false); err == nil {
-		t.Fatal("old frontmatter schema was accepted")
+		t.Fatal("non-current frontmatter schema was accepted")
 	}
 }
 
@@ -128,14 +128,14 @@ func TestInboxPayloadSymlinkRejected(t *testing.T) {
 	}
 }
 
-func TestCurrentIDPrefixesRejectLegacyIDs(t *testing.T) {
+func TestIDPrefixesRejectUndeclaredPrefixes(t *testing.T) {
 	for prefix, id := range map[string]string{"inbox": testInboxID, "prm": "prm_01arz3ndektsv4rrffq69g5fax", "know": testKnowledgeID, "op": "op_01arz3ndektsv4rrffq69g5fay"} {
 		if !ValidID(prefix, id) {
 			t.Fatalf("valid %s id rejected", prefix)
 		}
 	}
 	if ValidID("raw", "raw_01arz3ndektsv4rrffq69g5fav") || ValidID("chg", "chg_01arz3ndektsv4rrffq69g5fav") {
-		t.Fatal("legacy id prefixes remain accepted")
+		t.Fatal("undeclared id prefixes were accepted")
 	}
 }
 

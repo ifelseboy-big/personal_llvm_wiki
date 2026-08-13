@@ -1,11 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://llm-wiki.dev/schemas/instance-v3.schema.json",
-  "title": "llm-wiki instance v3",
+  "$id": "https://llm-wiki.dev/schemas/instance.schema.json",
+  "title": "llm-wiki instance",
   "type": "object",
   "required": ["schema_version", "instance_id", "name", "created_at", "template", "paths", "index", "security"],
   "properties": {
-    "schema_version": { "const": 3 },
+    "schema_version": { "const": 1 },
     "instance_id": { "type": "string", "pattern": "^wiki_[0-9a-hjkmnp-tv-z]{26}$" },
     "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
     "created_at": { "type": "string", "format": "date-time" },

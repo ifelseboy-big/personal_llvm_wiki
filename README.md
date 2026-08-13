@@ -30,13 +30,15 @@ llm-wiki update
 
 `llm-wiki update --json` 返回 `action`、`path`、`previous_version`、`current_version` 和 `dry_run`。稳定失败码为 `UPDATE_UNSUPPORTED`、可重试的 `UPDATE_DOWNLOAD_FAILED` 与 `UPDATE_FAILED`；`--dry-run` 只确认更新目标，不联网、不写文件。
 
-安装器会检查 `curl`、Go 1.25+、C/C++ 编译器和 `tar`，缺少依赖时直接给出错误。指定版本或安装目录：
+安装器会检查 `curl`、Go 1.25+、C/C++ 编译器和 `tar`，缺少依赖时直接给出错误。自定义安装目录：
 
 ```bash
 curl --proto '=https' --tlsv1.2 -fsSL \
   https://raw.githubusercontent.com/ifelseboy-big/personal_llvm_wiki/main/install.sh \
-  | sh -s -- --version 0.0.3 --install-dir "$HOME/.local/bin"
+  | sh -s -- --install-dir "$HOME/.local/bin"
 ```
+
+需要固定正式 Release 时追加 `--version MAJOR.MINOR.PATCH`。
 
 安装目录不在 `PATH` 时，安装器会明确提示。可直接用完整路径验证：
 
@@ -93,7 +95,7 @@ template list|show|create|upgrade
 skill status|install|update|uninstall
 ```
 
-所有命令支持 `--wiki`、`--json`、`--no-interactive` 和 `--dry-run`。JSON 协议版本为 `2.0`；stdout 只输出一个 JSON 对象，diagnostic 写 stderr。
+所有命令支持 `--wiki`、`--json`、`--no-interactive` 和 `--dry-run`。JSON stdout 只输出一个符合当前响应 Schema 的对象，diagnostic 写 stderr。
 
 ## 初始化与采集
 
@@ -191,9 +193,9 @@ llm-wiki skill update claude-code --yes
 
 Codex 的个人目录为 `~/.agents/skills`，Claude Code 按官方 Agent Skills 契约安装到 `~/.claude/skills`。两者都只安装 `llm-wiki-add` 与 `llm-wiki-query`；Claude Code 安装不包含 Codex 专属的 `agents/openai.yaml`。二次整理、发布和维护由 Vault 内容包中的 Workflow 与 `AGENTS.md` 约束，不安装额外 Skill。Add 和 Query Skill 也从内容包路由对应 Workflow。
 
-## 安全与版本
+## 安全边界
 
-- instance/frontmatter 只接受 v3，content pack policy 只接受 v1，Promotion 只接受 v1；identity 或版本不匹配直接拒绝，不读取或迁移旧契约。
+- instance、frontmatter、content pack policy 与 Promotion 只接受仓库当前 Schema 定义的契约；identity 或版本不匹配直接拒绝，不读取或迁移旧契约。
 - 所有批量写入先全量预检；受管路径拒绝逃逸、symlink、hardlink、非普通文件和超限输入。
 - `--dry-run` 不创建目录、锁、Promotion、事务、索引、注册、Skill 文件或自升级临时文件，也不发起升级网络请求。
 - 私有目录默认 `0700`，受管文件默认 `0600`。

@@ -1,6 +1,6 @@
 name = "personal"
-version = "3.0.1"
-schema_version = 3
+version = "1.0.0"
+schema_version = 1
 description = "内容包驱动的个人知识库：四个正交领域、十种知识结构与五个可审计 Vault Agent Workflow"
 content_pack = "content-pack.json"
 

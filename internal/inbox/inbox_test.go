@@ -49,7 +49,7 @@ func TestBatchManifestPreflightFailureWritesNothing(t *testing.T) {
 	if err := os.WriteFile(note, []byte("# One\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	manifest := BatchManifest{SchemaVersion: 1, Items: []BatchItem{{Input: "one.txt", NoteFile: "one.md"}, {Input: "missing.txt", NoteFile: "one.md"}}}
+	manifest := BatchManifest{SchemaVersion: BatchSchemaVersion, Items: []BatchItem{{Input: "one.txt", NoteFile: "one.md"}, {Input: "missing.txt", NoteFile: "one.md"}}}
 	data, _ := json.Marshal(manifest)
 	manifestPath := filepath.Join(base, "batch.json")
 	if err := os.WriteFile(manifestPath, data, 0o600); err != nil {
@@ -61,6 +61,38 @@ func TestBatchManifestPreflightFailureWritesNothing(t *testing.T) {
 	docs, problems := List(cfg, "")
 	if len(docs) != 0 || len(problems) != 0 {
 		t.Fatalf("batch failure wrote inbox data: %d %#v", len(docs), problems)
+	}
+}
+
+func TestBatchManifestRejectsNonCurrentSchemaWithoutWrites(t *testing.T) {
+	cfg := initWiki(t)
+	base := t.TempDir()
+	input := filepath.Join(base, "one.txt")
+	note := filepath.Join(base, "one.md")
+	if err := os.WriteFile(input, []byte("one"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(note, []byte("# One\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest := BatchManifest{
+		SchemaVersion: BatchSchemaVersion + 1,
+		Items:         []BatchItem{{Input: "one.txt", NoteFile: "one.md"}},
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(base, "batch.json")
+	if err := os.WriteFile(manifestPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Add(cfg, AddOptions{BatchManifest: manifestPath, Now: time.Unix(100, 0).UTC()}); err == nil {
+		t.Fatal("non-current batch manifest schema was accepted")
+	}
+	docs, problems := List(cfg, "")
+	if len(docs) != 0 || len(problems) != 0 {
+		t.Fatalf("rejected batch manifest wrote inbox data: %d %#v", len(docs), problems)
 	}
 }
 

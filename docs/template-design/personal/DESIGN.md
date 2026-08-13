@@ -1,4 +1,4 @@
-# personal 3.0.1 设计
+# personal 设计
 
 personal 是由数据驱动的 Vault content pack，不是 Go Core 中的产品分支。
 

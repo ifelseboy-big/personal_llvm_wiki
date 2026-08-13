@@ -12,7 +12,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const ProtocolVersion = "2.0"
+const ProtocolVersion = 1
 
 const (
 	ExitOK          = 0
@@ -62,7 +62,7 @@ type WikiRef struct {
 }
 
 type Response struct {
-	SchemaVersion string         `json:"schema_version"`
+	SchemaVersion int            `json:"schema_version"`
 	OK            bool           `json:"ok"`
 	Command       string         `json:"command"`
 	ToolVersion   string         `json:"tool_version"`

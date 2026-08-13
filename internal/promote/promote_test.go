@@ -72,6 +72,17 @@ func TestPromotionSupportsMultipleInputsAndOutputs(t *testing.T) {
 	}
 }
 
+func TestPromotionManifestRejectsNonCurrentSchema(t *testing.T) {
+	manifest := Manifest{
+		SchemaVersion: SchemaVersion + 1,
+		Inboxes:       []ManifestInbox{{ID: "inbox_01arz3ndektsv4rrffq69g5fav"}},
+		Targets:       []ManifestTarget{{Operation: "create"}},
+	}
+	if err := validateManifest(manifest); err == nil {
+		t.Fatal("non-current promotion manifest schema was accepted")
+	}
+}
+
 func TestPlanDryRunValidatesWithoutCreatingPromotionOrLock(t *testing.T) {
 	cfg := initPromotionWiki(t)
 	input := addInbox(t, cfg, "source.txt", "payload", 100)

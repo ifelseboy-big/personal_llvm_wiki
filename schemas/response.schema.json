@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://llm-wiki.dev/schemas/response-v2.schema.json",
-  "title": "llm-wiki CLI response v2",
+  "$id": "https://llm-wiki.dev/schemas/response.schema.json",
+  "title": "llm-wiki CLI response",
   "type": "object",
   "$defs": {
     "updateData": {
@@ -19,7 +19,7 @@
   },
   "required": ["schema_version", "ok", "command", "tool_version", "warnings", "affected_files"],
   "properties": {
-    "schema_version": { "const": "2.0" },
+    "schema_version": { "const": 1 },
     "ok": { "type": "boolean" },
     "command": { "type": "string", "minLength": 1 },
     "tool_version": { "type": "string", "minLength": 1 },

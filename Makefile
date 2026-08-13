@@ -40,7 +40,7 @@ schema-check:
 
 agents-check:
 	$(CGO_ENV) go test -tags "$(GO_TAGS)" ./tests/architecture
-	$(CGO_ENV) go test -tags "$(GO_TAGS)" ./internal/templates -run '^TestPersonalTemplateMatchesVersionedDesignBaseline$$'
+	$(CGO_ENV) go test -tags "$(GO_TAGS)" ./internal/templates -run '^TestPersonalTemplateMatchesDesignBaseline$$'
 	git diff --check
 
 mod-verify:

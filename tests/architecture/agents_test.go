@@ -35,7 +35,7 @@ func TestAgentInstructionTopology(t *testing.T) {
 	root := repositoryRoot(t)
 	want := []string{
 		"AGENTS.md",
-		"docs/template-design/personal-3.0.1/AGENTS.md",
+		"docs/template-design/personal/AGENTS.md",
 		"resources/vault-templates/personal/AGENTS.md",
 	}
 
@@ -66,7 +66,7 @@ func TestAgentInstructionTopology(t *testing.T) {
 
 	assertSameFile(t,
 		filepath.Join(root, "resources/vault-templates/personal/AGENTS.md"),
-		filepath.Join(root, "docs/template-design/personal-3.0.1/AGENTS.md"),
+		filepath.Join(root, "docs/template-design/personal/AGENTS.md"),
 	)
 }
 
@@ -104,6 +104,61 @@ func TestAgentInstructionsDoNotPinProductVersions(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestMachineAuthorityPathsAreUnversioned(t *testing.T) {
+	root := repositoryRoot(t)
+	entries, err := os.ReadDir(filepath.Join(root, "schemas"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schemas []string
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".schema.json") {
+			schemas = append(schemas, entry.Name())
+		}
+	}
+	slices.Sort(schemas)
+	want := []string{
+		"content-pack.schema.json",
+		"frontmatter.schema.json",
+		"instance.schema.json",
+		"promotion.schema.json",
+		"response.schema.json",
+	}
+	if !slices.Equal(schemas, want) {
+		t.Fatalf("machine authority paths must be unversioned\n got: %v\nwant: %v", schemas, want)
+	}
+	if _, err := os.Stat(filepath.Join(root, "docs", "template-design", "personal")); err != nil {
+		t.Fatalf("current personal design baseline must use an unversioned path: %v", err)
+	}
+}
+
+func TestHumanDocumentationKeepsProtocolVersionsInMachineAuthority(t *testing.T) {
+	root := repositoryRoot(t)
+	files := []string{
+		"AGENTS.md",
+		"README.md",
+		"docs/TECHNICAL_DESIGN.md",
+		"docs/template-design/personal/DESIGN.md",
+		"docs/template-design/personal/TEMPLATE_SPEC.md",
+	}
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`schemas/[a-z0-9-]+-v[0-9]+\.schema\.json`),
+		regexp.MustCompile(`docs/template-design/[a-z0-9-]+-[0-9]+\.[0-9]+\.[0-9]+/`),
+		regexp.MustCompile(`JSON 协议版本为`),
+	}
+	for _, relative := range files {
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(relative)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, pattern := range patterns {
+			if match := pattern.Find(data); match != nil {
+				t.Errorf("%s must defer protocol versions to machine authority: %s", relative, match)
+			}
+		}
 	}
 }
 

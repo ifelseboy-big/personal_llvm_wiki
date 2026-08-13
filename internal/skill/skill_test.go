@@ -5,17 +5,18 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
 
 	"llm-wiki/internal/document"
-	resourcebundle "llm-wiki/resources"
 )
 
 func TestInstallUpdateAndUninstallOwnedFiles(t *testing.T) {
+	if manifestSchema != 1 || SkillVersion != "1.0.0" {
+		t.Fatalf("skill contracts must start at their initial version: schema=%d content=%s", manifestSchema, SkillVersion)
+	}
 	root := t.TempDir()
 	t.Setenv("LLM_WIKI_CODEX_SKILLS_DIR", root)
 	result, err := Install("codex", false, false)
@@ -149,60 +150,35 @@ func TestSupportedClientsAndDefaultTargets(t *testing.T) {
 	}
 }
 
-func TestUpdateLegacyFourSkillManifestPreservesModifiedObsoleteFile(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("LLM_WIKI_CODEX_SKILLS_DIR", root)
-	current, err := sourceFiles("codex")
-	if err != nil {
-		t.Fatal(err)
+func TestRejectsNonCurrentSkillManifest(t *testing.T) {
+	nonCurrentSkills := append(SkillNames(), "llm-wiki-undeclared")
+	tests := map[string]InstallManifest{
+		"schema": {SchemaVersion: manifestSchema + 1, Client: "codex", SkillVersion: SkillVersion, Skills: SkillNames(), Files: []OwnedFile{}},
+		"client": {SchemaVersion: manifestSchema, Client: "claude-code", SkillVersion: SkillVersion, Skills: SkillNames(), Files: []OwnedFile{}},
+		"skills": {SchemaVersion: manifestSchema, Client: "codex", SkillVersion: SkillVersion, Skills: nonCurrentSkills, Files: []OwnedFile{}},
 	}
-	owned := append([]OwnedFile(nil), current...)
-	for _, file := range current {
-		data, err := resourcebundle.FS.ReadFile("skills/" + file.Path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		path := filepath.Join(root, filepath.FromSlash(file.Path))
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, data, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, name := range []string{"llm-wiki-maintain", "llm-wiki-publish"} {
-		path := filepath.Join(root, name, "SKILL.md")
-		data := []byte("legacy owned\n")
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, data, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		owned = append(owned, OwnedFile{Path: filepath.ToSlash(filepath.Join(name, "SKILL.md")), Hash: document.HashBytes(data)})
-	}
-	sort.Slice(owned, func(i, j int) bool { return owned[i].Path < owned[j].Path })
-	manifest := InstallManifest{SchemaVersion: 2, Client: "codex", SkillVersion: "2.1.0", InstalledAt: "2026-08-09T00:00:00Z", Skills: legacySkillNames, Files: owned}
-	manifestBytes, _ := json.Marshal(manifest)
-	if err := os.WriteFile(filepath.Join(root, manifestName), manifestBytes, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	modified := filepath.Join(root, "llm-wiki-maintain", "SKILL.md")
-	if err := os.WriteFile(modified, []byte("user modified\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	result, err := Install("codex", true, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Preserved) != 1 || result.Preserved[0] != "llm-wiki-maintain/SKILL.md" {
-		t.Fatalf("modified obsolete skill was not reported: %#v", result)
-	}
-	if _, err := os.Stat(filepath.Join(root, "llm-wiki-publish", "SKILL.md")); !os.IsNotExist(err) {
-		t.Fatalf("unmodified obsolete skill was not removed: %v", err)
-	}
-	if data, err := os.ReadFile(modified); err != nil || string(data) != "user modified\n" {
-		t.Fatalf("modified obsolete skill was changed: %q %v", data, err)
+	for name, manifest := range tests {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			t.Setenv("LLM_WIKI_CODEX_SKILLS_DIR", root)
+			manifest.InstalledAt = "2026-08-09T00:00:00Z"
+			manifestBytes, err := json.Marshal(manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, manifestName), manifestBytes, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := GetStatus("codex"); err == nil {
+				t.Fatal("status accepted a non-current skill manifest")
+			}
+			if _, err := Install("codex", true, false); err == nil {
+				t.Fatal("update accepted a non-current skill manifest")
+			}
+			if _, err := Uninstall("codex", false); err == nil {
+				t.Fatal("uninstall accepted a non-current skill manifest")
+			}
+		})
 	}
 }
 
