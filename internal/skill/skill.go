@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	SkillVersion    = "4.0.1"
+	SkillVersion    = "4.1.0"
 	manifestSchema  = 3
 	manifestName    = ".llm-wiki-install.json"
 	installLockName = ".llm-wiki-install.lock"
@@ -33,6 +33,17 @@ var skillNames = []string{
 }
 
 var legacySkillNames = []string{"llm-wiki-add", "llm-wiki-maintain", "llm-wiki-publish", "llm-wiki-query"}
+
+type clientConfig struct {
+	Executable  string
+	OverrideEnv string
+	DefaultPath []string
+}
+
+var clientConfigs = map[string]clientConfig{
+	"claude-code": {Executable: "claude", OverrideEnv: "LLM_WIKI_CLAUDE_CODE_SKILLS_DIR", DefaultPath: []string{".claude", "skills"}},
+	"codex":       {Executable: "codex", OverrideEnv: "LLM_WIKI_CODEX_SKILLS_DIR", DefaultPath: []string{".agents", "skills"}},
+}
 
 type OwnedFile struct {
 	Path string `json:"path"`
@@ -71,15 +82,16 @@ type Result struct {
 	DryRun    bool     `json:"dry_run"`
 }
 
-func SupportedClients() []string { return []string{"codex"} }
+func SupportedClients() []string { return []string{"claude-code", "codex"} }
 
 func SkillNames() []string { return append([]string(nil), skillNames...) }
 
 func ResolveTarget(client string) (string, error) {
-	if client != "codex" {
+	clientConfig, ok := clientConfigs[client]
+	if !ok {
 		return "", fmt.Errorf("unsupported AI client %q", client)
 	}
-	if override := os.Getenv("LLM_WIKI_CODEX_SKILLS_DIR"); override != "" {
+	if override := os.Getenv(clientConfig.OverrideEnv); override != "" {
 		abs, err := filepath.Abs(override)
 		if err != nil {
 			return "", err
@@ -90,7 +102,8 @@ func ResolveTarget(client string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".agents", "skills"), nil
+	parts := append([]string{home}, clientConfig.DefaultPath...)
+	return filepath.Join(parts...), nil
 }
 
 func GetStatus(client string) (*Status, error) {
@@ -101,12 +114,13 @@ func GetStatus(client string) (*Status, error) {
 	if err := ensureTargetSafe(target); err != nil {
 		return nil, err
 	}
-	_, lookErr := exec.LookPath("codex")
+	clientConfig := clientConfigs[client]
+	_, lookErr := exec.LookPath(clientConfig.Executable)
 	status := &Status{
 		Client: client, Target: target, Detected: lookErr == nil,
-		CurrentVersion: SkillVersion, Skills: SkillNames(),
+		CurrentVersion: SkillVersion, Skills: SkillNames(), Modified: []string{}, Missing: []string{},
 	}
-	manifest, err := readManifest(target)
+	manifest, err := readManifest(target, client)
 	if errors.Is(err, os.ErrNotExist) {
 		return status, nil
 	}
@@ -162,11 +176,11 @@ func Install(client string, update, dryRun bool) (*Result, error) {
 	if err := ensureTargetSafe(target); err != nil {
 		return nil, err
 	}
-	files, err := sourceFiles()
+	files, err := sourceFiles(client)
 	if err != nil {
 		return nil, err
 	}
-	existing, manifestErr := readManifest(target)
+	existing, manifestErr := readManifest(target, client)
 	installed := manifestErr == nil
 	if manifestErr != nil && !errors.Is(manifestErr, os.ErrNotExist) {
 		return nil, manifestErr
@@ -313,12 +327,13 @@ func Uninstall(client string, dryRun bool) (*Result, error) {
 			return nil, err
 		}
 	}
-	manifest, err := readManifest(target)
+	manifest, err := readManifest(target, client)
 	if err != nil {
 		return nil, err
 	}
 	result := &Result{
-		Client: client, Target: target, Action: "uninstalled", Skills: append([]string(nil), manifest.Skills...), DryRun: dryRun,
+		Client: client, Target: target, Action: "uninstalled", Skills: append([]string{}, manifest.Skills...),
+		Files: []string{}, Preserved: []string{}, DryRun: dryRun,
 	}
 	for _, owned := range manifest.Files {
 		path, err := managedFilePath(target, owned.Path)
@@ -373,7 +388,10 @@ func Uninstall(client string, dryRun bool) (*Result, error) {
 	return result, nil
 }
 
-func sourceFiles() ([]OwnedFile, error) {
+func sourceFiles(client string) ([]OwnedFile, error) {
+	if _, ok := clientConfigs[client]; !ok {
+		return nil, fmt.Errorf("unsupported AI client %q", client)
+	}
 	var out []OwnedFile
 	for _, name := range skillNames {
 		root := "skills/" + name
@@ -385,6 +403,9 @@ func sourceFiles() ([]OwnedFile, error) {
 				return nil
 			}
 			rel := strings.TrimPrefix(path, "skills/")
+			if client == "claude-code" && strings.HasSuffix(rel, "/agents/openai.yaml") {
+				return nil
+			}
 			b, err := resourcebundle.FS.ReadFile(path)
 			if err != nil {
 				return err
@@ -400,7 +421,7 @@ func sourceFiles() ([]OwnedFile, error) {
 	return out, nil
 }
 
-func readManifest(target string) (InstallManifest, error) {
+func readManifest(target, client string) (InstallManifest, error) {
 	var manifest InstallManifest
 	b, err := os.ReadFile(filepath.Join(target, manifestName))
 	if err != nil {
@@ -409,7 +430,7 @@ func readManifest(target string) (InstallManifest, error) {
 	if err := json.Unmarshal(b, &manifest); err != nil {
 		return manifest, err
 	}
-	if (manifest.SchemaVersion != 2 && manifest.SchemaVersion != manifestSchema) || manifest.Client != "codex" || manifest.SkillVersion == "" {
+	if (manifest.SchemaVersion != 2 && manifest.SchemaVersion != manifestSchema) || manifest.Client != client || manifest.SkillVersion == "" {
 		return manifest, errors.New("invalid skill installation manifest")
 	}
 	if !validManifestSkills(manifest.Skills) {

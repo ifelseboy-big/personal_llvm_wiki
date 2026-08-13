@@ -77,6 +77,7 @@ func newRootCommand(rt *Runtime) *cobra.Command {
 	root.AddCommand(newShowCommand(rt))
 	root.AddCommand(newPromoteCommand(rt))
 	root.AddCommand(newSkillCommand(rt))
+	root.AddCommand(newUpdateCommand(rt))
 	return root
 }
 
@@ -140,13 +141,18 @@ func recoverIfNeeded(cfg *config.Instance, dryRun bool) ([]string, error) {
 }
 
 func newInitCommand(rt *Runtime) *cobra.Command {
-	var name, templateName, onConflict string
+	var name, templateName, onConflict, skillClient string
 	var register, makeDefault, installSkill, yes bool
 	cmd := &cobra.Command{
 		Use:   "init <path>",
 		Short: "Initialize a wiki without moving existing files",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if installSkill || cmd.Flags().Changed("skill-client") {
+				if _, err := skill.ResolveTarget(skillClient); err != nil {
+					return E("SKILL_CLIENT_UNSUPPORTED", "unsupported AI client", ExitUnsupported, err)
+				}
+			}
 			interactive := !rt.NoInteractive && stdinIsTerminal()
 			reader := bufio.NewReader(rt.Stdin)
 			if interactive {
@@ -176,9 +182,19 @@ func newInitCommand(rt *Runtime) *cobra.Command {
 					}
 				}
 				if !cmd.Flags().Changed("install-skill") {
-					status, _ := skill.GetStatus("codex")
+					status, _ := skill.GetStatus(skillClient)
+					if (status == nil || !status.Detected || status.Installed) && !cmd.Flags().Changed("skill-client") {
+						for _, candidate := range skill.SupportedClients() {
+							candidateStatus, _ := skill.GetStatus(candidate)
+							if candidateStatus != nil && candidateStatus.Detected && !candidateStatus.Installed {
+								skillClient = candidate
+								status = candidateStatus
+								break
+							}
+						}
+					}
 					if status != nil && status.Detected && !status.Installed {
-						installSkill, promptErr = promptYesNo(reader, rt, "Install Codex skill set under "+status.Target, false)
+						installSkill, promptErr = promptYesNo(reader, rt, "Install "+skillClient+" skill set under "+status.Target, false)
 						if promptErr != nil {
 							return E("INIT_PROMPT_FAILED", "cannot read skill choice", ExitIO, promptErr)
 						}
@@ -186,9 +202,9 @@ func newInitCommand(rt *Runtime) *cobra.Command {
 				}
 			}
 			if installSkill && !interactive && !yes && !rt.DryRun {
-				target, _ := skill.ResolveTarget("codex")
+				target, _ := skill.ResolveTarget(skillClient)
 				err := E("CONFIRMATION_REQUIRED", "--install-skill requires --yes in non-interactive mode", ExitUsage, nil)
-				err.Details = map[string]any{"target": target}
+				err.Details = map[string]any{"target": target, "client": skillClient}
 				return err
 			}
 			if onConflict != "" && onConflict != "error" && onConflict != "keep" {
@@ -226,9 +242,9 @@ func newInitCommand(rt *Runtime) *cobra.Command {
 				warnings = append(warnings, err.Error())
 			}
 			if installSkill {
-				skillResult, skillErr := skill.Install("codex", false, rt.DryRun)
+				skillResult, skillErr := skill.Install(skillClient, false, rt.DryRun)
 				if skillErr != nil {
-					warnings = append(warnings, "wiki initialized but Codex skill was not installed: "+skillErr.Error())
+					warnings = append(warnings, "wiki initialized but "+skillClient+" skill was not installed: "+skillErr.Error())
 				} else {
 					for _, file := range skillResult.Files {
 						result.CreatedFiles = append(result.CreatedFiles, filepath.Join(skillResult.Target, filepath.FromSlash(file)))
@@ -252,7 +268,8 @@ func newInitCommand(rt *Runtime) *cobra.Command {
 	cmd.Flags().StringVar(&templateName, "template", "personal", "built-in vault template")
 	cmd.Flags().BoolVar(&register, "register", false, "register this wiki in the user config")
 	cmd.Flags().BoolVar(&makeDefault, "default", false, "set the registered wiki as default")
-	cmd.Flags().BoolVar(&installSkill, "install-skill", false, "install the optional Codex skill")
+	cmd.Flags().BoolVar(&installSkill, "install-skill", false, "install the optional AI client skill set")
+	cmd.Flags().StringVar(&skillClient, "skill-client", "codex", "AI client for --install-skill: codex or claude-code")
 	cmd.Flags().BoolVar(&yes, "yes", false, "confirm optional external installation target")
 	cmd.Flags().StringVar(&onConflict, "on-conflict", "", "existing template file policy: error or keep")
 	return cmd

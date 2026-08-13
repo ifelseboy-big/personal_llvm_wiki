@@ -18,7 +18,7 @@
 | 产品入口、命令面 | `README.md` |
 | 架构、事实边界、事务与恢复 | `docs/TECHNICAL_DESIGN.md` |
 | 序列化与机器协议 | `schemas/*.schema.json` |
-| personal 内容包执行契约 | `docs/template-design/personal-3.0.1/TEMPLATE_SPEC.md` |
+| personal 内容包执行契约 | `docs/template-design/` 中由内容包一致性门禁确认的当前 personal 基线 |
 | 内置内容包文件清单与机器策略 | `resources/vault-templates/personal/template.toml`、`resources/vault-templates/personal/content-pack.json` |
 | 构建、安装与验收命令 | `Makefile` |
 
@@ -30,8 +30,8 @@
 | 构建目标 | 当前机器的 `GOOS/GOARCH` |
 | CGO | `CGO_ENABLED=1`，使用 Go 当前 C/C++ 工具链或显式 `CC`/`CXX` |
 | 必需标签 | `fts5 sqlite_omit_load_extension` |
-| 分发方式 | 一键安装器下载正式 Release 源码并在目标机原子构建安装；开发者可执行 `make build`、`make install` |
-| 运行时依赖 | 不依赖 MCP、常驻服务、外部数据库、解释器、Homebrew SQLite 或网络服务 |
+| 分发方式 | 公开 HTTPS 一键安装器匿名下载正式 Release 源码并在目标机原子构建安装；开发者可执行 `make build`、`make install` |
+| 运行时依赖 | 普通 Vault 操作不依赖 MCP、常驻服务、外部数据库、解释器、Homebrew SQLite 或网络服务；显式 `update` 需要 HTTPS、POSIX shell 与源码构建工具链 |
 
 正式测试和构建必须使用上述 CGO 配置与标签；裸跑 `go test ./...` 不构成验收。
 
@@ -49,10 +49,11 @@
 | `internal/vault` | `config`、`document`、`fsutil`；初始化装配可依赖 `templates` |
 | `internal/inbox` | `config`、`document`、`fsutil`、`vault` |
 | `internal/promote` | `config`、`document`、`fsutil`、`governance`、`inbox`、`vault` |
+| `internal/selfupdate` | 无 |
 | `internal/index` | `config`、`document`、`fsutil`、`governance`、`sqlite3simple`、`vault` |
 | `internal/templates` | `config`、`document`、`fsutil`、`governance`、`resources` |
 | `internal/skill` | `document`、`fsutil`、`resources` |
-| `internal/app` | 用例编排所需的上述包 |
+| `internal/app` | 用例编排所需的上述包，包括 `selfupdate` |
 
 业务包禁止导入 `internal/app`。只有 `internal/index` 和 `internal/sqlite3simple` 可以依赖 SQLite。
 
@@ -89,7 +90,7 @@
 
 - Cobra、`AppError`、稳定错误码、退出码及 stdout/stderr 映射只属于 `internal/app`。
 - `--json` 时 stdout 必须且只能输出一个 JSON 对象；诊断写 stderr；颜色和交互自动关闭；`warnings` 与 `affected_files` 必须是数组。
-- `--dry-run` 禁止写文件、创建锁、更新索引、注册实例或安装 Skill。预览与真实执行必须复用同一规划和校验逻辑。
+- `--dry-run` 禁止写文件、创建锁、更新索引、注册实例、安装 Skill 或创建自升级临时文件；自升级 dry-run 还禁止网络请求。预览与真实执行必须复用同一目标解析逻辑。
 - `--no-interactive` 禁止等待输入；只有显式 `inbox add -` 可以读取 stdin。
 
 ### 文件与事务
@@ -105,13 +106,13 @@
 
 | 改动 | 必须同步 |
 | --- | --- |
-| 命令、参数、错误码、退出码或 JSON 字段 | `internal/app`、`README.md`、`schemas/response-v2.schema.json`、协议测试、e2e |
-| instance 配置 | `internal/config`、`schemas/instance-v3.schema.json`、技术设计、配置测试 |
-| frontmatter 或通用 governance 执行器 | `internal/document`、`internal/governance`、`schemas/frontmatter-v3.schema.json`、`schemas/content-pack-v1.schema.json`、内容包契约、promote/query/index 测试 |
-| Promotion 格式 | `internal/promote`、`schemas/promotion-v1.schema.json`、事务与 e2e 测试 |
+| 命令、参数、错误码、退出码或 JSON 字段 | `internal/app`、`README.md`、`schemas/` 中的响应协议、协议测试、e2e |
+| instance 配置 | `internal/config`、`schemas/` 中的 instance 协议、技术设计、配置测试 |
+| frontmatter 或通用 governance 执行器 | `internal/document`、`internal/governance`、`schemas/` 中的 frontmatter 与 content pack 协议、内容包契约、promote/query/index 测试 |
+| Promotion 格式 | `internal/promote`、`schemas/` 中的 Promotion 协议、事务与 e2e 测试 |
 | index Schema、planner 或 tokenizer | 版本常量、rebuild 判定、召回/排序/漂移测试、本机构建 |
 | personal 受管内容包 | `template.toml`、`content-pack.json`、resources 与当前 design baseline 的同路径同字节副本、内容包版本、init/upgrade/e2e |
-| 嵌入 Skill | Skill 版本、所有权、冲突、symlink、dry-run、安装/更新/卸载测试 |
+| 嵌入 Skill 或 client | Skill 版本、标准 frontmatter、client 目标、所有权、冲突、symlink、dry-run、安装/更新/卸载测试 |
 
 ## 8. 验收
 
@@ -130,7 +131,7 @@ git diff --check
 | 路径、写入、inbox、promote、事务 | 安全拒绝、零写入、锁冲突、恢复测试；`make test-race` |
 | index、query、tokenizer | 严格/宽松召回、稳定排序、索引漂移、删除重建；`make build` |
 | content pack、governance、Schema | `make schema-check`、真实策略与模板解析、双目录一致、init/upgrade/e2e |
-| 构建或安装配置 | `make installer-check`、`go mod verify`、race、`make build`、`make install` 与版本 smoke |
+| 构建、自升级或安装配置 | 公开下载与失败保留测试、`make installer-check`、`go mod verify`、race、`make build`、`make install` 与版本 smoke |
 
 无法执行的验收必须明确报告。测试使用 `t.TempDir()`；修改进程环境或全局状态的测试不得并行。
 

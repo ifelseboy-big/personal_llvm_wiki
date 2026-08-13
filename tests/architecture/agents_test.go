@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -15,7 +16,7 @@ import (
 
 var allowedRepositoryImports = map[string][]string{
 	"llm-wiki/cmd/llm-wiki":           {"llm-wiki/internal/app"},
-	"llm-wiki/internal/app":           {"llm-wiki/internal/config", "llm-wiki/internal/document", "llm-wiki/internal/fsutil", "llm-wiki/internal/governance", "llm-wiki/internal/inbox", "llm-wiki/internal/index", "llm-wiki/internal/promote", "llm-wiki/internal/skill", "llm-wiki/internal/templates", "llm-wiki/internal/vault"},
+	"llm-wiki/internal/app":           {"llm-wiki/internal/config", "llm-wiki/internal/document", "llm-wiki/internal/fsutil", "llm-wiki/internal/governance", "llm-wiki/internal/inbox", "llm-wiki/internal/index", "llm-wiki/internal/promote", "llm-wiki/internal/selfupdate", "llm-wiki/internal/skill", "llm-wiki/internal/templates", "llm-wiki/internal/vault"},
 	"llm-wiki/internal/config":        {"llm-wiki/internal/fsutil"},
 	"llm-wiki/internal/document":      {"llm-wiki/internal/fsutil"},
 	"llm-wiki/internal/fsutil":        {},
@@ -23,6 +24,7 @@ var allowedRepositoryImports = map[string][]string{
 	"llm-wiki/internal/index":         {"llm-wiki/internal/config", "llm-wiki/internal/document", "llm-wiki/internal/fsutil", "llm-wiki/internal/governance", "llm-wiki/internal/sqlite3simple", "llm-wiki/internal/vault"},
 	"llm-wiki/internal/inbox":         {"llm-wiki/internal/config", "llm-wiki/internal/document", "llm-wiki/internal/fsutil", "llm-wiki/internal/vault"},
 	"llm-wiki/internal/promote":       {"llm-wiki/internal/config", "llm-wiki/internal/document", "llm-wiki/internal/fsutil", "llm-wiki/internal/governance", "llm-wiki/internal/inbox", "llm-wiki/internal/vault"},
+	"llm-wiki/internal/selfupdate":    {},
 	"llm-wiki/internal/skill":         {"llm-wiki/internal/document", "llm-wiki/internal/fsutil", "llm-wiki/resources"},
 	"llm-wiki/internal/sqlite3simple": {},
 	"llm-wiki/internal/templates":     {"llm-wiki/internal/config", "llm-wiki/internal/document", "llm-wiki/internal/fsutil", "llm-wiki/internal/governance", "llm-wiki/resources"},
@@ -66,6 +68,43 @@ func TestAgentInstructionTopology(t *testing.T) {
 		filepath.Join(root, "resources/vault-templates/personal/AGENTS.md"),
 		filepath.Join(root, "docs/template-design/personal-3.0.1/AGENTS.md"),
 	)
+}
+
+func TestAgentInstructionsDoNotPinProductVersions(t *testing.T) {
+	root := repositoryRoot(t)
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`schemas/[a-z0-9-]+-v[0-9]+\.schema\.json`),
+		regexp.MustCompile(`docs/template-design/[a-z0-9-]+-[0-9]+\.[0-9]+\.[0-9]+/`),
+	}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() && entry.Name() == ".git" {
+			return filepath.SkipDir
+		}
+		if entry.IsDir() || entry.Name() != "AGENTS.md" {
+			return nil
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		for _, pattern := range patterns {
+			if match := pattern.Find(data); match != nil {
+				t.Errorf("%s must not pin a product version: %s", filepath.ToSlash(rel), match)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestProductionRepositoryDependencies(t *testing.T) {

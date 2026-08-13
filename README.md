@@ -13,21 +13,29 @@ category、type、类型字段、模板和 Agent Workflow 全部来自 Vault 的
 
 ## 一键安装与升级
 
-仓库当前为 Private。新电脑先安装 [GitHub CLI](https://cli.github.com/) 并执行一次 `gh auth login`，然后在 macOS 或 Linux 执行：
+公开仓库无需 GitHub 登录。macOS 或 Linux 直接执行：
 
 ```bash
-gh api -H 'Accept: application/vnd.github.raw+json' \
-  'repos/ifelseboy-big/personal_llvm_wiki/contents/install.sh?ref=main' | sh
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/ifelseboy-big/personal_llvm_wiki/main/install.sh | sh
 ```
 
-首次执行安装最新正式版本；以后再次执行同一命令即升级。安装器复用 `gh` 的登录身份，只从本项目 GitHub Release 下载源码，在本机使用正式 CGO 与 FTS5 参数构建，版本自检通过后才原子替换 `~/.local/bin/llm-wiki`。下载、构建或校验失败时保留原有版本，不修改已有 Vault，不使用 `sudo`，也不改 shell 配置。自动化环境可不用 `gh`，改为提供具有仓库只读权限的 `GH_TOKEN`。
-
-安装器会检查 GitHub 身份、Go 1.25+、C/C++ 编译器和 `tar`，缺少依赖时直接给出错误。指定版本或安装目录：
+首次执行安装最新正式版本。以后升级只需：
 
 ```bash
-gh api -H 'Accept: application/vnd.github.raw+json' \
-  'repos/ifelseboy-big/personal_llvm_wiki/contents/install.sh?ref=main' \
-  | sh -s -- --version 0.0.2 --install-dir "$HOME/.local/bin"
+llm-wiki update
+```
+
+安装器只从本项目公开 GitHub Release 下载源码，在本机使用正式 CGO 与 FTS5 参数构建，版本自检通过后才原子替换 `~/.local/bin/llm-wiki`。`llm-wiki update` 下载同一个公开安装器并更新当前 CLI 所在位置。下载、构建或校验失败时保留原有版本，默认也拒绝隐式降级；安装与升级都不修改已有 Vault，不使用 `sudo`，也不改 shell 配置。
+
+`llm-wiki update --json` 返回 `action`、`path`、`previous_version`、`current_version` 和 `dry_run`。稳定失败码为 `UPDATE_UNSUPPORTED`、可重试的 `UPDATE_DOWNLOAD_FAILED` 与 `UPDATE_FAILED`；`--dry-run` 只确认更新目标，不联网、不写文件。
+
+安装器会检查 `curl`、Go 1.25+、C/C++ 编译器和 `tar`，缺少依赖时直接给出错误。指定版本或安装目录：
+
+```bash
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/ifelseboy-big/personal_llvm_wiki/main/install.sh \
+  | sh -s -- --version 0.0.3 --install-dir "$HOME/.local/bin"
 ```
 
 安装目录不在 `PATH` 时，安装器会明确提示。可直接用完整路径验证：
@@ -36,13 +44,15 @@ gh api -H 'Accept: application/vnd.github.raw+json' \
 ~/.local/bin/llm-wiki --version
 ```
 
-首次创建个人 Vault：
+首次创建个人 Vault，并为所用 AI 客户端安装 Skill：
 
 ```bash
 ~/.local/bin/llm-wiki init "$HOME/Documents/llm-wiki" \
   --name personal --template personal --register --default \
-  --install-skill --yes --json --no-interactive
+  --install-skill --skill-client codex --yes --json --no-interactive
 ```
+
+Claude Code 用户将 `codex` 改为 `claude-code`。
 
 初始化只用于全新目录；升级 CLI 不需要也不得重新初始化已有 Vault。内容包版本变化时，使用 `template upgrade` 的显式三方比较流程，不做隐式迁移。
 
@@ -74,7 +84,7 @@ make vet
 ## 命令
 
 ```text
-init, locate, status, doctor
+init, locate, status, doctor, update
 inbox add|list|show|clean
 promote plan|diff|apply|reject
 query, show
@@ -172,17 +182,20 @@ Query 只从 SQLite 选择 Knowledge 候选，并在返回前回读 Markdown 校
 ## Skill
 
 ```bash
-llm-wiki skill install --client codex --yes
-llm-wiki skill update --client codex --yes
+llm-wiki skill status
+llm-wiki skill install codex --yes
+llm-wiki skill install claude-code --yes
+llm-wiki skill update codex --yes
+llm-wiki skill update claude-code --yes
 ```
 
-只安装 `llm-wiki-add` 与 `llm-wiki-query`。二次整理、发布和维护由 Vault 内容包中的 Workflow 与 `AGENTS.md` 约束，不安装额外 Skill。Add 和 Query Skill 也从内容包路由对应 Workflow。
+Codex 的个人目录为 `~/.agents/skills`，Claude Code 按官方 Agent Skills 契约安装到 `~/.claude/skills`。两者都只安装 `llm-wiki-add` 与 `llm-wiki-query`；Claude Code 安装不包含 Codex 专属的 `agents/openai.yaml`。二次整理、发布和维护由 Vault 内容包中的 Workflow 与 `AGENTS.md` 约束，不安装额外 Skill。Add 和 Query Skill 也从内容包路由对应 Workflow。
 
 ## 安全与版本
 
 - instance/frontmatter 只接受 v3，content pack policy 只接受 v1，Promotion 只接受 v1；identity 或版本不匹配直接拒绝，不读取或迁移旧契约。
 - 所有批量写入先全量预检；受管路径拒绝逃逸、symlink、hardlink、非普通文件和超限输入。
-- `--dry-run` 不创建目录、锁、Promotion、事务、索引、注册或 Skill 文件。
+- `--dry-run` 不创建目录、锁、Promotion、事务、索引、注册、Skill 文件或自升级临时文件，也不发起升级网络请求。
 - 私有目录默认 `0700`，受管文件默认 `0600`。
 - 中断事务按 `prepared -> files_committed -> complete` 恢复；SQLite 不覆盖 Markdown。
 

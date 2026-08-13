@@ -1,7 +1,6 @@
 ---
 name: llm-wiki-add
 description: 用户明确要求记住、收集、保存或加入稍后整理的信息时使用。
-version: 4.0.1
 ---
 
 1. 运行 `llm-wiki locate --json --no-interactive` 定位 Vault，把返回的 `wiki.path` 固定为 `<vault-root>`。

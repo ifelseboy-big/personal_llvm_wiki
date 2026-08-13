@@ -9,8 +9,6 @@ MIN_GO_MINOR=25
 
 requested_version=${LLM_WIKI_VERSION:-latest}
 install_dir=${LLM_WIKI_INSTALL_DIR:-}
-github_token=${GH_TOKEN:-${GITHUB_TOKEN:-}}
-github_client=
 force=0
 quiet=0
 work_dir=
@@ -41,14 +39,13 @@ Usage:
 Options:
   --version <version>       Release to install, such as 0.0.1 (default: latest)
   --install-dir <directory> Binary directory (default: $HOME/.local/bin)
-  --force                   Reinstall even when the requested version is installed
+  --force                   Reinstall or explicitly allow a downgrade
   --quiet                   Suppress progress messages
   -h, --help                Show this help
 
 Environment:
   LLM_WIKI_VERSION          Same as --version
   LLM_WIKI_INSTALL_DIR      Same as --install-dir
-  GH_TOKEN, GITHUB_TOKEN    GitHub token fallback when gh is unavailable
   CC, CXX                   C and C++ compilers used by CGO
 EOF
 }
@@ -140,47 +137,56 @@ normalize_version() {
 	fi
 }
 
+version_is_greater() {
+	left=$1
+	right=$2
+	old_ifs=$IFS
+	IFS=.
+	set -- $left
+	left_major=$1
+	left_minor=$2
+	left_patch=$3
+	set -- $right
+	right_major=$1
+	right_minor=$2
+	right_patch=$3
+	IFS=$old_ifs
+	for pair in "$left_major:$right_major" "$left_minor:$right_minor" "$left_patch:$right_patch"; do
+		left_part=${pair%%:*}
+		right_part=${pair#*:}
+		while [ "${left_part#0}" != "$left_part" ]; do left_part=${left_part#0}; done
+		while [ "${right_part#0}" != "$right_part" ]; do right_part=${right_part#0}; done
+		left_part=${left_part:-0}
+		right_part=${right_part:-0}
+		if [ "$left_part" -gt "$right_part" ]; then
+			return 0
+		fi
+		if [ "$left_part" -lt "$right_part" ]; then
+			return 1
+		fi
+	done
+	return 1
+}
+
 resolve_latest_version() {
-	if [ "$github_client" = gh ]; then
-		tag=$(gh api "repos/$REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null) \
-			|| fail "cannot resolve the latest release; check GitHub authentication and repository access"
-	else
-		release_json=$(curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
-			-H "Authorization: Bearer $github_token" \
-			-H 'Accept: application/vnd.github+json' \
-			"https://api.github.com/repos/$REPOSITORY/releases/latest") \
-			|| fail "cannot resolve the latest release; check GH_TOKEN and repository access"
-		tag=$(printf '%s\n' "$release_json" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
-		[ -n "$tag" ] || fail "GitHub returned release metadata without tag_name"
-	fi
+	release_url=$(curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+		--output /dev/null --write-out '%{url_effective}' \
+		"https://github.com/$REPOSITORY/releases/latest") \
+		|| fail "cannot resolve the latest public release"
+	tag=${release_url##*/}
+	case "$tag" in
+		*\?*) tag=${tag%%\?*} ;;
+	esac
 	normalize_version "$tag"
 }
 
 download_release() {
 	version=$1
 	output=$2
-	if [ "$github_client" = gh ]; then
-		gh api "repos/$REPOSITORY/tarball/v$version" >"$output" \
-			|| fail "cannot download llm-wiki $version; check GitHub authentication and repository access"
-	else
-		curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
-			-H "Authorization: Bearer $github_token" \
-			-H 'Accept: application/vnd.github+json' \
-			--output "$output" \
-			"https://api.github.com/repos/$REPOSITORY/tarball/v$version" \
-			|| fail "cannot download llm-wiki $version; check GH_TOKEN and repository access"
-	fi
-}
-
-select_github_client() {
-	if command -v gh >/dev/null 2>&1; then
-		github_client=gh
-	elif [ -n "$github_token" ]; then
-		require_command curl
-		github_client=curl
-	else
-		fail "private release access requires an authenticated GitHub CLI (gh auth login) or GH_TOKEN"
-	fi
+	curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+		--output "$output" \
+		"https://github.com/$REPOSITORY/archive/refs/tags/v$version.tar.gz" \
+		|| fail "cannot download public release v$version"
 }
 
 installed_version() {
@@ -197,7 +203,7 @@ installed_version() {
 }
 
 if [ "$requested_version" = latest ]; then
-	select_github_client
+	require_command curl
 	version=$(resolve_latest_version)
 else
 	version=$(normalize_version "$requested_version")
@@ -210,13 +216,13 @@ if current_version=$(installed_version "$target"); then
 		say "$PROGRAM $version is already installed at $target"
 		exit 0
 	fi
+	if version_is_greater "$current_version" "$version" && [ "$force" -eq 0 ]; then
+		say "$PROGRAM $current_version is newer than requested $version at $target; use --force to downgrade"
+		exit 0
+	fi
 fi
 
-if [ -z "$github_client" ]; then
-	select_github_client
-fi
-
-for command_name in tar go mktemp mkdir install mv find date sed head; do
+for command_name in curl tar go mktemp mkdir install mv find date; do
 	require_command "$command_name"
 done
 

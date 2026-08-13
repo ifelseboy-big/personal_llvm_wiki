@@ -3,6 +3,20 @@
   "$id": "https://llm-wiki.dev/schemas/response-v2.schema.json",
   "title": "llm-wiki CLI response v2",
   "type": "object",
+  "$defs": {
+    "updateData": {
+      "type": "object",
+      "required": ["action", "path", "previous_version", "current_version", "dry_run"],
+      "properties": {
+        "action": { "enum": ["check", "current", "updated"] },
+        "path": { "type": "string", "minLength": 1 },
+        "previous_version": { "type": "string", "minLength": 1 },
+        "current_version": { "type": "string", "minLength": 1 },
+        "dry_run": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  },
   "required": ["schema_version", "ok", "command", "tool_version", "warnings", "affected_files"],
   "properties": {
     "schema_version": { "const": "2.0" },
@@ -40,6 +54,16 @@
       "if": { "properties": { "ok": { "const": true } }, "required": ["ok"] },
       "then": { "not": { "required": ["error"] } },
       "else": { "required": ["error"] }
+    },
+    {
+      "if": {
+        "properties": { "ok": { "const": true }, "command": { "const": "update" } },
+        "required": ["ok", "command"]
+      },
+      "then": {
+        "required": ["data"],
+        "properties": { "data": { "$ref": "#/$defs/updateData" } }
+      }
     }
   ],
   "additionalProperties": false

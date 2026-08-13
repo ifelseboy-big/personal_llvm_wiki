@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"gopkg.in/yaml.v3"
+
 	"llm-wiki/internal/document"
 	resourcebundle "llm-wiki/resources"
 )
@@ -31,11 +33,12 @@ func TestInstallUpdateAndUninstallOwnedFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	queryText := string(queryBytes)
+	assertStandardSkillFrontmatter(t, queryBytes, "llm-wiki-query")
 	if !strings.Contains(queryText, "读取 Vault `AGENTS.md`") ||
 		!strings.Contains(queryText, "禁止调用 `inbox list/show`") ||
 		!strings.Contains(queryText, "llm-wiki show <id>") ||
 		!strings.Contains(queryText, "--wiki <vault-root>") ||
-		!strings.Contains(queryText, "version: "+SkillVersion) {
+		strings.Contains(queryText, "\nversion:") || strings.Contains(queryText, "\nmetadata:") {
 		t.Fatalf("query skill omitted Vault bootstrap or knowledge-only hydration: %s", queryText)
 	}
 	addBytes, err := os.ReadFile(filepath.Join(result.Target, "llm-wiki-add", "SKILL.md"))
@@ -45,8 +48,9 @@ func TestInstallUpdateAndUninstallOwnedFiles(t *testing.T) {
 		!strings.Contains(string(addBytes), "--batch-manifest") {
 		t.Fatalf("add skill blurred capture and retrieval boundaries: %s err=%v", addBytes, err)
 	}
+	assertStandardSkillFrontmatter(t, addBytes, "llm-wiki-add")
 	status, err := GetStatus("codex")
-	if err != nil || !status.Installed || len(status.Modified) != 0 || len(status.Skills) != 2 {
+	if err != nil || !status.Installed || status.Version != SkillVersion || status.Modified == nil || status.Missing == nil || len(status.Modified) != 0 || len(status.Skills) != 2 {
 		t.Fatalf("bad status %#v err=%v", status, err)
 	}
 	if _, err := Install("codex", true, false); err != nil {
@@ -62,10 +66,93 @@ func TestInstallUpdateAndUninstallOwnedFiles(t *testing.T) {
 	}
 }
 
+func TestClaudeCodeInstallUsesPersonalSkillsDirectoryContract(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("LLM_WIKI_CLAUDE_CODE_SKILLS_DIR", root)
+	result, err := Install("claude-code", false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Client != "claude-code" || result.Target != root || len(result.Skills) != 2 {
+		t.Fatalf("unexpected install result %#v", result)
+	}
+	for _, name := range SkillNames() {
+		data, err := os.ReadFile(filepath.Join(root, name, "SKILL.md"))
+		if err != nil {
+			t.Fatalf("Claude Code skill %s was not installed: %v", name, err)
+		}
+		assertStandardSkillFrontmatter(t, data, name)
+		if strings.Contains(string(data), "\nversion:") || strings.Contains(string(data), "\nmetadata:") {
+			t.Fatalf("Claude Code skill %s has non-standard frontmatter", name)
+		}
+		if _, err := os.Stat(filepath.Join(root, name, "agents", "openai.yaml")); !os.IsNotExist(err) {
+			t.Fatalf("Claude Code install included Codex-only metadata for %s: %v", name, err)
+		}
+	}
+	status, err := GetStatus("claude-code")
+	if err != nil || !status.Installed || status.Client != "claude-code" || status.Version != SkillVersion || status.Modified == nil || status.Missing == nil || len(status.Modified) != 0 {
+		t.Fatalf("bad Claude Code status %#v err=%v", status, err)
+	}
+	if _, err := Install("claude-code", true, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Uninstall("claude-code", false); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range SkillNames() {
+		if _, err := os.Stat(filepath.Join(root, name, "SKILL.md")); !os.IsNotExist(err) {
+			t.Fatalf("Claude Code owned file remains after uninstall: %s: %v", name, err)
+		}
+	}
+}
+
+func assertStandardSkillFrontmatter(t *testing.T, data []byte, expectedName string) {
+	t.Helper()
+	text := string(data)
+	if !strings.HasPrefix(text, "---\n") {
+		t.Fatalf("skill %s has no frontmatter", expectedName)
+	}
+	end := strings.Index(text[4:], "\n---\n")
+	if end < 0 {
+		t.Fatalf("skill %s has unterminated frontmatter", expectedName)
+	}
+	frontmatter := text[4 : 4+end]
+	var fields map[string]any
+	if err := yaml.Unmarshal([]byte(frontmatter), &fields); err != nil {
+		t.Fatalf("skill %s frontmatter is invalid: %v", expectedName, err)
+	}
+	if len(fields) != 2 || fields["name"] != expectedName {
+		t.Fatalf("skill %s frontmatter must contain only name and description: %#v", expectedName, fields)
+	}
+	description, ok := fields["description"].(string)
+	if !ok || strings.TrimSpace(description) == "" {
+		t.Fatalf("skill %s description is missing: %#v", expectedName, fields)
+	}
+}
+
+func TestSupportedClientsAndDefaultTargets(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("LLM_WIKI_CODEX_SKILLS_DIR", "")
+	t.Setenv("LLM_WIKI_CLAUDE_CODE_SKILLS_DIR", "")
+	clients := SupportedClients()
+	if len(clients) != 2 || clients[0] != "claude-code" || clients[1] != "codex" {
+		t.Fatalf("unexpected supported clients %#v", clients)
+	}
+	claudeTarget, err := ResolveTarget("claude-code")
+	if err != nil || claudeTarget != filepath.Join(home, ".claude", "skills") {
+		t.Fatalf("unexpected Claude Code target %q err=%v", claudeTarget, err)
+	}
+	codexTarget, err := ResolveTarget("codex")
+	if err != nil || codexTarget != filepath.Join(home, ".agents", "skills") {
+		t.Fatalf("unexpected Codex target %q err=%v", codexTarget, err)
+	}
+}
+
 func TestUpdateLegacyFourSkillManifestPreservesModifiedObsoleteFile(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("LLM_WIKI_CODEX_SKILLS_DIR", root)
-	current, err := sourceFiles()
+	current, err := sourceFiles("codex")
 	if err != nil {
 		t.Fatal(err)
 	}

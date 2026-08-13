@@ -23,6 +23,9 @@ func TestCLIJSONSuccessEnvelope(t *testing.T) {
 	if !response.OK || response.SchemaVersion != ProtocolVersion || response.Command != "init" || response.Wiki == nil {
 		t.Fatalf("unexpected response %#v", response)
 	}
+	if response.Warnings == nil || response.AffectedFiles == nil {
+		t.Fatalf("JSON arrays must not be null: %#v", response)
+	}
 }
 
 func TestCLIJSONUsageFailureEnvelope(t *testing.T) {

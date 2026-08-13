@@ -100,8 +100,8 @@ func (r *Runtime) Success(command string, wiki *WikiRef, data any, warnings, fil
 	if files == nil {
 		files = []string{}
 	}
-	warnings = append([]string(nil), warnings...)
-	files = append([]string(nil), files...)
+	warnings = append([]string{}, warnings...)
+	files = append([]string{}, files...)
 	sort.Strings(warnings)
 	sort.Strings(files)
 	if r.JSON {

@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
+	"llm-wiki/internal/app"
 	"llm-wiki/internal/document"
 	"llm-wiki/internal/inbox"
 	indexstore "llm-wiki/internal/index"
@@ -16,6 +18,58 @@ import (
 	"llm-wiki/internal/templates"
 	"llm-wiki/internal/vault"
 )
+
+func TestSelfUpdateDryRunDoesNotModifyVault(t *testing.T) {
+	vaultRoot := filepath.Join(t.TempDir(), "wiki")
+	if _, err := vault.Init(vault.InitOptions{Path: vaultRoot, Name: "update-dry-run", Template: "personal"}); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotFiles(t, vaultRoot)
+
+	var stdout, stderr bytes.Buffer
+	command := app.NewRootCommandWithIO(strings.NewReader(""), &stdout, &stderr)
+	command.SetArgs([]string{"update", "--wiki", vaultRoot, "--dry-run", "--json", "--no-interactive"})
+	if err := command.Execute(); err != nil {
+		t.Fatalf("update dry-run: %v stderr=%s", err, stderr.String())
+	}
+	var response app.Response
+	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.OK || response.Command != "update" || response.Warnings == nil || response.AffectedFiles == nil || len(response.AffectedFiles) != 0 {
+		t.Fatalf("unexpected update response %#v", response)
+	}
+	after := snapshotFiles(t, vaultRoot)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("update dry-run changed Vault\nbefore=%#v\nafter=%#v", before, after)
+	}
+}
+
+func snapshotFiles(t *testing.T, root string) map[string]string {
+	t.Helper()
+	files := map[string]string{}
+	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		files[filepath.ToSlash(relative)] = string(data)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
 
 func TestNoObsidianFullLifecycleAndRebuildEquivalence(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "personal-wiki")

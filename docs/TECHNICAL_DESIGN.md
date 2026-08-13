@@ -22,16 +22,17 @@ Obsidian、Bases、Properties 与 wikilink 都是可选展示增强。CLI 不调
 
 1. Core：文件安全、Schema、Promotion、事务、哈希、索引、证据回读和通用声明式策略执行。
 2. Vault content pack：机器清单、分类、类型、字段规则、模板、Agent 路由与 Workflow。
-3. Skills：Add 与 Query 普通入口，路由到 Vault 契约并调用 CLI。
+3. Skills：Codex 与 Claude Code 的 Add/Query 普通入口，路由到 Vault 契约并调用 CLI。
 
 ```text
 cmd/llm-wiki -> internal/app
 internal/app -> config, document, governance, inbox, promote, index,
-                templates, skill, vault
+                selfupdate, templates, skill, vault
 internal/governance -> config, document, fsutil
 internal/inbox -> config, document, fsutil, vault
 internal/promote -> config, document, fsutil, governance, inbox, vault
 internal/index -> config, document, fsutil, governance, sqlite3simple, vault
+internal/selfupdate -> standard library only
 ```
 
 只有 `internal/index` 与 `internal/sqlite3simple` 依赖 SQLite。业务包不依赖 `internal/app`；稳定错误码、退出码、Cobra 和 stdout/stderr 映射只在 app 层。
@@ -49,7 +50,7 @@ Go Core 不得出现内容包中的 category、type、模板名、类型字段�
 | JSON response | 2.0 |
 | personal content pack | 3.0.1 |
 | personal governance | personal-3.0 |
-| Skill | 4.0.1 |
+| Skill | 4.1.0 |
 | index schema | 6 |
 | query planner | 4 |
 
@@ -206,7 +207,7 @@ Query 不自动更新索引。Inbox 永远不进入上述扫描或候选流程�
 命令面保持：
 
 ```text
-init, locate, status, doctor
+init, locate, status, doctor, update
 inbox add|list|show|clean
 promote plan|diff|apply|reject
 query, show
@@ -217,15 +218,19 @@ skill status|install|update|uninstall
 
 JSON stdout 恰好一个对象；warnings 与 affected_files 永远是数组。诊断写 stderr。JSON 自动关闭颜色与交互。dry-run 不创建 Vault、锁、Promotion、事务、索引、注册或 Skill 文件。
 
+`update` 是独立的 CLI 自升级用例，不解析或写入 Vault。它定位并解析当前真实可执行文件，限定 macOS/Linux 与 `llm-wiki` 文件名，通过受限 HTTPS 请求下载公开 `main` 的 `install.sh`，限制响应大小并校验 shell 入口和 NUL，然后在 `0700` 临时目录执行。安装器失败时现有二进制保持不变；成功后必须再次执行目标二进制并校验语义版本。JSON 返回 `check|current|updated`、前后版本、规范路径和 dry-run；dry-run 不访问网络或创建临时文件。
+
 内容模板只从已安装内容包的 `templates/` 目录或所选内嵌包的 manifest 发现，不直接引用 personal 路径。模板安装/升级只管理 manifest 声明文件，不写 Inbox 或 Knowledge。
 
 Vault 必须包含 Capture、Organize、Publish、Maintain、Query 五个可执行 Workflow。Workflow 负责语义判断；Publish 和 Maintain 只能通过 Promotion 写事实。Add/Query Skill 读取对应 Workflow，仍只把 CLI 当安全底座。
 
+Skill client 名固定为 `codex` 与 `claude-code`。Codex 个人目标是 `~/.agents/skills`，并包含 `agents/openai.yaml`；Claude Code 个人目标按 Agent Skills 契约使用 `~/.claude/skills`，只安装跨客户端 Skill 文件。每个 client 在自己的目标内维护独立 manifest、锁、所有权哈希、冲突保护和安装/更新/卸载生命周期。`init --install-skill --skill-client <client>` 只安装显式选择的一个 client。
+
 ## 10. 平台、安全与隐私
 
-项目通过 Private GitHub 仓库的正式 Release 源码分发，不提供预构建二进制。一键安装器复用 GitHub CLI 身份或显式 Token，解析最新版本或接受显式 `MAJOR.MINOR.PATCH`，通过 GitHub API 下载标签归档，拒绝危险归档路径、链接和非本项目 Go module，并在临时目录构建。它使用 Go 1.25、CGO、`fts5 sqlite_omit_load_extension` 与固定 simple tokenizer；新二进制通过版本自检后，才在安装目录内原子替换旧版本。安装失败不得破坏现有 CLI，也不得读取、修改或迁移 Vault。
+项目通过 Public GitHub 仓库的正式 Release 源码匿名分发，不提供预构建二进制。一键安装器通过公开 HTTPS 解析最新版本或接受显式 `MAJOR.MINOR.PATCH`，下载标签归档，拒绝危险归档路径、链接、隐式降级和非本项目 Go module，并在临时目录构建。它使用 Go 1.25、CGO、`fts5 sqlite_omit_load_extension` 与固定 simple tokenizer；新二进制通过版本自检后，才在安装目录内原子替换旧版本。安装失败不得破坏现有 CLI，也不得读取、修改或迁移 Vault。
 
-安装器不提升权限、不修改 shell 配置，默认目标是 `~/.local/bin/llm-wiki`。运行时不依赖外部 SQLite、解释器、MCP、常驻服务或网络服务。
+安装器不提升权限、不修改 shell 配置，默认目标是 `~/.local/bin/llm-wiki`。普通 Vault 运行时不依赖外部 SQLite、解释器、MCP、常驻服务或网络服务；只有显式 `update` 需要公开 HTTPS、POSIX shell 以及源码构建工具链。
 
 - 所有目标通过 filepath canonicalization、root containment 和逐组件 symlink 检查；不使用字符串前缀判断 containment。
 - 受管文件拒绝多重 hardlink、非普通文件和大小超限。

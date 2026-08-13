@@ -1,7 +1,6 @@
 ---
 name: llm-wiki-query
 description: 用户询问个人知识库中已经沉淀的可信知识时使用。
-version: 4.0.1
 ---
 
 1. 运行 `llm-wiki locate --json --no-interactive` 定位 Vault，把返回的 `wiki.path` 固定为 `<vault-root>`，并读取 Vault `AGENTS.md` 与 `content-pack.json`。

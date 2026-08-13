@@ -34,24 +34,44 @@ tar -czf "$test_root/unsafe-source.tar.gz" -C "$test_root" personal_llvm_wiki-0.
 fake_bin=$test_root/fake-bin
 mkdir -p "$fake_bin"
 
-cat >"$fake_bin/gh" <<'EOF'
+cat >"$fake_bin/curl" <<'EOF'
 #!/bin/sh
 set -eu
-endpoint=${2:-}
-[ "${1:-}" = api ] || exit 2
-case "$endpoint" in
-	repos/ifelseboy-big/personal_llvm_wiki/releases/latest)
-		[ "${3:-}" = --jq ] || exit 3
-		[ "${4:-}" = .tag_name ] || exit 4
-		printf '%s\n' 'v0.0.1'
+output=
+write_out=
+url=
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		-H|--header)
+			exit 6
+			;;
+		--output)
+			output=$2
+			shift 2
+			;;
+		--write-out)
+			write_out=$2
+			shift 2
+			;;
+		https://*)
+			url=$1
+			shift
+			;;
+		*) shift ;;
+	esac
+done
+case "$url" in
+	*/releases/latest)
+		[ "$write_out" = '%{url_effective}' ] || exit 2
+		printf '%s' 'https://github.com/ifelseboy-big/personal_llvm_wiki/releases/tag/v0.0.1'
 		;;
-	repos/ifelseboy-big/personal_llvm_wiki/tarball/v0.0.3)
-		cat "$FAKE_UNSAFE_ARCHIVE"
+	*/archive/refs/tags/v0.0.3.tar.gz)
+		cp "$FAKE_UNSAFE_ARCHIVE" "$output"
 		;;
-	repos/ifelseboy-big/personal_llvm_wiki/tarball/v*)
-		cat "$FAKE_SOURCE_ARCHIVE"
+	*/archive/refs/tags/v*.tar.gz)
+		cp "$FAKE_SOURCE_ARCHIVE" "$output"
 		;;
-	*) exit 5 ;;
+	*) exit 3 ;;
 esac
 EOF
 
@@ -93,7 +113,7 @@ for compiler in fake-cc fake-cxx; do
 exit 0
 EOF
 done
-chmod 0755 "$fake_bin/gh" "$fake_bin/go" "$fake_bin/fake-cc" "$fake_bin/fake-cxx"
+chmod 0755 "$fake_bin/curl" "$fake_bin/go" "$fake_bin/fake-cc" "$fake_bin/fake-cxx"
 
 install_dir=$test_root/install-bin
 build_log=$test_root/build.log
@@ -119,12 +139,17 @@ printf '%s\n' "$output" | grep -F 'llm-wiki 0.0.1 is already installed' >/dev/nu
 	|| fail "repeat installation was not idempotent"
 [ "$(wc -l <"$build_log" | tr -d ' ')" = 1 ] || fail "idempotent install rebuilt the binary"
 
+output=$(run_installer --version 0.0.0)
+printf '%s\n' "$output" | grep -F 'llm-wiki 0.0.1 is newer than requested 0.0.0' >/dev/null \
+	|| fail "installer did not refuse an implicit downgrade"
+[ "$(wc -l <"$build_log" | tr -d ' ')" = 1 ] || fail "downgrade refusal rebuilt the binary"
+
 mkdir -p "$test_root/no-tools"
 output=$(PATH="$test_root/no-tools" LLM_WIKI_INSTALL_DIR="$install_dir" \
 	/bin/sh "$repository_root/install.sh" --version 0.0.1)
 case "$output" in
 	*'llm-wiki 0.0.1 is already installed'*) ;;
-	*) fail "pinned idempotent install unnecessarily required GitHub access" ;;
+	*) fail "pinned idempotent install unnecessarily required network access" ;;
 esac
 
 if FAKE_BUILD_VERSION=9.9.9 run_installer --version 0.0.2 >"$test_root/failed.out" 2>"$test_root/failed.err"; then
