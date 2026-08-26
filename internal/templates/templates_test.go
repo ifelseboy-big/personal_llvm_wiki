@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -67,9 +68,20 @@ func TestPersonalContentPackDeclaresOrthogonalDomainsTypesAndWorkflows(t *testin
 	for _, item := range policy.Types {
 		types[item.Name] = true
 	}
-	for _, name := range []string{"requirement", "design", "decision", "runbook", "retrospective", "learning-note", "concept", "configuration", "business-rule", "business-process"} {
+	if len(types) != 6 {
+		t.Fatalf("personal content pack must expose six document types: %#v", types)
+	}
+	for _, name := range []string{"plan", "guide", "note", "config", "rule", "review"} {
 		if !types[name] {
 			t.Fatalf("personal content pack omitted type %s", name)
+		}
+		builtIn, err := templates.ReadContent(nil, "", name)
+		if err != nil || builtIn.Kind != "knowledge" {
+			t.Fatalf("built-in template name %s resolves ambiguously: %#v %v", name, builtIn, err)
+		}
+		installed, err := templates.ReadContent(initialized.Config, "", name)
+		if err != nil || installed.Kind != builtIn.Kind || installed.Path != builtIn.Path {
+			t.Fatalf("installed template name %s resolves differently: %#v %v", name, installed, err)
 		}
 	}
 	if len(policy.Workflows) != 5 {
@@ -82,7 +94,7 @@ func TestPersonalTemplatesExposeInboxPromotionAndOptionalViews(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Version != "1.1.0" || manifest.ContentPack != "content-pack.json" {
+	if manifest.Version != "2.0.0" || manifest.ContentPack != "content-pack.json" {
 		t.Fatalf("unexpected personal template version %s", manifest.Version)
 	}
 	agents, err := templates.ReadFile("personal", "AGENTS.md")
@@ -123,7 +135,7 @@ func TestPersonalTemplatesExposeInboxPromotionAndOptionalViews(t *testing.T) {
 			t.Fatalf("promotion rule omitted manifest contract %q: %s", required, promoteRule)
 		}
 	}
-	for _, name := range []string{"requirement", "design", "decision", "runbook", "retrospective", "learning-note", "concept", "configuration", "business-rule", "business-process"} {
+	for _, name := range []string{"plan", "guide", "note", "config", "rule", "review"} {
 		item, err := templates.ReadContent(nil, "knowledge", name)
 		if err != nil {
 			t.Fatal(err)
@@ -147,7 +159,7 @@ func TestPersonalTemplatesExposeInboxPromotionAndOptionalViews(t *testing.T) {
 			t.Fatalf("%s template must declare tags and aliases lists", name)
 		}
 	}
-	configuration, err := templates.ReadContent(nil, "knowledge", "configuration")
+	configuration, err := templates.ReadContent(nil, "knowledge", "config")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,14 +193,14 @@ func TestCreateDraftRendersSafelyAndProtectsManagedPaths(t *testing.T) {
 	title := `Use "foo" \\ path`
 	output := filepath.Join(t.TempDir(), "draft.md")
 	result, err := templates.CreateDraft(cfg, templates.CreateOptions{
-		Kind: "knowledge", Name: "runbook", Title: title, Output: output,
+		Kind: "knowledge", Name: "guide", Title: title, Output: output,
 		Set: []string{"category=development", "description=Quoted title fixture", "applies_to=[macOS, LLVM]"},
 		Now: time.Date(2026, 8, 9, 12, 34, 0, 0, time.Local),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.TemplateVersion != "1.1.0" || !strings.Contains(result.NextCommandHint, "promote plan") {
+	if result.TemplateVersion != "2.0.0" || !strings.Contains(result.NextCommandHint, "promote plan") {
 		t.Fatalf("unexpected result: %#v", result)
 	}
 	if !document.ValidID("know", result.ProposedID) || !strings.Contains(result.NextCommandHint, result.ProposedID) {
@@ -209,8 +221,8 @@ func TestCreateDraftRendersSafelyAndProtectsManagedPaths(t *testing.T) {
 		t.Fatalf("YAML list --set was not preserved: %#v", meta.Extra["applies_to"])
 	}
 	if _, err := templates.CreateDraft(cfg, templates.CreateOptions{
-		Kind: "knowledge", Name: "runbook", Title: "Override", Output: filepath.Join(t.TempDir(), "override.md"),
-		Set: []string{"type=concept"},
+		Kind: "knowledge", Name: "guide", Title: "Override", Output: filepath.Join(t.TempDir(), "override.md"),
+		Set: []string{"type=note"},
 	}); err == nil {
 		t.Fatal("template create allowed --set to override the content-pack type")
 	}
@@ -220,12 +232,12 @@ func TestCreateDraftRendersSafelyAndProtectsManagedPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := templates.CreateDraft(cfg, templates.CreateOptions{
-		Kind: "knowledge", Name: "concept", Title: "Unsafe", Output: filepath.Join(alias, "unsafe.md"),
+		Kind: "knowledge", Name: "note", Title: "Unsafe", Output: filepath.Join(alias, "unsafe.md"),
 	}); err == nil {
 		t.Fatal("template create followed a parent symlink into knowledge")
 	}
 	inboxResult, err := templates.CreateDraft(cfg, templates.CreateOptions{
-		Kind: "inbox", Name: "note", Title: "Inbox", Output: filepath.Join(t.TempDir(), "note.md"),
+		Kind: "inbox", Name: "capture", Title: "Inbox", Output: filepath.Join(t.TempDir(), "note.md"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -236,8 +248,122 @@ func TestCreateDraftRendersSafelyAndProtectsManagedPaths(t *testing.T) {
 	if inboxResult.ProposedID != "" {
 		t.Fatalf("inbox draft unexpectedly received a knowledge id: %#v", inboxResult)
 	}
-	if _, err := templates.ReadContent(cfg, "knowledge", "../../concept"); err == nil {
+	if _, err := templates.ReadContent(cfg, "knowledge", "../../note"); err == nil {
 		t.Fatal("template name traversal was silently normalized")
+	}
+}
+
+func TestPersonalKnowledgeDraftsRenderAndRequirePromptResolution(t *testing.T) {
+	initialized, err := vault.Init(vault.InitOptions{Path: filepath.Join(t.TempDir(), "wiki"), Name: "knowledge-drafts", Template: "personal"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := initialized.Config
+	policy, err := governance.Load(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	promptPattern := regexp.MustCompile(`(?s)%% llm-wiki:prompt .*? %%`)
+	for _, kind := range policy.Types {
+		t.Run(kind.Name, func(t *testing.T) {
+			output := filepath.Join(t.TempDir(), "draft.md")
+			set := []string{"category=development", "description=Template rendering fixture"}
+			if kind.Name == "config" {
+				set = append(set, "system=fixture", "environment=test")
+			}
+			opts := templates.CreateOptions{
+				Kind: "knowledge", Name: kind.Name, Title: "正文：" + kind.Name, Output: output,
+				Set: set, Now: now, DryRun: true,
+			}
+			preview, err := templates.CreateDraft(cfg, opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(output); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("dry-run wrote a draft: %v", err)
+			}
+			opts.DryRun = false
+			result, err := templates.CreateDraft(cfg, opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(output)
+			if err != nil {
+				t.Fatal(err)
+			}
+			meta, body, err := document.Parse(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.UnresolvedVars) != 0 || len(preview.UnresolvedVars) != 0 || strings.Contains(string(data), "{{") {
+				t.Fatalf("template left unresolved variables: %#v", result.UnresolvedVars)
+			}
+			prompts := promptPattern.FindAll(body, -1)
+			if len(prompts) == 0 || result.PromptCount != len(prompts) || preview.PromptCount != result.PromptCount {
+				t.Fatalf("prompt blocks or preview counts differ: blocks=%d actual=%d preview=%d", len(prompts), result.PromptCount, preview.PromptCount)
+			}
+			meta.ID = result.ProposedID
+			meta.GovernanceVersion = policy.GovernanceVersion
+			doc := &document.Document{Metadata: meta, Body: body}
+			if err := governance.ValidateForPromotion(cfg, doc, nil, now); err == nil {
+				t.Fatal("unresolved template prompts passed promotion governance")
+			}
+			// Check the machine contract after prompt removal, not editorial completeness.
+			doc.Body = promptPattern.ReplaceAll(body, nil)
+			if err := governance.ValidateForPromotion(cfg, doc, nil, now); err != nil {
+				t.Fatalf("rendered template has a non-prompt governance failure: %v", err)
+			}
+		})
+	}
+}
+
+func TestPersonalContentPackRejectsRemovedTypesAndGovernance(t *testing.T) {
+	initialized, err := vault.Init(vault.InitOptions{Path: filepath.Join(t.TempDir(), "wiki"), Name: "removed-types", Template: "personal"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := initialized.Config
+	policy, err := governance.Load(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	doc := &document.Document{
+		Metadata: document.Metadata{
+			Type: "note", Title: "Current note", GovernanceVersion: policy.GovernanceVersion,
+			Extra: map[string]any{"category": "learning", "description": "Current contract", "lifecycle": "current"},
+		},
+		Body: []byte("# Current note\n\nSelf-contained test content.\n"),
+	}
+	if err := governance.ValidateForPromotion(cfg, doc, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"requirement", "design", "decision", "runbook", "business-process", "learning-note", "concept", "configuration", "business-rule", "retrospective"} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := templates.ReadContent(nil, "knowledge", name); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("removed built-in type is still available: %v", err)
+			}
+			output := filepath.Join(t.TempDir(), "draft.md")
+			if _, err := templates.CreateDraft(cfg, templates.CreateOptions{
+				Kind: "knowledge", Name: name, Title: "Removed type", Output: output, Now: now,
+			}); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("removed type was not rejected: %v", err)
+			}
+			if _, err := os.Stat(output); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("rejected type wrote a draft: %v", err)
+			}
+			removed := *doc
+			removed.Metadata.Type = name
+			if err := governance.ValidateForPromotion(cfg, &removed, nil, now); err == nil {
+				t.Fatal("removed type passed promotion governance")
+			}
+		})
+	}
+	oldGovernance := *doc
+	oldGovernance.Metadata.GovernanceVersion = "personal-1.0.0"
+	if err := governance.ValidateStored(cfg, &oldGovernance, now); err == nil {
+		t.Fatal("non-current governance version was accepted")
 	}
 }
 
@@ -344,48 +470,82 @@ func TestTemplateUpgradePreservesUserChanges(t *testing.T) {
 	}
 }
 
-func TestTemplateUpgradeRemovesUnmodifiedObsoleteFile(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "wiki")
-	initialized, err := vault.Init(vault.InitOptions{Path: root, Name: "obsolete-template", Template: "personal"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	obsoletePath := filepath.Join(root, "rules", "derived.md")
-	obsoleteContent := []byte("# Obsolete derived rule\n")
-	if err := os.WriteFile(obsoletePath, obsoleteContent, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	statePath := filepath.Join(initialized.Config.RuntimeDir(), "template-state.json")
-	stateBytes, err := os.ReadFile(statePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var state templates.InstallState
-	if err := json.Unmarshal(stateBytes, &state); err != nil {
-		t.Fatal(err)
-	}
-	state.Files = append(state.Files, templates.FileState{Path: "rules/derived.md", Hash: document.HashBytes(obsoleteContent)})
-	stateBytes, err = json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(statePath, append(stateBytes, '\n'), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	plan, _, err := templates.ApplyUpgrade(initialized.Config, false, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	foundRemoval := false
-	for _, action := range plan.Actions {
-		if action.Path == "rules/derived.md" && action.Action == "remove" {
-			foundRemoval = true
+func TestTemplateUpgradeHandlesRemovedKnowledgeTemplates(t *testing.T) {
+	for _, modified := range []bool{false, true} {
+		name, wantAction := "unmodified", "remove"
+		if modified {
+			name, wantAction = "user-modified", "obsolete"
 		}
-	}
-	if !foundRemoval {
-		t.Fatalf("obsolete unmodified file was not planned for removal: %#v", plan.Actions)
-	}
-	if _, err := os.Stat(obsoletePath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("obsolete unmodified file remains after upgrade: %v", err)
+		t.Run(name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "wiki")
+			initialized, err := vault.Init(vault.InitOptions{Path: root, Name: "obsolete-template", Template: "personal"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			relative := "templates/knowledge/concept.md"
+			obsoletePath := filepath.Join(root, filepath.FromSlash(relative))
+			obsoleteContent := []byte("# Previous template\n")
+			currentContent := obsoleteContent
+			if modified {
+				currentContent = []byte("# User-customized template\n")
+			}
+			if err := os.WriteFile(obsoletePath, currentContent, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			statePath := filepath.Join(initialized.Config.RuntimeDir(), "template-state.json")
+			stateBytes, err := os.ReadFile(statePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var state templates.InstallState
+			if err := json.Unmarshal(stateBytes, &state); err != nil {
+				t.Fatal(err)
+			}
+			state.Files = append(state.Files, templates.FileState{Path: relative, Hash: document.HashBytes(obsoleteContent)})
+			stateBytes, err = json.MarshalIndent(state, "", "  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			stateBytes = append(stateBytes, '\n')
+			if err := os.WriteFile(statePath, stateBytes, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			preview, affected, err := templates.ApplyUpgrade(initialized.Config, false, true)
+			if err != nil || len(affected) != 0 {
+				t.Fatalf("upgrade preview failed or wrote files: %#v %v", affected, err)
+			}
+			for path, want := range map[string][]byte{obsoletePath: currentContent, statePath: stateBytes} {
+				got, err := os.ReadFile(path)
+				if err != nil || !bytes.Equal(got, want) {
+					t.Fatalf("upgrade preview changed %s: %v", path, err)
+				}
+			}
+			plan, _, err := templates.ApplyUpgrade(initialized.Config, false, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, candidate := range []*templates.UpgradePlan{preview, plan} {
+				found := false
+				for _, action := range candidate.Actions {
+					if action.Path == relative && action.Action == wantAction {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatalf("removed template did not plan %s: %#v", wantAction, candidate.Actions)
+				}
+			}
+			if modified {
+				got, err := os.ReadFile(obsoletePath)
+				if err != nil || !bytes.Equal(got, currentContent) {
+					t.Fatalf("user template was changed by upgrade: %v", err)
+				}
+			} else if _, err := os.Stat(obsoletePath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("unmodified removed template remains after upgrade: %v", err)
+			}
+			if _, err := templates.ReadContent(initialized.Config, "knowledge", "concept"); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("obsolete file was treated as an active template: %v", err)
+			}
+		})
 	}
 }

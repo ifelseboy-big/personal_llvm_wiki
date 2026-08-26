@@ -1,5 +1,5 @@
 ---
-type: concept
+type: note
 title: LLVM 的模块化架构
 tags:
   - LLVM

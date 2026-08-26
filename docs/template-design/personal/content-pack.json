@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "name": "personal",
-  "version": "1.1.0",
-  "governance_version": "personal-1.0.0",
+  "version": "2.0.0",
+  "governance_version": "personal-2.0.0",
   "categories": [
     { "name": "development", "description": "需求、设计、工程决策、交付运行和研发复盘" },
     { "name": "learning", "description": "个人学习记录、概念理解、练习结论和知识边界" },
@@ -11,41 +11,22 @@
   ],
   "types": [
     {
-      "name": "requirement",
-      "description": "记录可验证的需求、范围、约束与验收条件",
-      "template": "templates/knowledge/requirement.md",
+      "name": "plan",
+      "description": "方案说明：要解决什么问题、准备怎么做、为什么这样选、如何验收",
+      "template": "templates/knowledge/plan.md",
       "fields": [
-        { "name": "requirement_state", "kind": "enum", "required": true, "values": ["draft", "validated", "approved", "implemented", "rejected"] },
+        { "name": "plan_state", "kind": "enum", "required": true, "values": ["draft", "approved", "implemented", "rejected", "retired"] },
+        { "name": "owner", "kind": "string" },
         { "name": "stakeholders", "kind": "string_list", "unique": true },
-        { "name": "target_release", "kind": "string" }
-      ]
-    },
-    {
-      "name": "design",
-      "description": "记录方案结构、接口、约束、权衡与验证设计",
-      "template": "templates/knowledge/design.md",
-      "fields": [
-        { "name": "design_state", "kind": "enum", "required": true, "values": ["proposed", "approved", "implemented", "retired"] },
+        { "name": "target_release", "kind": "string" },
         { "name": "applies_to", "kind": "string_list", "unique": true },
         { "name": "last_verified", "kind": "date" }
       ]
     },
     {
-      "name": "decision",
-      "description": "记录明确选择、备选方案、理由、后果与复审条件",
-      "template": "templates/knowledge/decision.md",
-      "fields": [
-        { "name": "decision_state", "kind": "enum", "required": true, "values": ["proposed", "accepted", "deprecated"] },
-        { "name": "decided_at", "kind": "date", "required_when": { "field": "decision_state", "equals": "accepted" } },
-        { "name": "decision_makers", "kind": "string_list", "unique": true },
-        { "name": "consulted", "kind": "string_list", "unique": true },
-        { "name": "informed", "kind": "string_list", "unique": true }
-      ]
-    },
-    {
-      "name": "runbook",
-      "description": "记录可重复执行、验证、停止和恢复的操作流程",
-      "template": "templates/knowledge/runbook.md",
+      "name": "guide",
+      "description": "操作指南：谁在什么条件下按哪些步骤完成一件事，如何交接、检查与处理异常",
+      "template": "templates/knowledge/guide.md",
       "fields": [
         { "name": "owner", "kind": "string" },
         { "name": "applies_to", "kind": "string_list", "unique": true },
@@ -53,34 +34,17 @@
       ]
     },
     {
-      "name": "retrospective",
-      "description": "记录一个明确周期的结果、证据、原因、教训与改进行动",
-      "template": "templates/knowledge/retrospective.md",
+      "name": "note",
+      "description": "知识笔记：解释一个主题、概念或学习所得，保留例证、来源与适用边界",
+      "template": "templates/knowledge/note.md",
       "fields": [
-        { "name": "period_start", "kind": "date", "required": true },
-        { "name": "period_end", "kind": "date", "required": true },
-        { "name": "participants", "kind": "string_list", "unique": true }
-      ]
-    },
-    {
-      "name": "learning-note",
-      "description": "记录学习目标、来源、理解、练习、反馈与待验证问题",
-      "template": "templates/knowledge/learning-note.md",
-      "fields": [
-        { "name": "learning_stage", "kind": "enum", "required": true, "values": ["captured", "understood", "practiced", "mastered"] },
         { "name": "source_references", "kind": "string_list", "unique": true }
       ]
     },
     {
-      "name": "concept",
-      "description": "解释稳定概念、机制、边界、示例、反例与分歧",
-      "template": "templates/knowledge/concept.md",
-      "fields": []
-    },
-    {
-      "name": "configuration",
-      "description": "记录非敏感配置项、作用域、影响、验证与秘密的安全引用位置",
-      "template": "templates/knowledge/configuration.md",
+      "name": "config",
+      "description": "配置说明：哪些非敏感设置控制什么行为，在哪里生效、如何验证与恢复",
+      "template": "templates/knowledge/config.md",
       "fields": [
         { "name": "system", "kind": "string", "required": true },
         { "name": "environment", "kind": "string", "required": true },
@@ -89,9 +53,9 @@
       ]
     },
     {
-      "name": "business-rule",
-      "description": "记录可判定的业务规则、输入、例外、口径、依据与生效范围",
-      "template": "templates/knowledge/business-rule.md",
+      "name": "rule",
+      "description": "规则说明：什么对象满足哪些条件时应得到什么结果，以及依据、例外与生效范围",
+      "template": "templates/knowledge/rule.md",
       "fields": [
         { "name": "rule_state", "kind": "enum", "required": true, "values": ["draft", "active", "retired"] },
         { "name": "rule_owner", "kind": "string" },
@@ -100,13 +64,13 @@
       ]
     },
     {
-      "name": "business-process",
-      "description": "记录端到端业务流程、角色、触发、步骤、异常、控制与指标",
-      "template": "templates/knowledge/business-process.md",
+      "name": "review",
+      "description": "复盘总结：一个周期或事件的结果如何、为什么、下次保留或改变什么",
+      "template": "templates/knowledge/review.md",
       "fields": [
-        { "name": "process_state", "kind": "enum", "required": true, "values": ["draft", "active", "retired"] },
-        { "name": "process_owner", "kind": "string" },
-        { "name": "last_verified", "kind": "date" }
+        { "name": "period_start", "kind": "date", "required": true },
+        { "name": "period_end", "kind": "date", "required": true },
+        { "name": "participants", "kind": "string_list", "unique": true }
       ]
     }
   ],

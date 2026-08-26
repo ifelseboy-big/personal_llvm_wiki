@@ -21,8 +21,8 @@ func TestPromotionSupportsMultipleInputsAndOutputs(t *testing.T) {
 	first := addInbox(t, cfg, "first.txt", "first payload", 100)
 	second := addInbox(t, cfg, "second.txt", "second payload", 101)
 	base := t.TempDir()
-	writeDraft(t, filepath.Join(base, "one.md"), "concept", "First knowledge", "First self-contained fact.")
-	writeDraft(t, filepath.Join(base, "two.md"), "concept", "Merged knowledge", "Merged self-contained fact.")
+	writeDraft(t, filepath.Join(base, "one.md"), "note", "First knowledge", "First self-contained fact.")
+	writeDraft(t, filepath.Join(base, "two.md"), "note", "Merged knowledge", "Merged self-contained fact.")
 	firstKnowledge := "know_01arz3ndektsv4rrffq69g5faw"
 	secondKnowledge := "know_01arz3ndektsv4rrffq69g5fax"
 	manifest := Manifest{SchemaVersion: 1,
@@ -87,7 +87,7 @@ func TestPlanDryRunValidatesWithoutCreatingPromotionOrLock(t *testing.T) {
 	cfg := initPromotionWiki(t)
 	input := addInbox(t, cfg, "source.txt", "payload", 100)
 	base := t.TempDir()
-	writeDraft(t, filepath.Join(base, "draft.md"), "concept", "Dry plan", "Dry-run fact.")
+	writeDraft(t, filepath.Join(base, "draft.md"), "note", "Dry plan", "Dry-run fact.")
 	manifest := Manifest{SchemaVersion: 1, Inboxes: []ManifestInbox{{ID: input.ID, PayloadHash: input.PayloadHash, ItemHash: input.ItemHash, Consume: true}},
 		Targets: []ManifestTarget{{Operation: "create", DraftFile: "draft.md", KnowledgeID: "know_01arz3ndektsv4rrffq69g5faw", InboxIDs: []string{input.ID}}}}
 	held, err := vault.AcquireWrite(cfg, time.Second)
@@ -116,7 +116,7 @@ func TestOnePromotionCreatesAndUpdatesKnowledgeTogether(t *testing.T) {
 		t.Fatal(err)
 	}
 	existingMeta := document.Metadata{
-		SchemaVersion: document.CurrentSchema, ID: existingID, Type: "concept", Title: "Existing knowledge", Status: "published",
+		SchemaVersion: document.CurrentSchema, ID: existingID, Type: "note", Title: "Existing knowledge", Status: "published",
 		PublishedAt: time.Unix(50, 0).UTC().Format(time.RFC3339), UpdatedAt: time.Unix(50, 0).UTC().Format(time.RFC3339), ContentHash: document.HashBytes(existingBody),
 		GovernanceVersion: governanceVersion, Lineage: []document.LineageRef{{InboxID: first.ID, PayloadHash: first.PayloadHash, Source: "test", CapturedAt: time.Unix(100, 0).UTC().Format(time.RFC3339)}},
 		Extra: map[string]any{"category": "learning", "description": "Existing self-contained knowledge", "lifecycle": "current"},
@@ -131,8 +131,8 @@ func TestOnePromotionCreatesAndUpdatesKnowledgeTogether(t *testing.T) {
 	}
 
 	base := t.TempDir()
-	writeDraft(t, filepath.Join(base, "update.md"), "concept", "Existing knowledge", "Updated fact.")
-	writeDraft(t, filepath.Join(base, "create.md"), "concept", "Created knowledge", "Created from two inputs.")
+	writeDraft(t, filepath.Join(base, "update.md"), "note", "Existing knowledge", "Updated fact.")
+	writeDraft(t, filepath.Join(base, "create.md"), "note", "Created knowledge", "Created from two inputs.")
 	manifest := Manifest{SchemaVersion: 1,
 		Inboxes: []ManifestInbox{
 			{ID: first.ID, PayloadHash: first.PayloadHash, ItemHash: first.ItemHash, Consume: true},
@@ -167,7 +167,7 @@ func TestApplyDriftMarksPromotionStaleWithoutFactWrites(t *testing.T) {
 	cfg := initPromotionWiki(t)
 	input := addInbox(t, cfg, "source.txt", "payload", 100)
 	base := t.TempDir()
-	writeDraft(t, filepath.Join(base, "draft.md"), "concept", "No write", "Frozen fact.")
+	writeDraft(t, filepath.Join(base, "draft.md"), "note", "No write", "Frozen fact.")
 	knowledgeID := "know_01arz3ndektsv4rrffq69g5faw"
 	manifest := Manifest{SchemaVersion: 1, Inboxes: []ManifestInbox{{ID: input.ID, PayloadHash: input.PayloadHash, ItemHash: input.ItemHash, Consume: true}},
 		Targets: []ManifestTarget{{Operation: "create", DraftFile: "draft.md", KnowledgeID: knowledgeID, InboxIDs: []string{input.ID}}}}
@@ -199,7 +199,7 @@ func TestContentPackDriftMarksPromotionStaleWithoutFactWrites(t *testing.T) {
 	cfg := initPromotionWiki(t)
 	input := addInbox(t, cfg, "source.txt", "payload", 100)
 	base := t.TempDir()
-	writeDraft(t, filepath.Join(base, "draft.md"), "concept", "No policy drift", "Frozen fact.")
+	writeDraft(t, filepath.Join(base, "draft.md"), "note", "No policy drift", "Frozen fact.")
 	knowledgeID := "know_01arz3ndektsv4rrffq69g5faw"
 	manifest := Manifest{SchemaVersion: 1, Inboxes: []ManifestInbox{{ID: input.ID, PayloadHash: input.PayloadHash, ItemHash: input.ItemHash, Consume: true}},
 		Targets: []ManifestTarget{{Operation: "create", DraftFile: "draft.md", KnowledgeID: knowledgeID, InboxIDs: []string{input.ID}}}}
@@ -274,7 +274,7 @@ func TestPlanAndFrozenDriftMarkPromotionStaleWithoutFactWrites(t *testing.T) {
 			cfg := initPromotionWiki(t)
 			input := addInbox(t, cfg, "source.txt", "payload", 100)
 			base := t.TempDir()
-			writeDraft(t, filepath.Join(base, "draft.md"), "concept", "No write", "Frozen fact.")
+			writeDraft(t, filepath.Join(base, "draft.md"), "note", "No write", "Frozen fact.")
 			knowledgeID := "know_01arz3ndektsv4rrffq69g5faw"
 			manifest := Manifest{SchemaVersion: 1, Inboxes: []ManifestInbox{{ID: input.ID, PayloadHash: input.PayloadHash, ItemHash: input.ItemHash, Consume: true}},
 				Targets: []ManifestTarget{{Operation: "create", DraftFile: "draft.md", KnowledgeID: knowledgeID, InboxIDs: []string{input.ID}}}}
@@ -306,7 +306,7 @@ func TestKnowledgeBaselineDriftMarksPromotionStale(t *testing.T) {
 	base := t.TempDir()
 	knowledgeID := "know_01arz3ndektsv4rrffq69g5faw"
 	first := addInbox(t, cfg, "first.txt", "first payload", 100)
-	writeDraft(t, filepath.Join(base, "first.md"), "concept", "Stable title", "Original fact.")
+	writeDraft(t, filepath.Join(base, "first.md"), "note", "Stable title", "Original fact.")
 	create := Manifest{SchemaVersion: 1, Inboxes: []ManifestInbox{{ID: first.ID, PayloadHash: first.PayloadHash, ItemHash: first.ItemHash, Consume: true}},
 		Targets: []ManifestTarget{{Operation: "create", DraftFile: "first.md", KnowledgeID: knowledgeID, InboxIDs: []string{first.ID}}}}
 	created, err := PlanPromotion(cfg, PlanOptions{ManifestPath: writeManifest(t, base, create), Now: time.Unix(200, 0).UTC()})
@@ -330,7 +330,7 @@ func TestKnowledgeBaselineDriftMarksPromotionStale(t *testing.T) {
 		t.Fatal(err)
 	}
 	second := addInbox(t, cfg, "second.txt", "second payload", 400)
-	writeDraft(t, filepath.Join(base, "second.md"), "concept", "Stable title", "Approved update.")
+	writeDraft(t, filepath.Join(base, "second.md"), "note", "Stable title", "Approved update.")
 	update := Manifest{SchemaVersion: 1, Inboxes: []ManifestInbox{{ID: second.ID, PayloadHash: second.PayloadHash, ItemHash: second.ItemHash, Consume: true}},
 		Targets: []ManifestTarget{{Operation: "update", DraftFile: "second.md", KnowledgeID: knowledgeID, InboxIDs: []string{second.ID}, BaseContentHash: existing.Metadata.ContentHash, BaseFileHash: baseFileHash}}}
 	planned, err := PlanPromotion(cfg, PlanOptions{ManifestPath: writeManifest(t, base, update), Now: time.Unix(500, 0).UTC()})
@@ -354,7 +354,7 @@ func TestKnowledgeBaselineDriftMarksPromotionStale(t *testing.T) {
 func TestRecoveryUsesPreparedRollbackAndCommittedFiles(t *testing.T) {
 	cfg := initPromotionWiki(t)
 	promotionID := "prm_01arz3ndektsv4rrffq69g5fav"
-	path := filepath.ToSlash(filepath.Join(cfg.Paths.Knowledge, "concept", "recovery--know_01arz3ndektsv4rrffq69g5faw.md"))
+	path := filepath.ToSlash(filepath.Join(cfg.Paths.Knowledge, "note", "recovery--know_01arz3ndektsv4rrffq69g5faw.md"))
 	target := filepath.Join(cfg.Root, filepath.FromSlash(path))
 	oldData, newData := []byte("old"), []byte("new")
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
@@ -467,7 +467,7 @@ func TestInboxChangesOnlyInvalidateFrozenPublication(t *testing.T) {
 			}
 			input := items[0]
 			base := t.TempDir()
-			writeDraft(t, filepath.Join(base, "draft.md"), "concept", "Snapshot boundary", "Self-contained fact.")
+			writeDraft(t, filepath.Join(base, "draft.md"), "note", "Snapshot boundary", "Self-contained fact.")
 			manifest := Manifest{SchemaVersion: SchemaVersion, Inboxes: []ManifestInbox{{ID: input.ID, PayloadHash: input.PayloadHash, ItemHash: input.ItemHash, Consume: true}}, Targets: []ManifestTarget{{Operation: "create", DraftFile: "draft.md", InboxIDs: []string{input.ID}}}}
 			planned, err := PlanPromotion(cfg, PlanOptions{ManifestPath: writeManifest(t, base, manifest), Now: time.Unix(200, 0).UTC()})
 			if err != nil {

@@ -9,7 +9,7 @@
 
 `knowledge/` 中由 `promote apply` 写入的 Markdown 是唯一可信事实源。`inbox/` 是可清理的临时工作区，不进入查询。Obsidian 是可选展示工具，不是运行依赖。
 
-category、type、类型字段、模板和 Agent Workflow 全部来自 Vault 的 `content-pack.json`。新增或修改这些内容不需要改 Go。内置 `personal` 内容包提供四个正交领域（需求开发、个人学习、配置信息、业务知识）和十种知识结构；该 JSON 是当前值域的唯一机器权威来源。
+category、type、类型字段、模板和 Agent Workflow 全部来自 Vault 的 `content-pack.json`。新增或修改这些内容不需要改 Go。内置 `personal` 内容包提供四个正交领域（需求开发、个人学习、配置信息、业务知识）和六种文档用途；该 JSON 是当前值域的唯一机器权威来源。
 
 ## 一键安装与升级
 
@@ -123,11 +123,15 @@ Inbox 是可编辑的临时工作区。新增笔记按 `YYYY-MM-DD-初步功能�
 
 ```bash
 llm-wiki template list --wiki ~/wiki --json --no-interactive
-llm-wiki template create requirement --title "导出审计记录" --output ./draft.md \
+llm-wiki template create plan --title "导出审计记录" --output ./draft.md \
   --set category=development --set description='允许审计员导出可验证记录' --wiki ~/wiki
 ```
 
 category 表示知识领域，type 表示正文结构和主要用途，两者不能互相代替。内容包的公共字段、类型字段、条件必填、关系和生命周期召回语义由 CLI 通用执行器强制校验；未知扩展属性在 draft、Promotion、索引、query/show 中往返保留。
+
+选择模板时按用途判断：要做什么及为什么这样做用方案说明，怎么执行用操作指南，解释主题或记录学习所得用知识笔记；设置、生效规则和事后总结分别使用配置说明、规则说明和复盘总结。一个主题中的需求、做法与选择理由可以放在同一篇文档，不必先拆成多种类型。准确类型名与字段读取 `content-pack.json.types`，不要根据旧名称猜测。
+
+需要额外的 Inbox 初步笔记时可用 `template create capture --kind inbox`；Knowledge 的 `note` 用于形成可发布的知识正文，两者不共用模板名。
 
 知识草稿的 JSON 结果包含 CLI 生成的 `proposed_knowledge_id`。Agent 应将它写入 create target 的 `knowledge_id`；这样同一 Promotion 中的新建和更新草稿可以预先建立 reciprocal 稳定 ID，Plan 仍会检查格式、唯一性和冲突。
 
@@ -151,7 +155,7 @@ Promotion manifest 示例：
   "targets": [
     {
       "operation": "create",
-      "draft_file": "drafts/requirement.md",
+      "draft_file": "drafts/plan.md",
       "knowledge_id": "know_01arz3ndektsv4rrffq69g5faw",
       "inbox_ids": ["inbox_01arz3ndektsv4rrffq69g5fav"]
     }

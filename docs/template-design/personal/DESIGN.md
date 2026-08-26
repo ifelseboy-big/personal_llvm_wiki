@@ -3,7 +3,7 @@
 personal 是由数据驱动的 Vault content pack，不是 Go Core 中的产品分支。
 
 - 四个 category 表示需求开发、个人学习、配置信息和业务知识领域。
-- 十个 type 表示文档结构与主要用途；category 与 type 正交。
+- 六个 type 按读者用途组织文档，category 与 type 正交；需求、方案和选择理由不强制分篇，个人操作与多人流程共用步骤结构，概念解释与学习所得共用知识笔记。
 - `content-pack.json` 唯一声明分类、类型、字段、生命周期、关系、模板和 Workflow 路由。
 - Capture、Organize、Publish、Maintain、Query 负责语义工作；CLI 负责安全边界。
 - 每个 Workflow 固定 Vault root、使用可复制执行的 JSON/no-interactive 命令，并定义授权与失败停止条件。

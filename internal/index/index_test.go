@@ -415,13 +415,13 @@ func writeKnowledgeForTest(t fataler, cfg *config.Instance, ordinal int, title, 
 		t.Fatal(err)
 	}
 	meta := document.Metadata{
-		SchemaVersion: document.CurrentSchema, ID: id, Type: "concept", Title: title, Status: "published",
+		SchemaVersion: document.CurrentSchema, ID: id, Type: "note", Title: title, Status: "published",
 		PublishedAt: "2026-08-09T00:00:00Z", UpdatedAt: "2026-08-09T00:00:00Z", ContentHash: document.HashBytes(data),
 		GovernanceVersion: governanceVersion,
 		Lineage:           []document.LineageRef{{InboxID: "inbox_01arz3ndektsv4rrffq69g5fav", PayloadHash: document.HashBytes([]byte("payload")), Source: "test", CapturedAt: "2026-08-08T00:00:00Z"}},
 		Extra:             map[string]any{"category": "learning", "description": title + " description", "lifecycle": "current"},
 	}
-	dir := filepath.Join(cfg.KnowledgeDir(), "concept")
+	dir := filepath.Join(cfg.KnowledgeDir(), "note")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}

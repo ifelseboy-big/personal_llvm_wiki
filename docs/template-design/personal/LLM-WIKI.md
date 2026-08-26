@@ -45,6 +45,8 @@ Query 只使用 CLI 回读验证后的 Knowledge。没有足够证据时会明�
 
 要求 Agent 整理指定 Inbox 时，它会读取原始 payload、查重、独立选择 category/type，在 `knowledge/` 外生成草稿并准备 N:M Promotion。
 
+按用途选择文档即可：方案说明记录目标、做法与理由；操作指南记录执行步骤与交接；知识笔记解释主题或学习所得；配置说明记录设置；规则说明记录判定条件；复盘总结记录结果与经验。具体类型名和字段以 `content-pack.json.types` 为准，同一主题不因涉及不同阶段或多种材料而强制拆篇。
+
 发布分为两个明确阶段：
 
 1. Agent 运行 plan/diff，展示 promotion ID、plan hash、目标、consume 决策和完整 diff，然后停止。

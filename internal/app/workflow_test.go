@@ -58,7 +58,7 @@ func TestCompleteInboxPromotionKnowledgeCleanWorkflow(t *testing.T) {
 
 	knowledgeID := "know_01arz3ndektsv4rrffq69g5faw"
 	draft := filepath.Join(work, "draft.md")
-	draftData := "---\ntype: concept\ncategory: development\ntitle: \"Stable IR\"\ndescription: \"Stable IR decouples compiler components\"\nlifecycle: current\ncustom_context: round-trip-extension\n---\n# Stable IR\n\nStable IR decouples compiler frontends and backends while preserving a common contract.\n"
+	draftData := "---\ntype: note\ncategory: development\ntitle: \"Stable IR\"\ndescription: \"Stable IR decouples compiler components\"\nlifecycle: current\ncustom_context: round-trip-extension\n---\n# Stable IR\n\nStable IR decouples compiler frontends and backends while preserving a common contract.\n"
 	if err := os.WriteFile(draft, []byte(draftData), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestCompleteInboxPromotionKnowledgeCleanWorkflow(t *testing.T) {
 	planned := runCLI(t, "", "promote", "plan", "--manifest", manifest, "--wiki", root, "--json", "--no-interactive")
 	promotionID := nestedString(t, planned.Data, "promotion_id")
 	planHash := nestedString(t, planned.Data, "plan_hash")
-	if nestedString(t, planned.Data, "content_pack", "version") != "1.1.0" || nestedString(t, planned.Data, "content_pack", "policy_hash") == "" {
+	if nestedString(t, planned.Data, "content_pack", "version") != "2.0.0" || nestedString(t, planned.Data, "content_pack", "policy_hash") == "" {
 		t.Fatalf("plan omitted its frozen content-pack identity: %#v", planned.Data)
 	}
 	diff := runCLI(t, "", "promote", "diff", promotionID, "--wiki", root, "--json", "--no-interactive")
@@ -139,7 +139,7 @@ func TestPromotionApprovalAndStaleErrorsAreStable(t *testing.T) {
 	id := nestedString(t, added.Data, "items", 0, "id")
 	payloadHash := nestedString(t, added.Data, "items", 0, "payload_hash")
 	itemHash := nestedString(t, added.Data, "items", 0, "item_hash")
-	if err := os.WriteFile(filepath.Join(work, "draft.md"), []byte("---\ntype: concept\ncategory: learning\ntitle: Conflict\ndescription: Complete\nlifecycle: current\n---\n# Conflict\n\nComplete fact.\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(work, "draft.md"), []byte("---\ntype: note\ncategory: learning\ntitle: Conflict\ndescription: Complete\nlifecycle: current\n---\n# Conflict\n\nComplete fact.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	manifest := fmt.Sprintf(`{"schema_version":1,"inboxes":[{"id":%q,"payload_hash":%q,"item_hash":%q,"consume":true}],"targets":[{"operation":"create","draft_file":"draft.md","knowledge_id":"know_01arz3ndektsv4rrffq69g5faw","inbox_ids":[%q]}]}`, id, payloadHash, itemHash, id)
@@ -180,7 +180,7 @@ func TestProposedKnowledgeIDEnablesAtomicReciprocalPromotion(t *testing.T) {
 	first := runCLI(t, "original evidence", "inbox", "add", "-", "--name", "original.txt", "--wiki", root, "--json", "--no-interactive")
 	firstID := nestedString(t, first.Data, "items", 0, "id")
 	firstDraft := filepath.Join(work, "original.md")
-	if err := os.WriteFile(firstDraft, []byte("---\ntype: concept\ncategory: learning\ntitle: Original\ndescription: Original concept\nlifecycle: current\nrelated: []\nsupersedes: []\nsuperseded_by: []\n---\n# Original\n\nOriginal verified fact.\n"), 0o600); err != nil {
+	if err := os.WriteFile(firstDraft, []byte("---\ntype: note\ncategory: learning\ntitle: Original\ndescription: Original concept\nlifecycle: current\nrelated: []\nsupersedes: []\nsuperseded_by: []\n---\n# Original\n\nOriginal verified fact.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	firstManifest := filepath.Join(work, "first.json")
@@ -198,14 +198,14 @@ func TestProposedKnowledgeIDEnablesAtomicReciprocalPromotion(t *testing.T) {
 	originalShow := runCLI(t, "", "show", originalID, "--wiki", root, "--json", "--no-interactive")
 
 	newDraft := filepath.Join(work, "replacement.md")
-	createdDraft := runCLI(t, "", "template", "create", "concept", "--title", "Replacement", "--output", newDraft,
+	createdDraft := runCLI(t, "", "template", "create", "note", "--title", "Replacement", "--output", newDraft,
 		"--set", "category=learning", "--set", "description=Replacement concept", "--wiki", root, "--json", "--no-interactive")
 	newID := nestedString(t, createdDraft.Data, "proposed_knowledge_id")
-	if err := os.WriteFile(newDraft, []byte(fmt.Sprintf("---\ntype: concept\ncategory: learning\ntitle: Replacement\ndescription: Replacement concept\nlifecycle: current\nrelated: []\nsupersedes: [%s]\nsuperseded_by: []\n---\n# Replacement\n\nReplacement verified fact.\n", originalID)), 0o600); err != nil {
+	if err := os.WriteFile(newDraft, []byte(fmt.Sprintf("---\ntype: note\ncategory: learning\ntitle: Replacement\ndescription: Replacement concept\nlifecycle: current\nrelated: []\nsupersedes: [%s]\nsuperseded_by: []\n---\n# Replacement\n\nReplacement verified fact.\n", originalID)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	updateDraft := filepath.Join(work, "original-update.md")
-	if err := os.WriteFile(updateDraft, []byte(fmt.Sprintf("---\ntype: concept\ncategory: learning\ntitle: Original\ndescription: Original concept\nlifecycle: superseded\nrelated: []\nsupersedes: []\nsuperseded_by: [%s]\n---\n# Original\n\nOriginal verified fact, retained as superseded history.\n", newID)), 0o600); err != nil {
+	if err := os.WriteFile(updateDraft, []byte(fmt.Sprintf("---\ntype: note\ncategory: learning\ntitle: Original\ndescription: Original concept\nlifecycle: superseded\nrelated: []\nsupersedes: []\nsuperseded_by: [%s]\n---\n# Original\n\nOriginal verified fact, retained as superseded history.\n", newID)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	manifestPath := filepath.Join(work, "maintenance.json")
@@ -236,7 +236,7 @@ func TestIndexFailureAfterPromotionReturnsWarningAndRecovers(t *testing.T) {
 	id := nestedString(t, added.Data, "items", 0, "id")
 	payloadHash := nestedString(t, added.Data, "items", 0, "payload_hash")
 	itemHash := nestedString(t, added.Data, "items", 0, "item_hash")
-	if err := os.WriteFile(filepath.Join(work, "draft.md"), []byte("---\ntype: concept\ncategory: learning\ntitle: Recoverable\ndescription: Complete knowledge\nlifecycle: current\n---\n# Recoverable\n\nCommitted before index recovery.\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(work, "draft.md"), []byte("---\ntype: note\ncategory: learning\ntitle: Recoverable\ndescription: Complete knowledge\nlifecycle: current\n---\n# Recoverable\n\nCommitted before index recovery.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	manifest := fmt.Sprintf(`{"schema_version":1,"inboxes":[{"id":%q,"payload_hash":%q,"item_hash":%q,"consume":true}],"targets":[{"operation":"create","draft_file":"draft.md","knowledge_id":"know_01arz3ndektsv4rrffq69g5faw","inbox_ids":[%q]}]}`, id, payloadHash, itemHash, id)

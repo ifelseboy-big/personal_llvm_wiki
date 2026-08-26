@@ -36,9 +36,9 @@ func TestSlugIsReadableAndBounded(t *testing.T) {
 func TestKnowledgeRoundTrip(t *testing.T) {
 	body := []byte("# Stable fact\n\nSelf-contained fact.\n")
 	meta := Metadata{
-		SchemaVersion: CurrentSchema, ID: testKnowledgeID, Type: "concept", Title: "Stable fact",
+		SchemaVersion: CurrentSchema, ID: testKnowledgeID, Type: "note", Title: "Stable fact",
 		Status: "published", PublishedAt: "2026-08-08T10:00:00Z", UpdatedAt: "2026-08-08T10:00:00Z",
-		ContentHash: HashBytes(body), GovernanceVersion: "personal-1.0.0",
+		ContentHash: HashBytes(body), GovernanceVersion: "personal-2.0.0",
 		Lineage: []LineageRef{{InboxID: testInboxID, PayloadHash: HashBytes([]byte("payload")), Source: "test", CapturedAt: "2026-08-08T09:00:00Z"}},
 		Extra:   map[string]any{"description": "kept", "lifecycle": "current", "future": "round-trip"},
 	}
@@ -118,7 +118,7 @@ func TestIDPrefixesRejectUndeclaredPrefixes(t *testing.T) {
 func TestFindByIDRejectsDuplicate(t *testing.T) {
 	root := t.TempDir()
 	body := []byte("# Duplicate\n")
-	meta := Metadata{SchemaVersion: CurrentSchema, ID: testKnowledgeID, Type: "concept", Title: "Duplicate", Status: "published",
+	meta := Metadata{SchemaVersion: CurrentSchema, ID: testKnowledgeID, Type: "note", Title: "Duplicate", Status: "published",
 		PublishedAt: "2026-08-08T10:00:00Z", UpdatedAt: "2026-08-08T10:00:00Z", ContentHash: HashBytes(body),
 		Lineage: []LineageRef{{InboxID: testInboxID, PayloadHash: HashBytes([]byte("x")), Source: "test", CapturedAt: "2026-08-08T09:00:00Z"}}}
 	for _, name := range []string{"a.md", "b.md"} {

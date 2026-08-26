@@ -1,7 +1,7 @@
 name = "personal"
-version = "1.1.0"
+version = "2.0.0"
 schema_version = 1
-description = "内容包驱动的个人知识库：四个正交领域、十种知识结构与五个可审计 Vault Agent Workflow"
+description = "内容包驱动的个人知识库：四个正交领域、六种文档用途与五个可审计 Vault Agent Workflow"
 content_pack = "content-pack.json"
 
 managed_files = [
@@ -18,17 +18,13 @@ managed_files = [
   "workflows/publish.md",
   "workflows/maintain.md",
   "workflows/query.md",
-  "templates/inbox/note.md",
-  "templates/knowledge/requirement.md",
-  "templates/knowledge/design.md",
-  "templates/knowledge/decision.md",
-  "templates/knowledge/runbook.md",
-  "templates/knowledge/retrospective.md",
-  "templates/knowledge/learning-note.md",
-  "templates/knowledge/concept.md",
-  "templates/knowledge/configuration.md",
-  "templates/knowledge/business-rule.md",
-  "templates/knowledge/business-process.md",
+  "templates/inbox/capture.md",
+  "templates/knowledge/plan.md",
+  "templates/knowledge/guide.md",
+  "templates/knowledge/note.md",
+  "templates/knowledge/config.md",
+  "templates/knowledge/rule.md",
+  "templates/knowledge/review.md",
   "views/knowledge.base",
   "views/inbox.base",
 ]

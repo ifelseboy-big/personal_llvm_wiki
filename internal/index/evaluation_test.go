@@ -144,7 +144,7 @@ func writeEvaluationKnowledge(tb testing.TB, cfg *config.Instance, at time.Time,
 		tb.Fatal(err)
 	}
 	meta := document.Metadata{
-		SchemaVersion: document.CurrentSchema, ID: id, Type: "concept", Title: title, Status: "published",
+		SchemaVersion: document.CurrentSchema, ID: id, Type: "note", Title: title, Status: "published",
 		PublishedAt: at.Format(time.RFC3339), UpdatedAt: at.Format(time.RFC3339), ContentHash: document.HashBytes(body),
 		Tags: tags, Aliases: aliases, GovernanceVersion: governanceVersion,
 		Lineage: []document.LineageRef{{InboxID: "inbox_01arz3ndektsv4rrffq69g5fav", PayloadHash: document.HashBytes([]byte("evaluation-source")), Source: "retrieval-evaluation", CapturedAt: at.Format(time.RFC3339)}},

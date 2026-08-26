@@ -31,7 +31,7 @@ func TestFirstPartyContractsMatchCurrentVersions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.SchemaVersion != 1 || manifest.Version != "1.1.0" {
+	if manifest.SchemaVersion != 1 || manifest.Version != "2.0.0" {
 		t.Fatalf("personal manifest must match the current version: %#v", manifest)
 	}
 	policyData, err := templates.ReadFile("personal", manifest.ContentPack)
@@ -42,7 +42,7 @@ func TestFirstPartyContractsMatchCurrentVersions(t *testing.T) {
 	if err := json.Unmarshal(policyData, &policy); err != nil {
 		t.Fatal(err)
 	}
-	if policy.SchemaVersion != 1 || policy.Version != "1.1.0" || policy.GovernanceVersion != "personal-1.0.0" {
+	if policy.SchemaVersion != 1 || policy.Version != "2.0.0" || policy.GovernanceVersion != "personal-2.0.0" {
 		t.Fatalf("personal policy must match the current version: %#v", policy)
 	}
 	if skill.SkillVersion != "1.1.0" {

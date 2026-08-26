@@ -138,7 +138,7 @@ func TestNoObsidianFullLifecycleAndRebuildEquivalence(t *testing.T) {
 			added[0].ItemHash, added[0].PayloadHash = current.FileHash, current.PayloadHash
 			work := t.TempDir()
 			draft := filepath.Join(work, "draft.md")
-			if err := os.WriteFile(draft, []byte("---\ntype: concept\ncategory: development\ntitle: Stable IR\ndescription: Stable compiler boundary\nlifecycle: current\n---\n# Stable IR\n\nStable IR separates compiler frontends, optimizers, and backends.\n"), 0o600); err != nil {
+			if err := os.WriteFile(draft, []byte("---\ntype: note\ncategory: development\ntitle: Stable IR\ndescription: Stable compiler boundary\nlifecycle: current\n---\n# Stable IR\n\nStable IR separates compiler frontends, optimizers, and backends.\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			knowledgeID := "know_01arz3ndektsv4rrffq69g5faw"
@@ -202,7 +202,7 @@ func TestNoObsidianFullLifecycleAndRebuildEquivalence(t *testing.T) {
 	}
 }
 
-func TestPersonalContentPackPublishesAllFourDomains(t *testing.T) {
+func TestPersonalContentPackPublishesSixTypesAcrossFourDomains(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "personal-domains")
 	initialized, err := vault.Init(vault.InitOptions{Path: root, Name: "personal-domains", Template: "personal"})
 	if err != nil {
@@ -223,22 +223,24 @@ func TestPersonalContentPackPublishesAllFourDomains(t *testing.T) {
 		id       string
 	}
 	fixtures := []fixture{
-		{category: "development", kind: "requirement", title: "Audit export requirement", keyword: "auditexporttoken", set: []string{"requirement_state=validated", "stakeholders=[auditor]"}, id: "know_01arz3ndektsv4rrffq69g5faw"},
-		{category: "learning", kind: "learning-note", title: "Compiler pipeline learning", keyword: "compilerlearningtoken", set: []string{"learning_stage=practiced", "source_references=[book-chapter-1]"}, id: "know_01arz3ndektsv4rrffq69g5fax"},
-		{category: "configuration", kind: "configuration", title: "Build cache configuration", keyword: "cacheconfigurationtoken", set: []string{"system=build-cache", "environment=local", "security_reference=secret-manager/path-only"}, id: "know_01arz3ndektsv4rrffq69g5fay"},
-		{category: "business", kind: "business-rule", title: "Refund review rule", keyword: "refundruletoken", set: []string{"rule_state=active", "rule_owner=finance"}, id: "know_01arz3ndektsv4rrffq69g5faz"},
+		{category: "development", kind: "plan", title: "Audit export plan", keyword: "auditexporttoken", set: []string{"plan_state=approved", "stakeholders=[auditor]"}, id: "know_01arz3ndektsv4rrffq69g5faw"},
+		{category: "learning", kind: "note", title: "Compiler pipeline notes", keyword: "compilerlearningtoken", set: []string{"source_references=[book-chapter-1]"}, id: "know_01arz3ndektsv4rrffq69g5fax"},
+		{category: "configuration", kind: "config", title: "Build cache configuration", keyword: "cacheconfigurationtoken", set: []string{"system=build-cache", "environment=local", "security_reference=secret-manager/path-only"}, id: "know_01arz3ndektsv4rrffq69g5fay"},
+		{category: "business", kind: "rule", title: "Refund review rule", keyword: "refundruletoken", set: []string{"rule_state=active", "rule_owner=finance"}, id: "know_01arz3ndektsv4rrffq69g5faz"},
+		{category: "business", kind: "guide", title: "Refund handling guide", keyword: "refundguidetoken", set: []string{"owner=operations"}, id: "know_01arz3ndektsv4rrffq69g5fb0"},
+		{category: "learning", kind: "review", title: "Compiler study review", keyword: "compilerreviewtoken", set: []string{"participants=[learner]"}, id: "know_01arz3ndektsv4rrffq69g5fb1"},
 	}
 	work := t.TempDir()
 	manifest := promote.Manifest{SchemaVersion: 1}
 	for i, item := range fixtures {
 		added, err := inbox.Add(cfg, inbox.AddOptions{
-			Input: "-", Name: item.category + ".txt", Source: "e2e",
+			Input: "-", Name: item.kind + ".txt", Source: "e2e",
 			Stdin: bytes.NewBufferString(item.keyword + " source material"), Now: time.Unix(int64(100+i), 0).UTC(),
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		draftName := item.category + ".md"
+		draftName := item.kind + ".md"
 		draftPath := filepath.Join(work, draftName)
 		set := append([]string{"category=" + item.category, "description=Representative " + item.category + " knowledge"}, item.set...)
 		if _, err := templates.CreateDraft(cfg, templates.CreateOptions{
