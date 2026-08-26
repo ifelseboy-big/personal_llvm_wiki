@@ -82,7 +82,7 @@ func TestPersonalTemplatesExposeInboxPromotionAndOptionalViews(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Version != "1.0.0" || manifest.ContentPack != "content-pack.json" {
+	if manifest.Version != "1.1.0" || manifest.ContentPack != "content-pack.json" {
 		t.Fatalf("unexpected personal template version %s", manifest.Version)
 	}
 	agents, err := templates.ReadFile("personal", "AGENTS.md")
@@ -188,7 +188,7 @@ func TestCreateDraftRendersSafelyAndProtectsManagedPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.TemplateVersion != "1.0.0" || !strings.Contains(result.NextCommandHint, "promote plan") {
+	if result.TemplateVersion != "1.1.0" || !strings.Contains(result.NextCommandHint, "promote plan") {
 		t.Fatalf("unexpected result: %#v", result)
 	}
 	if !document.ValidID("know", result.ProposedID) || !strings.Contains(result.NextCommandHint, result.ProposedID) {

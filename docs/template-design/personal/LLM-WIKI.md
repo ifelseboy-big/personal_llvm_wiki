@@ -21,14 +21,16 @@ llm-wiki doctor --wiki <vault-root> --json --no-interactive
 
 ## Add：先可靠保存
 
-告诉 Agent“记住/保存/收集这段内容”。Capture 会逐字节保存原始输入到 pending Inbox，不会查询、整理或直接发布 Knowledge。
+告诉 Agent“记住/保存/收集这段内容”。Capture 会把输入保存为可编辑的 pending Inbox，不会查询、整理或直接发布 Knowledge。
 
 ```bash
-llm-wiki inbox add ./article.pdf --note-file ./article-note.md --wiki <vault-root> --json --no-interactive
+llm-wiki inbox add ./article.pdf --title "登录功能资料" --wiki <vault-root> --json --no-interactive
 llm-wiki inbox list --status pending --wiki <vault-root> --json --no-interactive
 ```
 
-文本从 stdin 输入时必须提供 `--name`。多文件使用 batch manifest，为每个 payload 配置独立 note；任一输入预检失败时零写入。
+文本从 stdin 输入时必须提供 `--name`。多文件使用 batch manifest，note 可省略；任一输入预检失败时零写入。
+
+笔记初始名称为 `YYYY-MM-DD-初步功能名称.md`，重名追加序号。可直接编辑、改名、在 Inbox 内移动或删除，不必维护哈希；ID 保留在元数据中。新附件集中放在 `inbox/attachments/`。已有 `item.md + payload/` 可直接继续整理发布，不要求迁移、改名或维护旧哈希。
 
 ## Query：只回答已发布事实
 

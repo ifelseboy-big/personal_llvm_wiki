@@ -125,6 +125,7 @@ type ApplyResult struct {
 	OperationID string          `json:"operation_id,omitempty"`
 	Targets     []AppliedTarget `json:"targets"`
 	Consumed    []string        `json:"consumed_inbox_ids"`
+	InboxPaths  []string        `json:"-"`
 	DryRun      bool            `json:"dry_run"`
 }
 
@@ -221,11 +222,8 @@ func PlanPromotion(cfg *config.Instance, opts PlanOptions) (*PlanResult, error) 
 		if doc.Metadata.Status != "pending" {
 			return nil, fmt.Errorf("inbox %s is %s, expected pending", input.ID, doc.Metadata.Status)
 		}
-		itemHash, err := document.HashFile(doc.Path)
-		if err != nil {
-			return nil, err
-		}
-		if input.PayloadHash != doc.Metadata.PayloadHash || input.ItemHash != itemHash {
+		itemHash := doc.FileHash
+		if input.PayloadHash != doc.PayloadHash || input.ItemHash != itemHash {
 			return nil, fmt.Errorf("inbox %s hash does not match manifest", input.ID)
 		}
 		inboxDocs[input.ID] = doc
@@ -426,7 +424,7 @@ func prepareTarget(cfg *config.Instance, spec ManifestTarget, base string, inbox
 		if item == nil {
 			return Target{}, nil, nil, nil, fmt.Errorf("target references undeclared inbox %s", id)
 		}
-		lineageByID[id] = document.LineageRef{InboxID: id, PayloadHash: item.Metadata.PayloadHash, Source: item.Metadata.Source, CapturedAt: item.Metadata.CapturedAt}
+		lineageByID[id] = document.LineageRef{InboxID: id, PayloadHash: item.PayloadHash, Source: item.Metadata.Source, CapturedAt: item.Metadata.CapturedAt}
 	}
 	lineage = lineage[:0]
 	for _, item := range lineageByID {
@@ -588,6 +586,7 @@ func Apply(cfg *config.Instance, promotionID, approve string, dryRun bool, now t
 		rel, _ := filepath.Rel(cfg.Root, doc.Path)
 		files[filepath.ToSlash(rel)] = itemBytes
 		result.Consumed = append(result.Consumed, input.ID)
+		result.InboxPaths = append(result.InboxPaths, filepath.ToSlash(rel))
 	}
 	state.Status = "applied"
 	state.AppliedAt = now.Format(time.RFC3339)
@@ -654,11 +653,10 @@ func validateApplyBase(cfg *config.Instance, plan Plan, now time.Time) (map[stri
 		if err != nil {
 			return nil, nil, fmt.Errorf("inbox %s: %w", input.ID, err)
 		}
-		if doc.Metadata.Status != "pending" || doc.Metadata.PayloadHash != input.PayloadHash {
+		if doc.Metadata.Status != "pending" || doc.PayloadHash != input.PayloadHash {
 			return nil, nil, fmt.Errorf("inbox %s changed after plan", input.ID)
 		}
-		itemHash, err := document.HashFile(doc.Path)
-		if err != nil || itemHash != input.ItemHash {
+		if doc.FileHash != input.ItemHash {
 			return nil, nil, fmt.Errorf("inbox %s item changed after plan", input.ID)
 		}
 		inboxDocs[input.ID] = doc

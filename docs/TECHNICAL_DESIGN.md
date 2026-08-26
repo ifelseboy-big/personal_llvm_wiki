@@ -4,15 +4,15 @@
 
 llm-wiki 是单进程、本地文件优先、内容无关的知识库安全内核。Vault Agent 负责理解内容和选择语义，人负责批准，CLI 负责确定性、安全性与声明式策略执行。
 
-| 层 | 属性 | 唯一写入者 |
+| 层 | 属性 | 写入边界 |
 | --- | --- | --- |
-| `inbox/` | 临时输入、原始 payload、初步整理 | `internal/inbox` |
+| `inbox/` | 可自由整理的临时材料 | 用户或获授权 Agent 可直接整理；CLI 采集/清理由 `internal/inbox` 执行 |
 | `knowledge/` | 唯一可信事实源 | `internal/promote` 的 apply |
 | `.llm-wiki/promotions/` | 冻结审阅与状态 | `internal/promote` |
 | `.llm-wiki/index.sqlite` | 可重建 Knowledge 候选缓存 | `internal/index` |
 | 内容包受管文件 | 策略、模板、Workflow 与说明 | `internal/templates` |
 
-Knowledge 必须自包含。lineage 是历史元数据，不是对 Inbox 的运行时外键。删除 processed Inbox 不改变 Knowledge 健康性。Agent 禁止直接创建、修改或移动 `knowledge/`；语义判断不能绕过 Promotion。
+Knowledge 必须自包含。lineage 是历史元数据，不是对 Inbox 的运行时外键。删除 Inbox 不改变 Knowledge 健康性。Agent 禁止直接创建、修改或移动 `knowledge/`；语义判断不能绕过 Promotion。
 
 Obsidian、Bases、Properties 与 wikilink 都是可选展示增强。CLI 不调用 Obsidian URI、插件 API、文件监听或可执行文件。
 
@@ -41,7 +41,7 @@ Go Core 不得出现内容包中的 category、type、模板名、类型字段�
 
 ## 3. 契约边界
 
-各机器协议的当前版本只由对应 Schema、实现常量和内容包 manifest 定义，文档不复制数值形成第二事实源。生产路径只读取当前契约；不匹配的 instance、frontmatter、内容包策略、governance、template、Skill 安装清单或索引快照直接拒绝或按其可重建属性重建，不猜测字段、不静默转换、不提供迁移读取分支。内容包升级只通过 `template upgrade` 三方比较显式完成，版本不匹配的实例在升级完成前不能发布、索引或返回事实。
+各机器协议的当前版本只由对应 Schema、实现常量和内容包 manifest 定义，文档不复制数值形成第二事实源。不匹配的 instance、Knowledge frontmatter、内容包策略、governance、template、Skill 安装清单或索引快照直接拒绝或按其可重建属性重建，不猜测字段、不静默转换、不提供迁移读取分支。Inbox 是可编辑输入，不按版本字段拒绝材料，不需要迁移后才能发布。内容包升级只通过 `template upgrade` 三方比较显式完成，版本不匹配的实例在升级完成前不能发布、索引或返回事实。
 
 ## 4. Vault 布局与内容包发现
 
@@ -57,9 +57,9 @@ Go Core 不得出现内容包中的 category、type、模板名、类型字段�
     publish.md
     maintain.md
     query.md
-  inbox/YYYY/MM/<inbox-id>/
-    item.md
-    payload/<original>
+  inbox/
+    YYYY-MM-DD-初步功能名称.md
+    attachments/<original>
   knowledge/<type>/<slug>--<knowledge-id>.md
   templates/
   rules/
@@ -95,25 +95,29 @@ Go Core 不得出现内容包中的 category、type、模板名、类型字段�
 
 ### 5.1 数据模型
 
-`item.md` frontmatter 包含：`inbox_` ID、title、source、captured_at、media_type、original_name、payload 相对路径、payload bytes/hash、初步整理正文 hash，以及 pending/processed 状态。processed 还包含 processed_at 与关联 Knowledge ID 列表。
+Inbox 是可变工作区，不是事实。每条登记笔记是普通 Markdown，创建时按 `YYYY-MM-DD-初步功能名称.md` 命名；日期来自采集时间，名称优先使用显式 title、正文一级标题、原文件名。冲突追加人可读序号，预览与实际写入复用相同目标解析；不覆盖已有文件。不要求日期目录、ID 目录或固定文件名，创建后的改名与 Inbox 内移动不构成漂移。
 
-payload 永远按原始字节复制。Markdown、文本和二进制都使用同一路径；初步整理只进入 `item.md`。
+新笔记 frontmatter 保存 schema_version、稳定 `inbox_` ID、title、source、captured_at、media_type、original_name、可选 payload 与 pending/processed 状态。processed 包含 processed_at 和关联 Knowledge ID。Inbox 不校验 schema_version 是否为当前值；已有正文 hash、payload hash/bytes 仅作为历史属性原样保留，不与当前内容比较，新笔记不生成这些字段。用户属性往返保留。Knowledge frontmatter 的严格版本和哈希契约不变。
+
+文本输入默认完整保存为规范化 Markdown 正文，原文中的 frontmatter 也作为输入内容保留，不要求原文符合任何元数据 Schema；显式 note_file 的用户 frontmatter 属性并入笔记。二进制输入或显式提供 note 的输入按原始字节复制到共享 `attachments/`，不为每项新建文件夹。payload 统一相对笔记所在目录，必须是 Inbox 内安全路径；相对位置变化时须更新引用。共享 attachments 与各级 payload 目录只保存原始材料，不作为 Inbox 笔记扫描。已有 `YYYY/MM/<id>/item.md` 与 `payload/` 使用相同解析逻辑直接发布，不要求转换布局或重写元数据。
+
+用户与获授权 Agent 可直接编辑正文、标题、用户属性和附件，改名、移动或删除材料。稳定 ID、Schema 与发布状态仍由 CLI 生成。未登记的普通文件可留在 Inbox；使用 add 登记后才参与基于 ID 的发布，不从路径或内容猜测身份。
 
 ### 5.2 Add
 
-单文件或 stdin Add 在持锁前读取并预检输入，在首次持久化前生成完整计划。stdin 只允许显式 `-`，且必须提供 name。
+单文件或 stdin Add 在首次持久化前读取并预检全部输入与输出路径，写入时持有实例独占锁。stdin 只允许显式 `-`，且必须提供 name。采集不要求摘要或初步整理，note_file 可选。
 
-目录批量输入只能通过 batch manifest；manifest 将每个 input 映射到独立 note 和元数据。全部输入先校验重复、类型、大小、敏感文件、symlink/hardlink，再在同一文件系统 staging，最后逐目录 rename。任一提交失败删除本次新目录，形成零写入结果。
+目录批量输入通过 batch manifest，每项 input 可带可选 note 和元数据。全部输入先校验重复、类型、大小、敏感文件、symlink/hardlink，再在同一文件系统暂存完整文件。逐文件以不可覆盖的安装操作提交；任一失败回滚本次新增文件，不删相邻文件。不会创建逐条材料目录。
 
 dry-run 复用相同规划和校验，但不创建锁、目录或事务。
 
 ### 5.3 List、Show 与 Clean
 
-List 只读取固定 `item.md`，不遍历 payload Markdown 作为受管文档。Show 校验 item 正文 hash、payload hash、字节数、路径和文件类型。
+List 根据 Markdown frontmatter 的显式身份识别登记笔记，允许 Inbox 内除附件目录外的任意位置，重复 ID 必须报错，版本字段不作准入门槛。普通未登记文件不构成损坏。Show 从同次读取的笔记字节获取正文与完整 item hash，按安全路径读取附件并计算当前 payload hash，不与采集时的值比较、不写回文件。没有附件时 payload_path 指向笔记，payload hash 是规范化正文的 hash；有附件时是附件原始字节的 hash。缺失附件只影响该材料的快照读取和发布，不阻止明确清理其笔记。
 
-Clean 只接受明确 ID 或 `--processed`。所有目标必须 processed、无 planned Promotion 引用且通过 item/payload/path/symlink/hardlink 校验。真实非交互删除要求 `--yes`。
+Clean 接受明确 ID 或 `--processed`。明确 ID 可选 pending/processed，批量选择仅取 processed；必须先完成全部笔记的路径、文件类型、重复 ID 与链接安全预检。真实删除要求 `--yes`。不检查旧哈希，不删除父目录，也不删除可能共享或已修改的附件。删除活动计划输入后，apply 因输入缺失而拒绝。
 
-批量 Clean 先把所有目标原子 rename 到同文件系统事务目录；中途失败按相反顺序 rename 回去；全部移动成功后删除事务目录。它不写 Knowledge 或索引。
+批量 Clean 先把明确选定的笔记文件 rename 到同文件系统事务目录；中途失败按相反顺序 rename 回去；全部移动成功后删除事务目录。它不写 Knowledge 或索引。
 
 ## 6. Knowledge 与声明式治理
 
@@ -158,7 +162,7 @@ Apply 在实例独占写锁内重新验证 state/plan、内容包 identity 与�
 
 ### 7.3 多文件事实事务
 
-真实 Apply 生成 `op_` journal。journal 枚举全部 Knowledge target、被 consume Inbox 的 `item.md` 和 Promotion `state.json`，记录 staged file、backup、new hash 和是否原本存在。
+真实 Apply 生成 `op_` journal。journal 枚举全部 Knowledge target、被 consume Inbox 的当前笔记路径和 Promotion `state.json`，记录 staged file、backup、new hash 和是否原本存在。
 
 ```text
 prepared -> files_committed -> complete
@@ -174,7 +178,7 @@ prepared 恢复只在当前文件等于 backup 或 new hash 时回滚；外部�
 
 Rebuild 在 runtime 同文件系统创建临时 SQLite，完整扫描、验证 Knowledge 与内容包策略，再原子替换。Update 从 Knowledge 文件集合推导 added/changed/deleted；schema、tokenizer、planner、wiki ID 或内容包 identity 不匹配时完整重建。
 
-`inbox show` 在返回前验证 pending payload，并返回规范 payload path、payload hash 和完整 item hash。`show` 返回经回读验证的正文、content hash 与当前完整 file hash；Workflow 只使用这些值构造更新 baseline。
+`inbox show` 读取当前材料并返回安全 payload path、当前 payload hash 和完整 item hash；这些值只在 Promotion 中成为不可漂移的基线。`show` 返回经回读验证的正文、content hash 与当前完整 file hash；Workflow 只使用这些值构造更新 baseline。
 
 索引时由通用生命周期声明计算静态 `retrieval_active` 和可选生效/失效时间边界；默认查询按当前时间筛选这些派生列，`--include-inactive` 可用于审计。category、type 和扩展元数据完整存入 `metadata_json`，不受固定枚举限制。
 
@@ -221,7 +225,7 @@ Skill client 名固定为 `codex` 与 `claude-code`。Codex 个人目标是 `~/.
 
 - 所有目标通过 filepath canonicalization、root containment 和逐组件 symlink 检查；不使用字符串前缀判断 containment。
 - 受管文件拒绝多重 hardlink、非普通文件和大小超限。
-- 写操作在首次持久化前完成全量预检并持有独占锁。
+- CLI 写操作在首次持久化前完成全量预检并持有独占锁。
 - 私有目录默认 0700，受管文件默认 0600，保留更严格权限。
 - 错误、journal、Promotion state、日志和 SQLite 不保存 Inbox/Knowledge 正文、查询全文、token 或密钥。
-- 删除只作用于已经解析并验证的具体 Inbox 目录。
+- 删除只作用于已经解析并验证的具体 Inbox 笔记文件，禁止递归删除其父目录或附件。

@@ -7,14 +7,14 @@
 1. 用户已指定 Vault 时使用该路径；否则运行 `llm-wiki locate --json --no-interactive`，把返回的 `wiki.path` 固定为 `<vault-root>`。
 2. 读取 `<vault-root>/content-pack.json`，从 `workflows` 查找动作对应文件；不得根据文件名或旧版本记忆猜测。
 3. 后续每条 CLI 命令都显式传入 `--wiki <vault-root> --json --no-interactive`，不得依赖当前目录或默认 Vault。
-4. 内容包、实例或 frontmatter 版本不匹配时停止；不得兼容读取、猜字段或隐式迁移。
+4. 内容包、实例或 Knowledge frontmatter 版本不匹配时停止；不得猜字段或隐式迁移。Inbox 不以版本字段或采集哈希限制读取与发布。
 
 ## 授权边界
 
 | 动作 | 允许读取 | 允许写入 | 必须停止的位置 |
 | --- | --- | --- | --- |
 | Capture | 用户明确提供的输入 | 受管目录外的临时 note、`inbox/` | 返回 pending Inbox；不得整理或发布 |
-| Organize | 用户授权的 pending Inbox、经 CLI 验证的 Knowledge | `knowledge/` 外的工作草稿和 manifest | 输出整理结果；不得 apply |
+| Organize | 用户授权的 pending Inbox、经 CLI 验证的 Knowledge | 获授权 Inbox、`knowledge/` 外的工作草稿和 manifest | 输出整理结果；不得 apply |
 | Publish | 草稿、manifest、冻结 Promotion | Promotion 与获批后的事务写入 | 展示完整 diff 后先停止；获批后才 apply |
 | Maintain 检查 | 经 CLI 验证的 Knowledge 与 doctor 诊断 | 无 | 返回检查报告 |
 | Maintain 处理 | 上述证据及为本次维护采集的 pending Inbox | `knowledge/` 外的草稿和 manifest | 转 Publish，仍需冻结计划批准 |
@@ -25,7 +25,7 @@
 ## 事实与写入边界
 
 - `knowledge/` 中由 `promote apply` 写入的 Markdown 是唯一可信事实源。
-- `inbox/` 是临时输入区，只能在 Capture、获授权的 Organize 和 Publish 中读取；禁止用于 Query 回答。
+- `inbox/` 是可编辑的临时工作区，可按用户授权编辑、改名、移动和删除；只在 Capture、Organize 和 Publish 中读取，禁止用于 Query 回答。Inbox 不维护采集时哈希，严格内容基线从 Promotion 开始。
 - SQLite 只选择候选；回答前必须通过 CLI 回读并验证 Knowledge Markdown。
 - `templates/`、`rules/`、`workflows/`、`views/`、工作草稿和 Promotion 元数据都不是用户事实。
 

@@ -3,6 +3,7 @@ package e2e
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -72,68 +73,132 @@ func snapshotFiles(t *testing.T, root string) map[string]string {
 }
 
 func TestNoObsidianFullLifecycleAndRebuildEquivalence(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "personal-wiki")
-	initialized, err := vault.Init(vault.InitOptions{Path: root, Name: "personal", Template: "personal"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := initialized.Config
-	if _, err := os.Stat(filepath.Join(root, ".obsidian")); !os.IsNotExist(err) {
-		t.Fatalf("init unexpectedly required .obsidian: %v", err)
-	}
-	added, err := inbox.Add(cfg, inbox.AddOptions{Input: "-", Name: "source.txt", Source: "user", Stdin: bytes.NewBufferString("Stable IR separates compiler components."), Now: time.Unix(100, 0).UTC()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	work := t.TempDir()
-	draft := filepath.Join(work, "draft.md")
-	if err := os.WriteFile(draft, []byte("---\ntype: concept\ncategory: development\ntitle: Stable IR\ndescription: Stable compiler boundary\nlifecycle: current\n---\n# Stable IR\n\nStable IR separates compiler frontends, optimizers, and backends.\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	knowledgeID := "know_01arz3ndektsv4rrffq69g5faw"
-	manifest := promote.Manifest{SchemaVersion: 1,
-		Inboxes: []promote.ManifestInbox{{ID: added[0].ID, PayloadHash: added[0].PayloadHash, ItemHash: added[0].ItemHash, Consume: true}},
-		Targets: []promote.ManifestTarget{{Operation: "create", DraftFile: "draft.md", KnowledgeID: knowledgeID, InboxIDs: []string{added[0].ID}}}}
-	data, _ := json.Marshal(manifest)
-	manifestPath := filepath.Join(work, "promotion.json")
-	if err := os.WriteFile(manifestPath, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	planned, err := promote.PlanPromotion(cfg, promote.PlanOptions{ManifestPath: manifestPath, Now: time.Unix(200, 0).UTC()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	applied, err := promote.Apply(cfg, planned.Plan.ID, planned.PlanHash, false, time.Unix(300, 0).UTC())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := indexstore.Rebuild(cfg); err != nil {
-		t.Fatal(err)
-	}
-	if err := promote.CompleteOperation(cfg, applied.OperationID); err != nil {
-		t.Fatal(err)
-	}
-	before, err := indexstore.SearchCandidates(cfg, "compiler frontends backends", 8)
-	if err != nil || len(before) == 0 || before[0].KnowledgeID != knowledgeID {
-		t.Fatalf("query before clean failed: %#v %v", before, err)
-	}
-	cleaned, err := inbox.Clean(cfg, inbox.CleanOptions{IDs: []string{added[0].ID}, Yes: true})
-	if err != nil || cleaned.Deleted != 1 {
-		t.Fatalf("processed clean failed: %#v %v", cleaned, err)
-	}
-	doc, err := document.FindByID(cfg.KnowledgeDir(), knowledgeID)
-	if err != nil || doc.Metadata.Lineage[0].InboxID != added[0].ID {
-		t.Fatalf("Knowledge lost historical lineage: %#v %v", doc, err)
-	}
-	if err := os.Remove(indexstore.DBPath(cfg)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := indexstore.Rebuild(cfg); err != nil {
-		t.Fatal(err)
-	}
-	after, err := indexstore.SearchCandidates(cfg, "compiler frontends backends", 8)
-	if err != nil || !reflect.DeepEqual(before, after) {
-		t.Fatalf("query changed after Inbox clean and index rebuild\nbefore=%#v\nafter=%#v\nerr=%v", before, after, err)
+	for _, layout := range []string{"date-note", "item-payload"} {
+		t.Run(layout, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "personal-wiki")
+			initialized, err := vault.Init(vault.InitOptions{Path: root, Name: "personal", Template: "personal"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := initialized.Config
+			if _, err := os.Stat(filepath.Join(root, ".obsidian")); !os.IsNotExist(err) {
+				t.Fatalf("init unexpectedly required .obsidian: %v", err)
+			}
+			var added []inbox.Added
+			if layout == "date-note" {
+				added, err = inbox.Add(cfg, inbox.AddOptions{Input: "-", Name: "source.txt", Source: "user", Stdin: bytes.NewBufferString("Stable IR separates compiler components."), Now: time.Unix(100, 0).UTC()})
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				// Literal output from the original item/payload format, with edited content
+				// and obsolete capture hashes. Raw payload frontmatter is not an Inbox record.
+				id := "inbox_01arz3ndektsv4rrffq69g5fav"
+				itemDir := filepath.Join(cfg.Paths.Inbox, "2026", "08", id)
+				if err := os.MkdirAll(filepath.Join(root, itemDir, "payload"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				item := fmt.Sprintf("---\nschema_version: 1\nid: %s\ntitle: Stable IR input\nstatus: pending\nsource: user\ncaptured_at: 2026-08-01T00:00:00Z\ncontent_hash: %s\nmedia_type: text/markdown\noriginal_name: source.md\npayload: payload/source.md\npayload_hash: %s\npayload_bytes: 3\ncustom_context: preserved\n---\nStable IR separates compiler components.", id, document.HashBytes([]byte("old body")), document.HashBytes([]byte("old")))
+				if err := os.WriteFile(filepath.Join(root, itemDir, "item.md"), []byte(item), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(root, itemDir, "payload", "source.md"), []byte("---\nschema_version: [raw unfinished frontmatter\n---\nEdited compiler source material."), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				added = []inbox.Added{{ID: id, ItemPath: filepath.Join(itemDir, "item.md")}}
+			}
+			// Inbox is editable before publication; the manifest must bind its current bytes.
+			itemPath := filepath.Join(root, added[0].ItemPath)
+			itemBytes, err := os.ReadFile(itemPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			itemBytes = bytes.ReplaceAll(itemBytes, []byte("Stable IR separates compiler components."), []byte("Stable IR separates frontends and backends."))
+			moved := filepath.Join(filepath.Dir(itemPath), "自由整理.md")
+			if err := os.WriteFile(itemPath, itemBytes, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(itemPath, moved); err != nil {
+				t.Fatal(err)
+			}
+			beforeRead := snapshotFiles(t, root)
+			current, err := inbox.Show(cfg, added[0].ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(beforeRead, snapshotFiles(t, root)) {
+				t.Fatal("reading Inbox migrated or rewrote existing files")
+			}
+			if layout == "item-payload" {
+				payload, err := os.ReadFile(current.PayloadPath)
+				if err != nil || current.PayloadHash != document.HashBytes(payload) || current.PayloadHash == current.Metadata.PayloadHash || current.FileHash != document.HashBytes(itemBytes) {
+					t.Fatalf("old Inbox did not snapshot current material: %#v %v", current, err)
+				}
+			}
+			added[0].ItemHash, added[0].PayloadHash = current.FileHash, current.PayloadHash
+			work := t.TempDir()
+			draft := filepath.Join(work, "draft.md")
+			if err := os.WriteFile(draft, []byte("---\ntype: concept\ncategory: development\ntitle: Stable IR\ndescription: Stable compiler boundary\nlifecycle: current\n---\n# Stable IR\n\nStable IR separates compiler frontends, optimizers, and backends.\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			knowledgeID := "know_01arz3ndektsv4rrffq69g5faw"
+			manifest := promote.Manifest{SchemaVersion: 1,
+				Inboxes: []promote.ManifestInbox{{ID: added[0].ID, PayloadHash: added[0].PayloadHash, ItemHash: added[0].ItemHash, Consume: true}},
+				Targets: []promote.ManifestTarget{{Operation: "create", DraftFile: "draft.md", KnowledgeID: knowledgeID, InboxIDs: []string{added[0].ID}}}}
+			data, _ := json.Marshal(manifest)
+			manifestPath := filepath.Join(work, "promotion.json")
+			if err := os.WriteFile(manifestPath, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			planned, err := promote.PlanPromotion(cfg, promote.PlanOptions{ManifestPath: manifestPath, Now: time.Unix(200, 0).UTC()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			applied, err := promote.Apply(cfg, planned.Plan.ID, planned.PlanHash, false, time.Unix(300, 0).UTC())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := indexstore.Rebuild(cfg); err != nil {
+				t.Fatal(err)
+			}
+			if err := promote.CompleteOperation(cfg, applied.OperationID); err != nil {
+				t.Fatal(err)
+			}
+			processed, err := inbox.Show(cfg, added[0].ID)
+			if err != nil || processed.Metadata.Status != "processed" || processed.Path != moved || processed.Metadata.SchemaVersion != current.Metadata.SchemaVersion || processed.Metadata.Payload != current.Metadata.Payload || processed.Metadata.PayloadHash != current.Metadata.PayloadHash || processed.Metadata.PayloadBytes != current.Metadata.PayloadBytes {
+				t.Fatalf("consume migrated or broke Inbox material: %#v %v", processed, err)
+			}
+			before, err := indexstore.SearchCandidates(cfg, "compiler frontends backends", 8)
+			if err != nil || len(before) == 0 || before[0].KnowledgeID != knowledgeID {
+				t.Fatalf("query before clean failed: %#v %v", before, err)
+			}
+			cleaned, err := inbox.Clean(cfg, inbox.CleanOptions{IDs: []string{added[0].ID}, Yes: true})
+			if err != nil || cleaned.Deleted != 1 {
+				t.Fatalf("processed clean failed: %#v %v", cleaned, err)
+			}
+			doc, err := document.FindByID(cfg.KnowledgeDir(), knowledgeID)
+			if err != nil || doc.Metadata.Lineage[0].InboxID != added[0].ID || doc.Metadata.Lineage[0].PayloadHash != current.PayloadHash {
+				t.Fatalf("Knowledge lost historical lineage: %#v %v", doc, err)
+			}
+			if err := doc.Validate("knowledge", true); err != nil {
+				t.Fatalf("published Knowledge is not independently valid: %v", err)
+			}
+			if layout == "item-payload" {
+				if _, err := os.Stat(current.PayloadPath); err != nil {
+					t.Fatalf("cleanup removed the existing payload: %v", err)
+				}
+			}
+			if err := os.Remove(indexstore.DBPath(cfg)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := indexstore.Rebuild(cfg); err != nil {
+				t.Fatal(err)
+			}
+			after, err := indexstore.SearchCandidates(cfg, "compiler frontends backends", 8)
+			if err != nil || !reflect.DeepEqual(before, after) {
+				t.Fatalf("query changed after Inbox clean and index rebuild\nbefore=%#v\nafter=%#v\nerr=%v", before, after, err)
+			}
+		})
 	}
 }
 

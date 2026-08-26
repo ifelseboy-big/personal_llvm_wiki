@@ -7,7 +7,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"llm-wiki/internal/document"
 	"llm-wiki/internal/governance"
 	"llm-wiki/internal/inbox"
 	"llm-wiki/internal/promote"
@@ -25,7 +24,7 @@ func newInboxAddCommand(rt *Runtime) *cobra.Command {
 	var allowSensitive bool
 	cmd := &cobra.Command{
 		Use: "add [file|-]", Args: cobra.MaximumNArgs(1),
-		Short: "Preserve original input and create a pending inbox item",
+		Short: "Capture editable material with a date and readable title",
 		RunE: func(_ *cobra.Command, args []string) error {
 			cfg, ref, err := resolveWiki(rt)
 			if err != nil {
@@ -62,17 +61,20 @@ func newInboxAddCommand(rt *Runtime) *cobra.Command {
 			files := []string{}
 			var total int64
 			for _, item := range added {
-				files = append(files, item.ItemPath, item.PayloadPath)
+				files = append(files, item.ItemPath)
+				if item.PayloadPath != item.ItemPath {
+					files = append(files, item.PayloadPath)
+				}
 				total += item.Bytes
 			}
 			return rt.Success("inbox.add", ref, map[string]any{"items": added, "count": len(added), "total_bytes": total, "dry_run": rt.DryRun}, warnings, files)
 		},
 	}
 	cmd.Flags().StringVar(&name, "name", "", "required understandable name for stdin input")
-	cmd.Flags().StringVar(&title, "title", "", "preliminary title")
+	cmd.Flags().StringVar(&title, "title", "", "preliminary functional title used after the YYYY-MM-DD filename prefix")
 	cmd.Flags().StringVar(&source, "source", "", "input source description")
-	cmd.Flags().StringVar(&noteFile, "note-file", "", "preliminary Markdown prepared by the Add Skill")
-	cmd.Flags().StringVar(&batchManifest, "batch-manifest", "", "JSON manifest mapping multiple inputs to preliminary notes")
+	cmd.Flags().StringVar(&noteFile, "note-file", "", "optional preliminary Markdown; capture does not require summarization")
+	cmd.Flags().StringVar(&batchManifest, "batch-manifest", "", "JSON manifest of multiple inputs with optional notes")
 	cmd.Flags().BoolVar(&allowSensitive, "allow-sensitive", false, "explicitly allow a sensitive input file")
 	return cmd
 }
@@ -98,17 +100,18 @@ func newInboxListCommand(rt *Runtime) *cobra.Command {
 			items := make([]map[string]any, 0, len(docs))
 			for _, doc := range docs {
 				rel, _ := filepath.Rel(cfg.Root, doc.Path)
-				payloadPath := filepath.Join(filepath.Dir(doc.Path), filepath.FromSlash(doc.Metadata.Payload))
-				payloadRel, _ := filepath.Rel(cfg.Root, payloadPath)
-				itemHash, hashErr := document.HashFile(doc.Path)
-				if hashErr != nil {
-					warnings = append(warnings, "cannot hash inbox item "+doc.Metadata.ID+": "+hashErr.Error())
+				if err := inbox.Snapshot(cfg, doc); err != nil {
+					warnings = append(warnings, "cannot read inbox attachment "+doc.Metadata.ID+": "+err.Error())
+				}
+				payloadRel := ""
+				if doc.PayloadPath != "" {
+					payloadRel, _ = filepath.Rel(cfg.Root, doc.PayloadPath)
 				}
 				items = append(items, map[string]any{
 					"id": doc.Metadata.ID, "title": doc.Metadata.Title, "status": doc.Metadata.Status,
 					"path": filepath.ToSlash(rel), "captured_at": doc.Metadata.CapturedAt,
-					"item_hash": itemHash, "payload_path": filepath.ToSlash(payloadRel),
-					"payload_hash": doc.Metadata.PayloadHash, "active_promotion": active[doc.Metadata.ID],
+					"item_hash": doc.FileHash, "payload_path": filepath.ToSlash(payloadRel),
+					"payload_hash": doc.PayloadHash, "active_promotion": active[doc.Metadata.ID],
 				})
 			}
 			return rt.Success("inbox.list", ref, map[string]any{"items": items, "count": len(items), "status": status}, warnings, nil)
@@ -134,18 +137,13 @@ func newInboxShowCommand(rt *Runtime) *cobra.Command {
 				return E("INBOX_READ_FAILED", "cannot read inbox item", ExitValidation, err)
 			}
 			rel, _ := filepath.Rel(cfg.Root, doc.Path)
-			payloadPath := filepath.Join(filepath.Dir(doc.Path), filepath.FromSlash(doc.Metadata.Payload))
-			payloadRel, relErr := filepath.Rel(cfg.Root, payloadPath)
+			payloadRel, relErr := filepath.Rel(cfg.Root, doc.PayloadPath)
 			if relErr != nil {
-				return E("INBOX_READ_FAILED", "cannot resolve inbox payload path", ExitValidation, relErr)
-			}
-			itemHash, hashErr := document.HashFile(doc.Path)
-			if hashErr != nil {
-				return E("INBOX_READ_FAILED", "cannot hash inbox item", ExitIO, hashErr)
+				return E("INBOX_READ_FAILED", "cannot resolve inbox attachment path", ExitValidation, relErr)
 			}
 			return rt.Success("inbox.show", ref, map[string]any{
 				"path": filepath.ToSlash(rel), "payload_path": filepath.ToSlash(payloadRel),
-				"item_hash": itemHash, "payload_hash": doc.Metadata.PayloadHash,
+				"item_hash": doc.FileHash, "payload_hash": doc.PayloadHash,
 				"metadata": doc.Metadata, "body": string(doc.Body),
 			}, nil, nil)
 		},
@@ -155,7 +153,7 @@ func newInboxShowCommand(rt *Runtime) *cobra.Command {
 func newInboxCleanCommand(rt *Runtime) *cobra.Command {
 	var processed, yes bool
 	cmd := &cobra.Command{
-		Use: "clean [inbox-id...]", Args: cobra.ArbitraryArgs, Short: "Delete validated processed inbox items",
+		Use: "clean [inbox-id...]", Args: cobra.ArbitraryArgs, Short: "Delete selected inbox notes; --processed selects processed notes only",
 		RunE: func(_ *cobra.Command, args []string) error {
 			cfg, ref, err := resolveWiki(rt)
 			if err != nil {
@@ -170,7 +168,6 @@ func newInboxCleanCommand(rt *Runtime) *cobra.Command {
 			}
 			result, err := inbox.Clean(cfg, inbox.CleanOptions{
 				IDs: args, Processed: processed, Yes: yes, DryRun: rt.DryRun,
-				ResolveActiveInboxIDs: func() (map[string]bool, error) { return promote.ActiveInboxIDs(cfg) },
 			})
 			if err != nil {
 				code, exit := "INBOX_CLEAN_REJECTED", ExitValidation
@@ -183,6 +180,6 @@ func newInboxCleanCommand(rt *Runtime) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&processed, "processed", false, "select every processed inbox item")
-	cmd.Flags().BoolVar(&yes, "yes", false, "confirm permanent deletion")
+	cmd.Flags().BoolVar(&yes, "yes", false, "confirm permanent deletion of the selected notes; attachments are retained")
 	return cmd
 }

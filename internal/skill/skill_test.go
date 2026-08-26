@@ -14,8 +14,8 @@ import (
 )
 
 func TestInstallUpdateAndUninstallOwnedFiles(t *testing.T) {
-	if manifestSchema != 1 || SkillVersion != "1.0.0" {
-		t.Fatalf("skill contracts must start at their initial version: schema=%d content=%s", manifestSchema, SkillVersion)
+	if manifestSchema != 1 || SkillVersion != "1.1.0" {
+		t.Fatalf("skill contracts must match current versions: schema=%d content=%s", manifestSchema, SkillVersion)
 	}
 	root := t.TempDir()
 	t.Setenv("LLM_WIKI_CODEX_SKILLS_DIR", root)

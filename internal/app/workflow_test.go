@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"llm-wiki/internal/document"
 )
 
 func TestCompleteInboxPromotionKnowledgeCleanWorkflow(t *testing.T) {
@@ -26,7 +29,25 @@ func TestCompleteInboxPromotionKnowledgeCleanWorkflow(t *testing.T) {
 	if nestedFloat(t, before.Data, "count") != 0 {
 		t.Fatalf("query returned Inbox content: %#v", before.Data)
 	}
+	// A user's ordinary edit and rename must remain readable without recalculating metadata.
+	itemPath := filepath.Join(root, nestedString(t, added.Data, "items", 0, "item_path"))
+	itemBytes, err := os.ReadFile(itemPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	itemBytes = bytes.ReplaceAll(itemBytes, []byte("Initial organization for later review."), []byte("User edited this before organizing."))
+	if err := os.WriteFile(itemPath, itemBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	movedPath := filepath.Join(root, "inbox", "renamed.md")
+	if err := os.Rename(itemPath, movedPath); err != nil {
+		t.Fatal(err)
+	}
 	shownInbox := runCLI(t, "", "inbox", "show", inboxID, "--wiki", root, "--json", "--no-interactive")
+	if nestedString(t, shownInbox.Data, "path") != "inbox/renamed.md" || nestedString(t, shownInbox.Data, "item_hash") != document.HashBytes(itemBytes) {
+		t.Fatalf("edited Inbox snapshot is inconsistent: %#v", shownInbox.Data)
+	}
+	runCLI(t, "", "doctor", "--wiki", root, "--json", "--no-interactive")
 	payloadHash := nestedString(t, shownInbox.Data, "payload_hash")
 	itemHash := nestedString(t, shownInbox.Data, "item_hash")
 	payloadPath := filepath.Join(root, filepath.FromSlash(nestedString(t, shownInbox.Data, "payload_path")))
@@ -54,14 +75,21 @@ func TestCompleteInboxPromotionKnowledgeCleanWorkflow(t *testing.T) {
 	planned := runCLI(t, "", "promote", "plan", "--manifest", manifest, "--wiki", root, "--json", "--no-interactive")
 	promotionID := nestedString(t, planned.Data, "promotion_id")
 	planHash := nestedString(t, planned.Data, "plan_hash")
-	if nestedString(t, planned.Data, "content_pack", "version") != "1.0.0" || nestedString(t, planned.Data, "content_pack", "policy_hash") == "" {
+	if nestedString(t, planned.Data, "content_pack", "version") != "1.1.0" || nestedString(t, planned.Data, "content_pack", "policy_hash") == "" {
 		t.Fatalf("plan omitted its frozen content-pack identity: %#v", planned.Data)
 	}
 	diff := runCLI(t, "", "promote", "diff", promotionID, "--wiki", root, "--json", "--no-interactive")
 	if nestedString(t, diff.Data, "plan_hash") != planHash || !bytes.Contains([]byte(nestedString(t, diff.Data, "diff")), []byte("Stable IR")) {
 		t.Fatalf("diff is not bound to plan: %#v", diff.Data)
 	}
+	// Renaming without a content change must not invalidate the approved snapshot.
+	if err := os.Rename(movedPath, filepath.Join(root, "inbox", "renamed-again.md")); err != nil {
+		t.Fatal(err)
+	}
 	apply := runCLI(t, "", "promote", "apply", promotionID, "--approve", planHash, "--wiki", root, "--json", "--no-interactive")
+	if !strings.Contains(strings.Join(apply.AffectedFiles, "\n"), "inbox/renamed-again.md") {
+		t.Fatalf("apply reported guessed rather than actual Inbox path: %#v", apply.AffectedFiles)
+	}
 	if nestedString(t, apply.Data, "targets", 0, "knowledge_id") != knowledgeID {
 		t.Fatalf("promotion did not publish target: %#v", apply.Data)
 	}
@@ -91,7 +119,7 @@ func TestCompleteInboxPromotionKnowledgeCleanWorkflow(t *testing.T) {
 		t.Fatalf("show lost extension metadata: %#v", show.Data)
 	}
 	preview := runCLI(t, "", "inbox", "clean", inboxID, "--dry-run", "--wiki", root, "--json", "--no-interactive")
-	if len(preview.AffectedFiles) != 2 {
+	if len(preview.AffectedFiles) != 1 {
 		t.Fatalf("clean preview is incomplete: %#v", preview)
 	}
 	runCLI(t, "", "inbox", "clean", inboxID, "--yes", "--wiki", root, "--json", "--no-interactive")
@@ -314,4 +342,32 @@ func nestedFloat(t *testing.T, value any, key string) float64 {
 		t.Fatalf("%v is not numeric", object[key])
 	}
 	return result
+}
+
+func TestSelfContainedInboxJSONSnapshotAndPendingCleanup(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "wiki")
+	runCLI(t, "", "init", root, "--json", "--no-interactive")
+	added := runCLI(t, "raw text", "inbox", "add", "-", "--name", "raw.txt", "--title", "登录功能", "--wiki", root, "--json", "--no-interactive")
+	id := nestedString(t, added.Data, "items", 0, "id")
+	if len(added.AffectedFiles) != 1 {
+		t.Fatalf("text capture produced duplicate files: %#v", added)
+	}
+	shown := runCLI(t, "", "inbox", "show", id, "--wiki", root, "--json", "--no-interactive")
+	path := nestedString(t, shown.Data, "path")
+	if path != nestedString(t, shown.Data, "payload_path") || nestedString(t, shown.Data, "payload_hash") != document.HashBytes([]byte("raw text")) || nestedFloat(t, shown.Data.(map[string]any)["metadata"], "schema_version") != float64(document.CurrentSchema) {
+		t.Fatalf("bad current Inbox snapshot protocol: %#v", shown.Data)
+	}
+	before, err := os.ReadFile(filepath.Join(root, path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCLI(t, "", "inbox", "list", "--wiki", root, "--json", "--no-interactive")
+	after, err := os.ReadFile(filepath.Join(root, path))
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("reading persisted a snapshot hash")
+	}
+	runCLI(t, "", "inbox", "clean", id, "--yes", "--wiki", root, "--json", "--no-interactive")
+	if _, err := os.Stat(filepath.Join(root, path)); !os.IsNotExist(err) {
+		t.Fatalf("pending note was not deleted: %v", err)
+	}
 }

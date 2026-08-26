@@ -101,20 +101,21 @@ skill status|install|update|uninstall
 
 ```bash
 llm-wiki init ~/wiki --name personal --no-interactive
-llm-wiki inbox add ./article.pdf --note-file ./article-note.md --wiki ~/wiki
-printf '%s' '原始输入' | llm-wiki inbox add - --name note.txt --note-file ./note.md --wiki ~/wiki
+llm-wiki inbox add ./article.pdf --title "登录功能资料" --wiki ~/wiki
+printf '%s' '原始输入' | llm-wiki inbox add - --name note.txt --title "登录功能想法" --wiki ~/wiki
 llm-wiki inbox list --status pending --wiki ~/wiki --json --no-interactive
 llm-wiki inbox show <inbox-id> --wiki ~/wiki --json --no-interactive
 ```
 
-每条 Inbox 同时保存：
+Inbox 是可编辑的临时工作区。新增笔记按 `YYYY-MM-DD-初步功能名称.md` 命名，例如 `inbox/2026-08-26-登录功能.md`；功能名来自 `--title`，未提供时取正文一级标题或原文件名。同名追加 ` (2)`、` (3)`，不覆盖现有文件，不生成日期层级或 ID 文件夹。ID 只保存在 frontmatter，后续改名、在 Inbox 内移动不会改变身份。
 
-- `item.md`：系统元数据与初步整理；
-- `payload/<original>`：完全不改写的原始字节。
+文本和 Markdown 默认直接成为笔记正文，无须先写摘要。PDF 等二进制材料复制到共用的 `inbox/attachments/`，由笔记的 `payload` 引用；显式 `--note-file` 可额外提供初步整理并保留输入附件。`payload` 相对笔记所在目录，笔记与附件的相对位置变化时需同步修改引用。共享 `attachments/` 和已有条目中的 `payload/` 专门保存原始材料，不扫描为登记笔记。
 
-目录批量采集使用 `--batch-manifest`，manifest 为每个 input 指定独立 `note_file`；任何条目预检失败时零写入。直接供人使用时可省略 note，Add Skill 不得省略。
+正文、标题、用户属性和附件可以直接编辑；无需维护正文或附件哈希。ID、Schema 与发布状态属于系统元数据。直接放入的未登记材料不会被当成受管笔记或事实，使用 `inbox add` 登记后再参与发布。目录批量采集使用 `--batch-manifest`，每项 `note_file` 可省略；任何输入预检失败时零写入。
 
-`inbox show` 会校验 pending payload，并返回规范 `payload_path`、`payload_hash` 和完整 `item_hash`，供 Agent 阅读原始输入和构造 Promotion manifest；不得根据 Inbox 目录结构猜路径。
+已有 `inbox/YYYY/MM/<id>/item.md` 与 `payload/` 可直接继续整理发布，不必迁移、改名或重新导入。旧 `schema_version`、`content_hash`、`payload_hash`、`payload_bytes` 不作为 Inbox 的准入校验，也不用手动删除或更新；发布使用当前内容快照。
+
+`inbox show` 返回当前 `payload_path`、`payload_hash` 和完整 `item_hash`，读取不写回文件。自包含笔记的 `payload_path` 就是笔记本身，`payload_hash` 是规范化正文的哈希；有附件时是附件原始字节的哈希。哈希仅作为发布基线：编辑后重新 show 并生成 manifest，不会因为与采集时不同而报错。已冻结计划的输入内容变化或被删除，会使 apply 拒绝旧计划。
 
 初始化出的 Vault 包含 Capture、Organize、Publish、Maintain、Query Workflow。Agent 根据 `content-pack.json.workflows` 路由；禁止直接创建、修改或移动 `knowledge/`。
 
@@ -179,7 +180,9 @@ llm-wiki inbox clean <inbox-id> --dry-run --wiki ~/wiki --json --no-interactive
 llm-wiki inbox clean <inbox-id> --yes --wiki ~/wiki --no-interactive
 ```
 
-Query 只从 SQLite 选择 Knowledge 候选，并在返回前回读 Markdown 校验文件、正文和 chunk。它不会搜索 Inbox，也不会自动修复索引。processed Inbox 清理后，Knowledge、query、show、doctor 和索引重建仍应正常。
+`inbox clean <id> --yes` 可删除明确选定的 pending 或 processed 笔记；`--processed` 只批量选择 processed。清理不再检查采集时哈希，也不递归删除目录或附件，避免误删共享材料。附件可在确认用途后单独手工删除。删除活动计划引用的 Inbox 后，该计划不能再 apply。
+
+Query 只从 SQLite 选择 Knowledge 候选，并在返回前回读 Markdown 校验文件、正文和 chunk。它不会搜索 Inbox，也不会自动修复索引。Inbox 清理后，Knowledge、query、show、doctor 和索引重建仍应正常。
 
 ## Skill
 
@@ -195,7 +198,7 @@ Codex 的个人目录为 `~/.agents/skills`，Claude Code 按官方 Agent Skills
 
 ## 安全边界
 
-- instance、frontmatter、content pack policy 与 Promotion 只接受仓库当前 Schema 定义的契约；identity 或版本不匹配直接拒绝，不读取或迁移旧契约。
+- instance、Knowledge frontmatter、content pack policy 与 Promotion 只接受仓库当前 Schema 定义的契约；identity 或版本不匹配直接拒绝，不读取或迁移旧契约。Inbox 不以版本字段或采集时哈希限制后续使用。
 - 所有批量写入先全量预检；受管路径拒绝逃逸、symlink、hardlink、非普通文件和超限输入。
 - `--dry-run` 不创建目录、锁、Promotion、事务、索引、注册、Skill 文件或自升级临时文件，也不发起升级网络请求。
 - 私有目录默认 `0700`，受管文件默认 `0600`。

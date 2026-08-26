@@ -1,6 +1,7 @@
 filters:
   and:
     - file.path.startsWith("inbox/")
+    - id.startsWith("inbox_")
 views:
   - type: table
     name: Inbox

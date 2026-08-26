@@ -180,7 +180,6 @@ func TestApplyDriftMarksPromotionStaleWithoutFactWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	item.Body = append(item.Body, []byte("\nchanged\n")...)
-	item.Metadata.ContentHash = document.HashBytes(item.Body)
 	if err := document.Write(item.Path, item.Metadata, item.Body); err != nil {
 		t.Fatal(err)
 	}
@@ -456,4 +455,46 @@ func writeManifest(t *testing.T, base string, manifest Manifest) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestInboxChangesOnlyInvalidateFrozenPublication(t *testing.T) {
+	for _, change := range []string{"attachment", "delete"} {
+		t.Run(change, func(t *testing.T) {
+			cfg := initPromotionWiki(t)
+			items, err := inbox.Add(cfg, inbox.AddOptions{Input: "-", Name: "input.pdf", Stdin: bytes.NewReader([]byte("%PDF-1.0\noriginal")), Now: time.Unix(100, 0).UTC()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := items[0]
+			base := t.TempDir()
+			writeDraft(t, filepath.Join(base, "draft.md"), "concept", "Snapshot boundary", "Self-contained fact.")
+			manifest := Manifest{SchemaVersion: SchemaVersion, Inboxes: []ManifestInbox{{ID: input.ID, PayloadHash: input.PayloadHash, ItemHash: input.ItemHash, Consume: true}}, Targets: []ManifestTarget{{Operation: "create", DraftFile: "draft.md", InboxIDs: []string{input.ID}}}}
+			planned, err := PlanPromotion(cfg, PlanOptions{ManifestPath: writeManifest(t, base, manifest), Now: time.Unix(200, 0).UTC()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if change == "attachment" {
+				if err := os.WriteFile(filepath.Join(cfg.Root, input.PayloadPath), []byte("%PDF-1.0\nmodified"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := inbox.Show(cfg, input.ID); err != nil {
+					t.Fatalf("normal Inbox edit rejected: %v", err)
+				}
+			} else {
+				if _, err := inbox.Clean(cfg, inbox.CleanOptions{IDs: []string{input.ID}, Yes: true, Now: time.Unix(250, 0).UTC()}); err != nil {
+					t.Fatalf("explicit deletion of planned input failed: %v", err)
+				}
+			}
+			if _, err := Apply(cfg, planned.Plan.ID, planned.PlanHash, false, time.Unix(300, 0).UTC()); !errors.Is(err, ErrApplyConflict) {
+				t.Fatalf("changed frozen input was applied: %v", err)
+			}
+			_, state, _, err := Load(cfg, planned.Plan.ID)
+			if err != nil || state.Status != "stale" {
+				t.Fatalf("plan was not stale: %#v %v", state, err)
+			}
+			if docs, problems := document.ScanMarkdown(cfg.KnowledgeDir()); len(docs) != 0 || len(problems) != 0 {
+				t.Fatal("stale plan wrote facts")
+			}
+		})
+	}
 }

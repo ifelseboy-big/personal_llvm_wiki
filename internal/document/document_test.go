@@ -1,7 +1,6 @@
 package document
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -70,61 +69,38 @@ func TestRejectNonCurrentFrontmatterSchema(t *testing.T) {
 	}
 }
 
-func TestInboxValidatesPayloadWithoutRewritingIt(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "payload"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	payload := []byte{0, 1, 2, 3, '\r', '\n'}
-	payloadPath := filepath.Join(dir, "payload", "input.bin")
-	if err := os.WriteFile(payloadPath, payload, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	body := []byte("# Preliminary\n")
-	meta := Metadata{
-		SchemaVersion: CurrentSchema, ID: testInboxID, Title: "Preliminary", Status: "pending", Source: "file",
-		CapturedAt: time.Unix(0, 0).UTC().Format(time.RFC3339), ContentHash: HashBytes(body), MediaType: "application/octet-stream",
-		OriginalName: "input.bin", Payload: "payload/input.bin", PayloadHash: HashBytes(payload), PayloadBytes: int64(len(payload)),
-	}
-	path := filepath.Join(dir, "item.md")
-	if err := Write(path, meta, body); err != nil {
+func TestInboxMetadataDoesNotFreezeEditableBody(t *testing.T) {
+	meta := Metadata{SchemaVersion: CurrentSchema, ID: testInboxID, Title: "Note", Status: "pending", Source: "user",
+		CapturedAt: time.Unix(0, 0).UTC().Format(time.RFC3339), MediaType: "text/plain", OriginalName: "note.txt", Extra: map[string]any{"custom": "preserved"},
+		ContentHash: HashBytes([]byte("original")), PayloadHash: HashBytes([]byte("old attachment")), PayloadBytes: 14}
+	path := filepath.Join(t.TempDir(), "note.md")
+	if err := Write(path, meta, []byte("original")); err != nil {
 		t.Fatal(err)
 	}
 	doc, err := Read(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := doc.Validate("inbox", false); err != nil {
-		t.Fatal(err)
+	doc.Body = []byte("edited freely")
+	if err := doc.Validate("inbox", true); err != nil {
+		t.Fatalf("body editing required a hash update: %v", err)
 	}
-	if err := os.WriteFile(payloadPath, []byte("changed"), 0o600); err != nil {
-		t.Fatal(err)
+	if doc.Metadata.Extra["custom"] != "preserved" {
+		t.Fatal("user property lost")
 	}
-	if err := doc.Validate("inbox", false); err == nil || !strings.Contains(err.Error(), "payload") {
-		t.Fatalf("expected payload drift rejection, got %v", err)
-	}
-}
-
-func TestInboxPayloadSymlinkRejected(t *testing.T) {
-	dir := t.TempDir()
-	outside := filepath.Join(t.TempDir(), "outside")
-	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(dir, "payload"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(outside, filepath.Join(dir, "payload", "input")); err != nil {
-		t.Skipf("symlink unavailable: %v", err)
-	}
-	body := []byte("# Note\n")
-	doc := &Document{Path: filepath.Join(dir, "item.md"), Body: body, Metadata: Metadata{
-		SchemaVersion: CurrentSchema, ID: testInboxID, Title: "Note", Status: "pending", Source: "file",
-		CapturedAt: time.Unix(0, 0).UTC().Format(time.RFC3339), ContentHash: HashBytes(body), MediaType: "text/plain",
-		OriginalName: "input", Payload: "payload/input", PayloadHash: HashBytes([]byte("secret")), PayloadBytes: 6,
-	}}
-	if err := doc.Validate("inbox", false); err == nil {
-		t.Fatal("expected payload symlink rejection")
+	for _, version := range []int{0, CurrentSchema, CurrentSchema + 1} {
+		doc.Metadata.SchemaVersion = version
+		if err := doc.Validate("inbox", false); err != nil {
+			t.Fatalf("Inbox version or stale capture metadata blocked editing: %v", err)
+		}
+		data, err := Render(doc.Metadata, doc.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rendered, body, err := Parse(data)
+		if err != nil || rendered.SchemaVersion != version || rendered.ContentHash != meta.ContentHash || rendered.PayloadHash != meta.PayloadHash || rendered.PayloadBytes != meta.PayloadBytes || string(body) != "edited freely" {
+			t.Fatalf("render migrated Inbox metadata or lost edits: %#v %v", rendered, err)
+		}
 	}
 }
 

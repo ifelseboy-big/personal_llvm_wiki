@@ -9,7 +9,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"llm-wiki/internal/inbox"
 	indexstore "llm-wiki/internal/index"
 	"llm-wiki/internal/promote"
 	"llm-wiki/internal/vault"
@@ -130,9 +129,7 @@ func newPromoteApplyCommand(rt *Runtime) *cobra.Command {
 				files = append(files, target.TargetPath)
 			}
 			if !rt.DryRun {
-				for _, inboxID := range result.Consumed {
-					files = append(files, filepath.ToSlash(filepath.Join(cfg.Paths.Inbox, inboxID, inbox.ItemFile)))
-				}
+				files = append(files, result.InboxPaths...)
 				files = append(files, filepath.ToSlash(filepath.Join(cfg.Paths.Runtime, "promotions", result.PromotionID, "state.json")))
 				indexResult, indexErr := indexstore.Update(cfg, false)
 				if indexErr != nil {

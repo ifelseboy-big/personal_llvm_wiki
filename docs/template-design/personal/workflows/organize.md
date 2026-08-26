@@ -3,8 +3,8 @@
 触发：用户要求整理明确 Inbox ID 或明确授权的 pending 集合。
 
 1. 按 `AGENTS.md` 固定 `<vault-root>`，读取 `content-pack.json`、`rules/content.md`、`rules/quality.md` 与 `rules/promote.md`。
-2. 用 `inbox list --status pending` 确认授权范围；对每个目标执行 `inbox show <id>`。只使用返回的规范 `payload_path` 读取原始 payload，不从标题、ID 或目录遍历猜路径。
-3. 同时核对 `item_hash`、`payload_hash`、初步 note 和原始 payload。无法读取或理解某种格式时停止并说明，不得仅根据摘要补齐原文事实。
+2. 用 `inbox list --status pending` 确认授权范围；对每个目标执行 `inbox show <id>`。阅读当前正文；有附件时按返回的规范 `payload_path` 读取附件，不从标题、ID 猜路径。
+3. 可按授权直接编辑或移动 Inbox 材料，不需要维护哈希；整理后重新 show，读取正文与附件并获取当前 `item_hash`、`payload_hash`。无法读取或理解某种格式时停止并说明，不得仅根据摘要补齐原文事实。
 4. 用 `query` 查找相同主题、可合并、冲突或可能被替代的 Knowledge；对采用的候选执行 `show`，以其 `content_hash` 和 `file_hash` 作为唯一更新 baseline。
 5. 决定保留、创建、更新、拆分或合并。为每个目标独立选择 category 和 type，读取策略映射的模板及字段声明，并给出简短理由。
 6. 新建草稿执行 `template create <type> --title <title> --output <draft> --set category=<category> --set description=<description> ...`。保留 JSON 返回的 `proposed_knowledge_id`，用作 create target 的 `knowledge_id` 和同一 Promotion 内其他草稿的稳定关系 ID。

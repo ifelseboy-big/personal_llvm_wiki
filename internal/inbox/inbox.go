@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"llm-wiki/internal/config"
 	"llm-wiki/internal/document"
@@ -21,7 +22,7 @@ import (
 )
 
 const (
-	ItemFile           = "item.md"
+	AttachmentsDir     = "attachments"
 	BatchSchemaVersion = 1
 )
 
@@ -65,27 +66,16 @@ type Added struct {
 }
 
 type prepared struct {
-	id        string
-	original  string
-	title     string
-	source    string
-	mediaType string
-	payload   []byte
-	body      []byte
-	meta      document.Metadata
-	relDir    string
-	itemBytes []byte
-	result    Added
+	files  map[string][]byte
+	result Added
 }
 
 type CleanOptions struct {
-	IDs                   []string
-	Processed             bool
-	Yes                   bool
-	DryRun                bool
-	ActiveInboxIDs        map[string]bool
-	ResolveActiveInboxIDs func() (map[string]bool, error)
-	Now                   time.Time
+	IDs       []string
+	Processed bool
+	Yes       bool
+	DryRun    bool
+	Now       time.Time
 }
 
 type CleanResult struct {
@@ -119,6 +109,7 @@ func Add(cfg *config.Instance, opts AddOptions) ([]Added, error) {
 		return nil, fmt.Errorf("%w: %w", ErrInputRejected, err)
 	}
 	preparedItems := make([]prepared, 0, len(items))
+	reserved := map[string]bool{}
 	seenInputs := map[string]bool{}
 	for _, item := range items {
 		key := item.Input
@@ -132,7 +123,7 @@ func Add(cfg *config.Instance, opts AddOptions) ([]Added, error) {
 			return nil, fmt.Errorf("duplicate batch input %q", item.Input)
 		}
 		seenInputs[key] = true
-		entry, err := prepare(cfg, opts, item)
+		entry, err := prepare(cfg, opts, item, reserved)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %w", ErrInputRejected, err)
 		}
@@ -167,13 +158,13 @@ func inputItems(cfg *config.Instance, opts AddOptions) ([]BatchItem, error) {
 		}
 		base := filepath.Dir(opts.BatchManifest)
 		for i := range manifest.Items {
-			if manifest.Items[i].Input == "" || manifest.Items[i].NoteFile == "" {
-				return nil, fmt.Errorf("batch item %d requires input and note_file", i)
+			if manifest.Items[i].Input == "" {
+				return nil, fmt.Errorf("batch item %d requires input", i)
 			}
 			if !filepath.IsAbs(manifest.Items[i].Input) {
 				manifest.Items[i].Input = filepath.Join(base, manifest.Items[i].Input)
 			}
-			if !filepath.IsAbs(manifest.Items[i].NoteFile) {
+			if manifest.Items[i].NoteFile != "" && !filepath.IsAbs(manifest.Items[i].NoteFile) {
 				manifest.Items[i].NoteFile = filepath.Join(base, manifest.Items[i].NoteFile)
 			}
 		}
@@ -194,7 +185,8 @@ func inputItems(cfg *config.Instance, opts AddOptions) ([]BatchItem, error) {
 	return []BatchItem{{Input: opts.Input, NoteFile: opts.NoteFile, Name: opts.Name, Title: opts.Title, Source: opts.Source}}, nil
 }
 
-func prepare(cfg *config.Instance, opts AddOptions, item BatchItem) (prepared, error) {
+func prepare(cfg *config.Instance, opts AddOptions, item BatchItem, reserved map[string]bool) (prepared, error) {
+	item.Title, item.Source = strings.TrimSpace(item.Title), strings.TrimSpace(item.Source)
 	var payload []byte
 	var original string
 	var err error
@@ -229,21 +221,28 @@ func prepare(cfg *config.Instance, opts AddOptions, item BatchItem) (prepared, e
 		mediaType = http.DetectContentType(payload)
 	}
 	body := []byte(nil)
-	if item.NoteFile != "" {
+	var noteMeta document.Metadata
+	inline := item.NoteFile == "" && utf8.Valid(payload) && !bytes.ContainsRune(payload, 0) &&
+		(strings.HasPrefix(mediaType, "text/") || strings.EqualFold(filepath.Ext(original), ".md"))
+	if inline {
+		body = document.NormalizeMarkdownBody(payload)
+	} else if item.NoteFile != "" {
 		body, err = readRegularLimited(item.NoteFile, document.MaxMarkdownBytes-document.MaxFrontmatterBytes, true)
 		if err != nil {
-			return prepared{}, fmt.Errorf("read preliminary note: %w", err)
+			return prepared{}, fmt.Errorf("read optional note: %w", err)
 		}
-		body = document.NormalizeMarkdownBody(body)
-		if bytes.HasPrefix(body, []byte("---\n")) || bytes.HasPrefix(body, []byte("---\r\n")) {
-			var noteMeta document.Metadata
-			noteMeta, body, err = document.Parse(body)
-			if err != nil {
-				return prepared{}, fmt.Errorf("parse preliminary note: %w", err)
-			}
-			if item.Title == "" {
-				item.Title = noteMeta.Title
-			}
+	}
+	body = document.NormalizeMarkdownBody(body)
+	if item.NoteFile != "" && bytes.HasPrefix(body, []byte("---\n")) {
+		noteMeta, body, err = document.Parse(body)
+		if err != nil {
+			return prepared{}, fmt.Errorf("parse input note: %w", err)
+		}
+		if noteMeta.ID != "" || noteMeta.SchemaVersion != 0 {
+			return prepared{}, errors.New("capture input must not contain managed identity or schema fields")
+		}
+		if item.Title == "" {
+			item.Title = noteMeta.Title
 		}
 	}
 	if item.Title == "" {
@@ -252,31 +251,88 @@ func prepare(cfg *config.Instance, opts AddOptions, item BatchItem) (prepared, e
 	if item.Title == "" {
 		item.Title = strings.TrimSuffix(original, filepath.Ext(original))
 	}
-	if len(body) == 0 {
-		body = []byte(fmt.Sprintf("# %s\n\nPending inbox item. The original input is preserved in `%s`.\n", item.Title, filepath.ToSlash(filepath.Join("payload", original))))
+	if strings.TrimSpace(item.Title) == "" {
+		item.Title = "untitled"
 	}
 	id, err := document.NewID("inbox", opts.Now)
 	if err != nil {
 		return prepared{}, err
 	}
-	relDir := filepath.Join(cfg.Paths.Inbox, opts.Now.Format("2006"), opts.Now.Format("01"), id)
+	itemRel, err := availablePath(cfg, cfg.Paths.Inbox, opts.Now.Format("2006-01-02")+"-"+readableName(item.Title)+".md", reserved)
+	if err != nil {
+		return prepared{}, err
+	}
 	meta := document.Metadata{
-		SchemaVersion: document.CurrentSchema,
-		ID:            id, Title: item.Title, Status: "pending", Source: item.Source,
-		CapturedAt: opts.Now.Format(time.RFC3339), ContentHash: document.HashBytes(body),
-		MediaType: mediaType, OriginalName: original,
-		Payload: filepath.ToSlash(filepath.Join("payload", original)), PayloadHash: document.HashBytes(payload), PayloadBytes: int64(len(payload)),
+		SchemaVersion: document.CurrentSchema, ID: id, Title: item.Title, Status: "pending", Source: item.Source,
+		CapturedAt: opts.Now.Format(time.RFC3339), MediaType: mediaType, OriginalName: original,
+		Tags: noteMeta.Tags, Aliases: noteMeta.Aliases, Extra: noteMeta.Extra,
+	}
+	files := map[string][]byte{}
+	payloadRel := itemRel
+	payloadHash := ""
+	if !inline {
+		payloadRel, err = availablePath(cfg, filepath.Join(cfg.Paths.Inbox, AttachmentsDir), readableName(original), reserved)
+		if err != nil {
+			return prepared{}, err
+		}
+		payloadLocal, _ := filepath.Rel(cfg.Paths.Inbox, payloadRel)
+		meta.Payload = filepath.ToSlash(payloadLocal)
+		files[payloadRel] = payload
+		payloadHash = document.HashBytes(payload)
+		if len(body) == 0 {
+			body = []byte(fmt.Sprintf("# %s\n\n[%s](<%s>)\n", item.Title, original, meta.Payload))
+		}
 	}
 	itemBytes, err := document.Render(meta, body)
 	if err != nil {
 		return prepared{}, err
 	}
-	result := Added{
-		ID: id, Status: "pending", ItemPath: filepath.ToSlash(filepath.Join(relDir, ItemFile)),
-		PayloadPath: filepath.ToSlash(filepath.Join(relDir, "payload", original)), ItemHash: document.HashBytes(itemBytes),
-		PayloadHash: meta.PayloadHash, MediaType: mediaType, Bytes: int64(len(payload)),
+	if len(itemBytes) > document.MaxMarkdownBytes {
+		return prepared{}, errors.New("inbox note exceeds Markdown size limit")
 	}
-	return prepared{id: id, original: original, title: item.Title, source: item.Source, mediaType: mediaType, payload: payload, body: body, meta: meta, relDir: relDir, itemBytes: itemBytes, result: result}, nil
+	files[itemRel] = itemBytes
+	if inline {
+		payloadHash = document.HashBytes(document.NormalizeMarkdownBody(body))
+	}
+	return prepared{files: files, result: Added{
+		ID: id, Status: "pending", ItemPath: filepath.ToSlash(itemRel), PayloadPath: filepath.ToSlash(payloadRel),
+		ItemHash: document.HashBytes(itemBytes), PayloadHash: payloadHash, MediaType: mediaType, Bytes: int64(len(payload)),
+	}}, nil
+}
+
+func readableName(name string) string {
+	name = document.SafeBaseName(strings.NewReplacer("/", "_", "\\", "_").Replace(name))
+	// Leave room for collision suffixes on filesystems with 255-byte components.
+	for len(name) > 180 {
+		_, size := utf8.DecodeLastRuneInString(name)
+		name = name[:len(name)-size]
+	}
+	return name
+}
+
+func availablePath(cfg *config.Instance, dir, name string, reserved map[string]bool) (string, error) {
+	ext := filepath.Ext(name)
+	stem := strings.TrimSuffix(name, ext)
+	for n := 1; ; n++ {
+		candidate := name
+		if n > 1 {
+			candidate = fmt.Sprintf("%s (%d)%s", stem, n, ext)
+		}
+		rel := filepath.Join(dir, candidate)
+		path := filepath.Join(cfg.Root, rel)
+		if err := fsutil.EnsureNoSymlinkPath(cfg.Root, path); err != nil {
+			return "", err
+		}
+		if reserved[rel] {
+			continue
+		}
+		if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+			reserved[rel] = true
+			return rel, nil
+		} else if err != nil {
+			return "", err
+		}
+	}
 }
 
 func commit(cfg *config.Instance, items []prepared, now time.Time) error {
@@ -285,52 +341,63 @@ func commit(cfg *config.Instance, items []prepared, now time.Time) error {
 		return err
 	}
 	txnRoot := filepath.Join(cfg.RuntimeDir(), "transactions", opID+"-inbox-add")
-	stageRoot := filepath.Join(txnRoot, "stage")
-	if err := fsutil.EnsureNoSymlinkPath(cfg.Root, stageRoot); err != nil {
+	if err := fsutil.EnsureNoSymlinkPath(cfg.Root, txnRoot); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(stageRoot, 0o700); err != nil {
+	if err := os.MkdirAll(txnRoot, 0o700); err != nil {
 		return err
 	}
 	defer os.RemoveAll(txnRoot)
+	files := map[string][]byte{}
+	var paths []string
 	for _, item := range items {
-		target := filepath.Join(cfg.Root, item.relDir)
-		if _, err := os.Lstat(target); err == nil {
-			return fmt.Errorf("inbox entry path already exists: %s", target)
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
+		for path, data := range item.files {
+			paths = append(paths, path)
+			files[path] = data
 		}
-		stage := filepath.Join(stageRoot, item.id)
-		if err := os.MkdirAll(filepath.Join(stage, "payload"), 0o700); err != nil {
-			return err
-		}
-		if err := document.AtomicWrite(filepath.Join(stage, "payload", item.original), item.payload, 0o600); err != nil {
-			return err
-		}
-		if err := document.AtomicWrite(filepath.Join(stage, ItemFile), item.itemBytes, 0o600); err != nil {
+	}
+	sort.Strings(paths)
+	for i, rel := range paths {
+		if err := document.AtomicWrite(filepath.Join(txnRoot, fmt.Sprint(i)), files[rel], 0o600); err != nil {
 			return err
 		}
 	}
-	committed := []string{}
-	for _, item := range items {
-		target := filepath.Join(cfg.Root, item.relDir)
-		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-			rollbackDirs(committed)
+	var committed, createdDirs []string
+	rollback := func() {
+		for i := len(committed) - 1; i >= 0; i-- {
+			_ = os.Remove(committed[i])
+		}
+		for i := len(createdDirs) - 1; i >= 0; i-- {
+			_ = os.Remove(createdDirs[i]) // Only remove an empty directory created by this capture.
+		}
+	}
+	for i, rel := range paths {
+		target := filepath.Join(cfg.Root, rel)
+		if err := fsutil.EnsureNoSymlinkPath(cfg.Root, target); err != nil {
+			rollback()
 			return err
 		}
-		if err := os.Rename(filepath.Join(stageRoot, item.id), target); err != nil {
-			rollbackDirs(committed)
+		dir := filepath.Dir(target)
+		if _, err := os.Lstat(dir); errors.Is(err, os.ErrNotExist) {
+			if err := os.Mkdir(dir, 0o700); err != nil {
+				rollback()
+				return err
+			}
+			createdDirs = append(createdDirs, dir)
+		}
+		stage := filepath.Join(txnRoot, fmt.Sprint(i))
+		// Link then unlink installs a complete file without overwriting a concurrently created target.
+		if err := os.Link(stage, target); err != nil {
+			rollback()
 			return err
 		}
 		committed = append(committed, target)
+		if err := os.Remove(stage); err != nil {
+			rollback()
+			return err
+		}
 	}
 	return nil
-}
-
-func rollbackDirs(paths []string) {
-	for i := len(paths) - 1; i >= 0; i-- {
-		_ = os.RemoveAll(paths[i])
-	}
 }
 
 func addedResults(items []prepared) []Added {
@@ -341,38 +408,55 @@ func addedResults(items []prepared) []Added {
 	return out
 }
 
+// List reads registered notes at any path inside Inbox. Unregistered material is
+// allowed in the workspace; it acquires an identity through inbox add before publication.
 func List(cfg *config.Instance, status string) ([]*document.Document, []error) {
 	if status != "" && status != "pending" && status != "processed" {
 		return nil, []error{fmt.Errorf("invalid inbox status %q", status)}
 	}
+	if err := vault.EnsureSafeManagedPaths(cfg); err != nil {
+		return nil, []error{err}
+	}
 	var docs []*document.Document
 	var problems []error
+	seen := map[string]string{}
 	err := filepath.WalkDir(cfg.InboxDir(), func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			problems = append(problems, walkErr)
+			if !errors.Is(walkErr, os.ErrNotExist) {
+				problems = append(problems, walkErr)
+			}
 			return nil
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
 			problems = append(problems, fmt.Errorf("symbolic link is not allowed: %s", path))
-			if entry.IsDir() {
+			return nil
+		}
+		if entry.IsDir() {
+			// Both shared attachments and existing per-item payload directories
+			// contain raw input, which may itself have Markdown frontmatter.
+			if path == filepath.Join(cfg.InboxDir(), AttachmentsDir) || entry.Name() == "payload" {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if entry.IsDir() || entry.Name() != ItemFile {
+		if !strings.EqualFold(filepath.Ext(entry.Name()), ".md") {
 			return nil
 		}
 		doc, err := document.Read(path)
+		if errors.Is(err, document.ErrFrontmatterRequired) {
+			return nil
+		}
+		if err == nil && doc.Metadata.ID == "" && doc.Metadata.SchemaVersion == 0 {
+			return nil
+		}
 		if err == nil {
 			err = doc.Validate("inbox", false)
 		}
 		if err == nil {
-			captured, _ := time.Parse(time.RFC3339, doc.Metadata.CapturedAt)
-			rel, relErr := filepath.Rel(cfg.InboxDir(), path)
-			expected := filepath.ToSlash(filepath.Join(captured.Format("2006"), captured.Format("01"), doc.Metadata.ID, ItemFile))
-			if relErr != nil || filepath.ToSlash(rel) != expected {
-				err = fmt.Errorf("inbox item path is not canonical: expected %s", expected)
+			if prior, exists := seen[doc.Metadata.ID]; exists {
+				err = fmt.Errorf("duplicate inbox id %s: %s and %s", doc.Metadata.ID, prior, path)
 			}
+			seen[doc.Metadata.ID] = path
 		}
 		if err != nil {
 			problems = append(problems, fmt.Errorf("%s: %w", path, err))
@@ -383,7 +467,7 @@ func List(cfg *config.Instance, status string) ([]*document.Document, []error) {
 		}
 		return nil
 	})
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err != nil {
 		problems = append(problems, err)
 	}
 	sort.Slice(docs, func(i, j int) bool { return docs[i].Path < docs[j].Path })
@@ -391,37 +475,71 @@ func List(cfg *config.Instance, status string) ([]*document.Document, []error) {
 	return docs, problems
 }
 
+// PayloadPath resolves an optional attachment relative to its note, for both
+// existing item/payload bundles and new date-named notes. No guessed paths.
+func PayloadPath(cfg *config.Instance, doc *document.Document) (string, error) {
+	path := doc.Path
+	if doc.Metadata.Payload != "" {
+		rel := doc.Metadata.Payload
+		if filepath.IsAbs(rel) || strings.Contains(rel, "\\") {
+			return "", errors.New("inbox attachment must be a note-relative path inside Inbox")
+		}
+		for _, part := range strings.Split(rel, "/") {
+			if part == ".." || part == "." || part == "" {
+				return "", errors.New("inbox attachment path contains an invalid component")
+			}
+		}
+		path = filepath.Join(filepath.Dir(doc.Path), filepath.FromSlash(rel))
+		if path == doc.Path {
+			return "", errors.New("omit payload for a self-contained inbox note")
+		}
+	}
+	if err := fsutil.EnsureNoSymlinkPath(cfg.Root, path); err != nil {
+		return "", err
+	}
+	if err := vault.EnsureInside(cfg.InboxDir(), path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// Snapshot computes current hashes without persisting or comparing capture-time
+// hashes. Only Promotion keeps these values as a baseline that must not drift.
+func Snapshot(cfg *config.Instance, doc *document.Document) error {
+	path, err := PayloadPath(cfg, doc)
+	if err != nil {
+		return err
+	}
+	doc.PayloadPath = path
+	if doc.Metadata.Payload == "" {
+		doc.PayloadHash = document.HashBytes(document.NormalizeMarkdownBody(doc.Body))
+		return nil
+	}
+	data, err := readRegularLimited(path, cfg.Security.MaxInputBytes, true)
+	if err != nil {
+		return err
+	}
+	doc.PayloadHash = document.HashBytes(data)
+	return nil
+}
+
 func Show(cfg *config.Instance, id string) (*document.Document, error) {
 	if !document.ValidID("inbox", id) {
 		return nil, errors.New("invalid inbox id")
 	}
 	docs, problems := List(cfg, "")
-	for _, doc := range docs {
-		if doc.Metadata.ID == id {
-			return doc, nil
-		}
-	}
 	if len(problems) > 0 {
 		return nil, problems[0]
 	}
-	return nil, os.ErrNotExist
-}
-
-func ProcessedPayloadWarnings(cfg *config.Instance) []string {
-	docs, _ := List(cfg, "processed")
-	warnings := []string{}
 	for _, doc := range docs {
-		actual, err := doc.ActualPayloadHash()
-		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("processed inbox %s payload cannot be verified: %v", doc.Metadata.ID, err))
-			continue
-		}
-		if actual != doc.Metadata.PayloadHash {
-			warnings = append(warnings, fmt.Sprintf("processed inbox %s payload hash changed", doc.Metadata.ID))
+		if doc.Metadata.ID == id {
+			if err := Snapshot(cfg, doc); err != nil {
+				return nil, err
+			}
+			return doc, nil
 		}
 	}
-	sort.Strings(warnings)
-	return warnings
+	return nil, os.ErrNotExist
 }
 
 func Clean(cfg *config.Instance, opts CleanOptions) (*CleanResult, error) {
@@ -449,13 +567,6 @@ func Clean(cfg *config.Instance, opts CleanOptions) (*CleanResult, error) {
 		}
 		defer lock.Close()
 	}
-	active := opts.ActiveInboxIDs
-	if opts.ResolveActiveInboxIDs != nil {
-		active, err = opts.ResolveActiveInboxIDs()
-		if err != nil {
-			return nil, err
-		}
-	}
 	docs, problems := List(cfg, "")
 	if len(problems) > 0 {
 		return nil, problems[0]
@@ -475,7 +586,7 @@ func Clean(cfg *config.Instance, opts CleanOptions) (*CleanResult, error) {
 	sort.Strings(ids)
 	ids = unique(ids)
 	paths := []string{}
-	dirs := []string{}
+	files := []string{}
 	for _, id := range ids {
 		if !document.ValidID("inbox", id) {
 			return nil, fmt.Errorf("invalid inbox id %q", id)
@@ -484,35 +595,22 @@ func Clean(cfg *config.Instance, opts CleanOptions) (*CleanResult, error) {
 		if doc == nil {
 			return nil, fmt.Errorf("inbox %s: %w", id, os.ErrNotExist)
 		}
-		if doc.Metadata.Status != "processed" {
-			return nil, fmt.Errorf("inbox %s is %s, expected processed", id, doc.Metadata.Status)
-		}
-		if err := doc.Validate("inbox", true); err != nil {
-			return nil, fmt.Errorf("inbox %s failed cleanup integrity validation: %w", id, err)
-		}
-		if active[id] {
-			return nil, fmt.Errorf("inbox %s is referenced by an active promotion", id)
-		}
-		dir := filepath.Dir(doc.Path)
-		if filepath.Base(dir) != id {
-			return nil, fmt.Errorf("inbox %s path is not canonical", id)
-		}
-		if err := vault.EnsureInside(cfg.InboxDir(), dir); err != nil {
+		if err := fsutil.EnsureNoSymlinkPath(cfg.Root, doc.Path); err != nil {
 			return nil, err
 		}
-		if err := fsutil.EnsureNoSymlinkPath(cfg.Root, dir); err != nil {
+		if err := vault.EnsureInside(cfg.InboxDir(), doc.Path); err != nil {
 			return nil, err
 		}
-		entryPaths, err := validatedEntryPaths(dir)
-		if err != nil {
+		if err := fsutil.EnsureSingleLink(doc.Path); err != nil {
 			return nil, err
 		}
-		for _, path := range entryPaths {
-			rel, _ := filepath.Rel(cfg.Root, path)
-			paths = append(paths, filepath.ToSlash(rel))
-		}
-		dirs = append(dirs, dir)
+		// Attachments may be shared or manually edited. Cleaning a note never
+		// recursively removes its directory or follows its attachment references.
+		rel, _ := filepath.Rel(cfg.Root, doc.Path)
+		paths = append(paths, filepath.ToSlash(rel))
+		files = append(files, doc.Path)
 	}
+
 	sort.Strings(paths)
 	result := &CleanResult{IDs: ids, Paths: paths, DryRun: opts.DryRun}
 	if opts.DryRun || len(ids) == 0 {
@@ -527,11 +625,11 @@ func Clean(cfg *config.Instance, opts CleanOptions) (*CleanResult, error) {
 		return nil, err
 	}
 	moved := []string{}
-	for i, dir := range dirs {
+	for i, file := range files {
 		target := filepath.Join(trash, ids[i])
-		if err := os.Rename(dir, target); err != nil {
+		if err := os.Rename(file, target); err != nil {
 			for j := len(moved) - 1; j >= 0; j-- {
-				_ = os.Rename(filepath.Join(trash, moved[j]), dirs[j])
+				_ = os.Rename(filepath.Join(trash, moved[j]), files[j])
 			}
 			return nil, err
 		}
@@ -542,35 +640,6 @@ func Clean(cfg *config.Instance, opts CleanOptions) (*CleanResult, error) {
 	}
 	result.Deleted = len(ids)
 	return result, nil
-}
-
-func validatedEntryPaths(dir string) ([]string, error) {
-	var paths []string
-	err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("symbolic link is not allowed: %s", path)
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("inbox entry contains a non-regular file: %s", path)
-		}
-		if err := fsutil.EnsureSingleLink(path); err != nil {
-			return err
-		}
-		paths = append(paths, path)
-		return nil
-	})
-	sort.Strings(paths)
-	return paths, err
 }
 
 func readRegularLimited(path string, limit int64, rejectHardlink bool) ([]byte, error) {
@@ -589,7 +658,12 @@ func readRegularLimited(path string, limit int64, rejectHardlink bool) ([]byte, 
 	if info.Size() > limit {
 		return nil, fmt.Errorf("input exceeds %d byte limit: %s", limit, path)
 	}
-	return os.ReadFile(path)
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return readLimited(f, limit)
 }
 
 func readLimited(reader io.Reader, limit int64) ([]byte, error) {

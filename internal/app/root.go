@@ -351,7 +351,6 @@ func newStatusCommand(rt *Runtime) *cobra.Command {
 			for _, problem := range inboxProblems {
 				problems = append(problems, problem.Error())
 			}
-			problems = append(problems, inbox.ProcessedPayloadWarnings(cfg)...)
 			knowledgeDocs, knowledgeProblems := document.ScanMarkdown(cfg.KnowledgeDir())
 			counts["knowledge"] = len(knowledgeDocs)
 			for _, doc := range knowledgeDocs {
@@ -408,7 +407,6 @@ func newDoctorCommand(rt *Runtime) *cobra.Command {
 				checks = append(checks, check{Name: "content-pack", OK: true, Message: policy.Name + "@" + policy.Version + " policy is valid"})
 			}
 			attention := []string{}
-			attention = append(attention, inbox.ProcessedPayloadWarnings(cfg)...)
 			inboxDocs, inboxProblems := inbox.List(cfg, "")
 			inboxIDs := map[string]bool{}
 			for _, doc := range inboxDocs {

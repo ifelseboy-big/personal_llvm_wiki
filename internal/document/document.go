@@ -24,6 +24,8 @@ import (
 
 const CurrentSchema = 1
 
+var ErrFrontmatterRequired = errors.New("markdown frontmatter is required")
+
 const MaxFrontmatterBytes = 256 * 1024
 
 const MaxMarkdownBytes = 64 * 1024 * 1024
@@ -74,9 +76,12 @@ type Metadata struct {
 }
 
 type Document struct {
-	Path     string   `json:"path"`
-	Metadata Metadata `json:"metadata"`
-	Body     []byte   `json:"-"`
+	Path        string   `json:"path"`
+	Metadata    Metadata `json:"metadata"`
+	Body        []byte   `json:"-"`
+	FileHash    string   `json:"-"`
+	PayloadPath string   `json:"-"`
+	PayloadHash string   `json:"-"`
 }
 
 func NewID(prefix string, now time.Time) (string, error) {
@@ -115,7 +120,7 @@ func NormalizeMarkdownBody(body []byte) []byte {
 func Parse(data []byte) (Metadata, []byte, error) {
 	data = bytes.TrimPrefix(data, []byte{0xef, 0xbb, 0xbf})
 	if !bytes.HasPrefix(data, []byte("---\n")) && !bytes.HasPrefix(data, []byte("---\r\n")) {
-		return Metadata{}, NormalizeMarkdownBody(data), errors.New("markdown frontmatter is required")
+		return Metadata{}, NormalizeMarkdownBody(data), ErrFrontmatterRequired
 	}
 	normalized := NormalizeMarkdownBody(data)
 	rest := normalized[4:]
@@ -159,11 +164,13 @@ func Read(path string) (*Document, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	return &Document{Path: path, Metadata: meta, Body: body}, nil
+	return &Document{Path: path, Metadata: meta, Body: body, FileHash: HashBytes(b)}, nil
 }
 
 func Render(meta Metadata, body []byte) ([]byte, error) {
-	meta.SchemaVersion = CurrentSchema
+	if !ValidID("inbox", meta.ID) {
+		meta.SchemaVersion = CurrentSchema
+	}
 	body = NormalizeMarkdownBody(body)
 	b, err := yaml.Marshal(meta)
 	if err != nil {
@@ -193,80 +200,23 @@ func (d *Document) ActualContentHash() (string, error) {
 	return HashBytes(NormalizeMarkdownBody(d.Body)), nil
 }
 
-func (d *Document) ActualPayloadHash() (string, error) {
-	if d.Metadata.Payload == "" {
-		return "", errors.New("inbox payload path is required")
-	}
-	payloadPath := filepath.Join(filepath.Dir(d.Path), filepath.Clean(d.Metadata.Payload))
-	payloadRoot := filepath.Join(filepath.Dir(d.Path), "payload")
-	if err := fsutil.EnsureNoSymlinkPath(payloadRoot, payloadPath); err != nil {
-		return "", errors.New("payload path must stay inside the inbox payload directory")
-	}
-	rel, err := filepath.Rel(payloadRoot, payloadPath)
-	if err != nil || rel == "." || filepath.Dir(rel) != "." {
-		return "", errors.New("payload path must name one file directly inside the inbox payload directory")
-	}
-	info, err := os.Lstat(payloadPath)
-	if err != nil {
-		return "", err
-	}
-	if !info.Mode().IsRegular() {
-		return "", errors.New("inbox payload is not a regular file")
-	}
-	if info.Size() != d.Metadata.PayloadBytes {
-		return "", fmt.Errorf("payload byte count mismatch: recorded %d actual %d", d.Metadata.PayloadBytes, info.Size())
-	}
-	if err := fsutil.EnsureSingleLink(payloadPath); err != nil {
-		return "", err
-	}
-	f, err := os.Open(payloadPath)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
-}
-
 func (d *Document) Validate(layer string, strict bool) error {
-	if d.Metadata.SchemaVersion != CurrentSchema {
+	if layer != "inbox" && d.Metadata.SchemaVersion != CurrentSchema {
 		return fmt.Errorf("unsupported frontmatter schema_version %d", d.Metadata.SchemaVersion)
-	}
-	if d.Metadata.ID == "" || !ValidHash(d.Metadata.ContentHash) {
-		return errors.New("id and content_hash are required")
 	}
 	prefix := map[string]string{"inbox": "inbox", "knowledge": "know"}[layer]
 	if prefix == "" || !ValidID(prefix, d.Metadata.ID) {
 		return fmt.Errorf("id %q does not match layer %s", d.Metadata.ID, layer)
 	}
-	actual, err := d.ActualContentHash()
-	if err != nil {
-		return err
-	}
-	if actual != d.Metadata.ContentHash {
-		return fmt.Errorf("content hash mismatch: recorded %s actual %s", d.Metadata.ContentHash, actual)
-	}
 	switch layer {
 	case "inbox":
 		if (d.Metadata.Status != "pending" && d.Metadata.Status != "processed") || strings.TrimSpace(d.Metadata.Title) == "" ||
 			strings.TrimSpace(d.Metadata.Source) == "" || strings.TrimSpace(d.Metadata.MediaType) == "" ||
-			strings.TrimSpace(d.Metadata.OriginalName) == "" || !ValidHash(d.Metadata.PayloadHash) || d.Metadata.PayloadBytes < 0 {
-			return errors.New("inbox status, title, source, media_type, original_name, payload hash, and byte count are required")
+			strings.TrimSpace(d.Metadata.OriginalName) == "" {
+			return errors.New("inbox status, title, source, media_type, and original_name are required")
 		}
 		if _, err := time.Parse(time.RFC3339, d.Metadata.CapturedAt); err != nil {
 			return errors.New("inbox captured_at must be RFC3339")
-		}
-		if d.Metadata.Status == "pending" || strict {
-			payloadHash, err := d.ActualPayloadHash()
-			if err != nil {
-				return err
-			}
-			if payloadHash != d.Metadata.PayloadHash {
-				return fmt.Errorf("payload hash mismatch: recorded %s actual %s", d.Metadata.PayloadHash, payloadHash)
-			}
 		}
 		if d.Metadata.Status == "pending" {
 			if d.Metadata.ProcessedAt != "" || len(d.Metadata.KnowledgeIDs) != 0 {
@@ -288,6 +238,13 @@ func (d *Document) Validate(layer string, strict bool) error {
 			seenKnowledge[id] = true
 		}
 	case "knowledge":
+		actual, err := d.ActualContentHash()
+		if err != nil {
+			return err
+		}
+		if !ValidHash(d.Metadata.ContentHash) || actual != d.Metadata.ContentHash {
+			return errors.New("knowledge content hash mismatch")
+		}
 		if d.Metadata.Status != "published" || !documentTypePattern.MatchString(d.Metadata.Type) || strings.TrimSpace(d.Metadata.Title) == "" {
 			return errors.New("published status, type, and title are required")
 		}

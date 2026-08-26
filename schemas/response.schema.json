@@ -4,6 +4,43 @@
   "title": "llm-wiki CLI response",
   "type": "object",
   "$defs": {
+    "inboxShowData": {
+      "type": "object",
+      "required": [
+        "path",
+        "payload_path",
+        "item_hash",
+        "payload_hash",
+        "metadata",
+        "body"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "payload_path": {
+          "type": "string",
+          "description": "Current note path when self-contained; otherwise current attachment path."
+        },
+        "item_hash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "Full bytes from the same note read that produced body and metadata."
+        },
+        "payload_hash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "Current normalized note body or attachment bytes. Not a capture-time invariant."
+        },
+        "metadata": {
+          "$ref": "frontmatter.schema.json#/oneOf/0"
+        },
+        "body": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "updateData": {
       "type": "object",
       "required": ["action", "path", "previous_version", "current_version", "dry_run"],
@@ -63,6 +100,32 @@
       "then": {
         "required": ["data"],
         "properties": { "data": { "$ref": "#/$defs/updateData" } }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "command": {
+            "const": "inbox.show"
+          }
+        },
+        "required": [
+          "ok",
+          "command"
+        ]
+      },
+      "then": {
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/inboxShowData"
+          }
+        }
       }
     }
   ],

@@ -18,11 +18,11 @@ import (
 	"llm-wiki/internal/templates"
 )
 
-func TestFirstPartyContractsStartAtInitialVersion(t *testing.T) {
+func TestFirstPartyContractsMatchCurrentVersions(t *testing.T) {
 	if app.ProtocolVersion != 1 || config.CurrentSchema != 1 || document.CurrentSchema != 1 ||
 		governance.PolicySchemaVersion != 1 || inbox.BatchSchemaVersion != 1 || promote.SchemaVersion != 1 || indexstore.SchemaVersion != 1 ||
 		indexstore.QueryPlannerVersion != "1" {
-		t.Fatalf("first-party contract versions must start at one: response=%d instance=%d frontmatter=%d content_pack=%d inbox_batch=%d promotion=%d index=%d planner=%s",
+		t.Fatalf("first-party contract versions must match the current contract: response=%d instance=%d frontmatter=%d content_pack=%d inbox_batch=%d promotion=%d index=%d planner=%s",
 			app.ProtocolVersion, config.CurrentSchema, document.CurrentSchema, governance.PolicySchemaVersion,
 			inbox.BatchSchemaVersion, promote.SchemaVersion, indexstore.SchemaVersion, indexstore.QueryPlannerVersion)
 	}
@@ -31,8 +31,8 @@ func TestFirstPartyContractsStartAtInitialVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.SchemaVersion != 1 || manifest.Version != "1.0.0" {
-		t.Fatalf("personal manifest must start at its initial version: %#v", manifest)
+	if manifest.SchemaVersion != 1 || manifest.Version != "1.1.0" {
+		t.Fatalf("personal manifest must match the current version: %#v", manifest)
 	}
 	policyData, err := templates.ReadFile("personal", manifest.ContentPack)
 	if err != nil {
@@ -42,15 +42,15 @@ func TestFirstPartyContractsStartAtInitialVersion(t *testing.T) {
 	if err := json.Unmarshal(policyData, &policy); err != nil {
 		t.Fatal(err)
 	}
-	if policy.SchemaVersion != 1 || policy.Version != "1.0.0" || policy.GovernanceVersion != "personal-1.0.0" {
-		t.Fatalf("personal policy must start at its initial version: %#v", policy)
+	if policy.SchemaVersion != 1 || policy.Version != "1.1.0" || policy.GovernanceVersion != "personal-1.0.0" {
+		t.Fatalf("personal policy must match the current version: %#v", policy)
 	}
-	if skill.SkillVersion != "1.0.0" {
-		t.Fatalf("skill content must start at its initial version: %s", skill.SkillVersion)
+	if skill.SkillVersion != "1.1.0" {
+		t.Fatalf("skill content must match the current version: %s", skill.SkillVersion)
 	}
 }
 
-func TestSchemaAuthoritiesStartAtInitialVersion(t *testing.T) {
+func TestSchemaAuthoritiesMatchCurrentVersions(t *testing.T) {
 	root := repositoryRoot(t)
 	for _, name := range []string{"content-pack", "instance", "promotion", "response"} {
 		assertSchemaVersion(t, filepath.Join(root, "schemas", name+".schema.json"), false)
@@ -78,14 +78,22 @@ func assertSchemaVersion(t *testing.T, path string, nested bool) {
 			t.Fatalf("frontmatter schema has no variants: %s", path)
 		}
 		for index, variant := range variants {
-			assertJSONSchemaConstOne(t, variant, fmt.Sprintf("%s oneOf[%d]", path, index))
+			if index == 0 {
+				properties := variant.(map[string]any)["properties"].(map[string]any)
+				version := properties["schema_version"].(map[string]any)
+				if _, restricted := version["const"]; restricted {
+					t.Fatal("Inbox schema must not reject existing material by version")
+				}
+				continue
+			}
+			assertJSONSchemaVersion(t, variant, fmt.Sprintf("%s oneOf[%d]", path, index), document.CurrentSchema)
 		}
 		return
 	}
-	assertJSONSchemaConstOne(t, schema, path)
+	assertJSONSchemaVersion(t, schema, path, 1)
 }
 
-func assertJSONSchemaConstOne(t *testing.T, value any, label string) {
+func assertJSONSchemaVersion(t *testing.T, value any, label string, want int) {
 	t.Helper()
 	object, ok := value.(map[string]any)
 	if !ok {
@@ -96,7 +104,7 @@ func assertJSONSchemaConstOne(t *testing.T, value any, label string) {
 		t.Fatalf("schema properties are missing: %s", label)
 	}
 	version, ok := properties["schema_version"].(map[string]any)
-	if !ok || version["const"] != float64(1) {
-		t.Fatalf("schema_version must start at one: %s: %#v", label, version)
+	if !ok || version["const"] != float64(want) {
+		t.Fatalf("schema_version must match the current contract: %s: %#v", label, version)
 	}
 }

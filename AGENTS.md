@@ -8,7 +8,7 @@
 
 - 用户请求定义本次任务范围。目标、范围或破坏性影响不明确时，先确认再修改。
 - 只修改完成目标所需的文件，保留无关工作区改动。未经明确要求，禁止提交、推送或改写 Git 历史。
-- 仓库只实现权威文档定义的当前契约。instance、frontmatter、content pack policy、内容包 identity 或 governance 版本不匹配时必须拒绝，禁止新增旧版本读取、字段猜测或迁移分支。
+- 仓库只实现权威文档定义的当前契约。instance、Knowledge frontmatter、content pack policy、内容包 identity 或 governance 版本不匹配时必须拒绝，禁止新增旧版本读取、字段猜测或迁移分支。Inbox 是临时材料，不以版本字段、采集哈希或目录命名作为读取与发布门槛。
 - 发现实现、Schema、模板或文档冲突时必须同步修正；禁止任选一侧作为临时正确答案。
 
 ## 2. 权威来源
@@ -59,9 +59,9 @@
 
 ## 5. 事实与写入权限
 
-| 数据层 | 性质 | 唯一合法写入路径 |
+| 数据层 | 性质 | 写入边界 |
 | --- | --- | --- |
-| `inbox/` | 临时输入与初步整理 | `internal/inbox` 的受控写入与清理 |
+| `inbox/` | 可编辑的临时输入与整理工作区 | 用户或获授权 Agent 可直接整理；CLI 采集与清理由 `internal/inbox` 执行 |
 | `knowledge/` | 唯一最终事实源 | `promote apply` |
 | `.llm-wiki/index.sqlite` | 可重建候选索引 | `internal/index` |
 | 内容包受管文件 | 声明式治理、模板与 Workflow | `internal/templates` 的安装或升级 |
@@ -71,9 +71,10 @@
 1. Knowledge 的 lineage 绑定 Inbox ID 与发布时 payload 哈希；Inbox 清理后 Knowledge 必须独立健康。
 2. SQLite 不得保存无法从受管文件恢复的唯一数据；删除后必须可重建。
 3. `query/show` 返回事实前必须回读 knowledge Markdown，并校验 ID、规范路径、完整文件哈希和正文哈希；`query` 还必须校验 chunk 哈希与行边界。
-4. 关系只依赖稳定 ID。重复 ID、路径漂移、关系目标不一致或索引快照不一致必须失败，禁止猜测或自动修复。
-5. 实例写操作必须在首次持久化前完成全部预检并持有独占写锁。多文件事实写入必须使用可恢复事务。
-6. 内容包安装或升级禁止写入 `inbox/` 或 `knowledge/`；Agent 永远禁止直接写 `knowledge/`。
+4. 关系只依赖稳定 ID。重复 ID、Knowledge 路径漂移、关系目标不一致或索引快照不一致必须失败，禁止猜测或自动修复。
+5. CLI 实例写操作必须在首次持久化前完成全部预检并持有独占写锁。多文件事实写入必须使用可恢复事务。
+6. Inbox 不以采集时哈希或固定目录布局约束后续整理；严格内容基线从 Promotion 开始，Knowledge 保护不变。
+7. 内容包安装或升级禁止写入 `inbox/` 或 `knowledge/`；Agent 永远禁止直接写 `knowledge/`。
 
 ## 6. 实现约束
 
@@ -128,7 +129,7 @@ git diff --check
 
 | 风险范围 | 追加验收 |
 | --- | --- |
-| 路径、写入、inbox、promote、事务 | 安全拒绝、零写入、锁冲突、恢复测试；`make test-race` |
+| 路径、写入、inbox、promote、事务 | 安全拒绝、零写入、锁冲突、恢复、Inbox 编辑/移动与发布快照漂移测试；`make test-race` |
 | index、query、tokenizer | 严格/宽松召回、稳定排序、索引漂移、删除重建；`make build` |
 | content pack、governance、Schema | `make schema-check`、真实策略与模板解析、双目录一致、init/upgrade/e2e |
 | 构建、自升级或安装配置 | 公开下载与失败保留测试、`make installer-check`、`go mod verify`、race、`make build`、`make install` 与版本 smoke |
