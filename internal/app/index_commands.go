@@ -243,7 +243,7 @@ func loadIndexedKnowledge(cfg *config.Instance, candidate indexstore.Candidate) 
 	if err != nil {
 		return nil, fmt.Errorf("%w: cannot read %s: %v", errQueryIndexStale, cleanPath, err)
 	}
-	if err := doc.Validate("knowledge", true); err != nil {
+	if err := doc.ValidateStoredAttachments(); err != nil {
 		return nil, fmt.Errorf("%w: %s is invalid: %v", errQueryIndexStale, cleanPath, err)
 	}
 	if cleanPath != document.KnowledgePath(cfg.Paths.Knowledge, doc.Metadata) {
@@ -314,8 +314,8 @@ func newShowCommand(rt *Runtime) *cobra.Command {
 			if err != nil {
 				return E("KNOWLEDGE_READ_FAILED", "cannot read published knowledge", ExitIO, err)
 			}
-			if err := doc.Validate("knowledge", true); err != nil {
-				return E("KNOWLEDGE_INVALID", "published knowledge failed file validation", ExitValidation, err)
+			if err := doc.ValidateStoredAttachments(); err != nil {
+				return E("KNOWLEDGE_INVALID", "published knowledge failed validation", ExitValidation, err)
 			}
 			rel, _ := filepath.Rel(cfg.Root, doc.Path)
 			if filepath.ToSlash(rel) != document.KnowledgePath(cfg.Paths.Knowledge, doc.Metadata) {

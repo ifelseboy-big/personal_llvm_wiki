@@ -52,6 +52,9 @@ func newPromotePlanCommand(rt *Runtime) *cobra.Command {
 				files = append(files, base+"/plan.json", base+"/state.json", base+"/diff.patch")
 				for _, target := range result.Plan.Targets {
 					files = append(files, base+"/"+target.FrozenFile)
+					for _, attachment := range target.Attachments {
+						files = append(files, base+"/"+attachment.FrozenFile)
+					}
 				}
 			}
 			return rt.Success("promote.plan", ref, map[string]any{
@@ -127,6 +130,7 @@ func newPromoteApplyCommand(rt *Runtime) *cobra.Command {
 			commandResult := &promoteApplyCommandResult{ApplyResult: result, TransactionState: transactionState}
 			for _, target := range result.Targets {
 				files = append(files, target.TargetPath)
+				files = append(files, target.Attachments...)
 			}
 			if !rt.DryRun {
 				files = append(files, result.InboxPaths...)

@@ -14,7 +14,7 @@ import (
 )
 
 func TestInstallUpdateAndUninstallOwnedFiles(t *testing.T) {
-	if manifestSchema != 1 || SkillVersion != "1.1.0" {
+	if manifestSchema != 1 || SkillVersion != "1.1.1" {
 		t.Fatalf("skill contracts must match current versions: schema=%d content=%s", manifestSchema, SkillVersion)
 	}
 	root := t.TempDir()

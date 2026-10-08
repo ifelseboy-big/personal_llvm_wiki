@@ -17,6 +17,18 @@
         "captured_at": { "type": "string", "format": "date-time" }
       },
       "additionalProperties": false
+    },
+    "attachment": {
+      "type": "object",
+      "required": ["inbox_id", "name", "path", "hash", "bytes"],
+      "properties": {
+        "inbox_id": { "$ref": "#/$defs/inboxId" },
+        "name": { "type": "string", "minLength": 1, "pattern": "^[^/\\\\]+$", "not": { "enum": [".", ".."] } },
+        "path": { "type": "string", "minLength": 1 },
+        "hash": { "$ref": "#/$defs/hash" },
+        "bytes": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
     }
   },
   "oneOf": [
@@ -35,7 +47,7 @@
         "content_hash": { "type": "string", "description": "Preserved capture metadata; not checked against the current body." },
         "media_type": { "type": "string", "minLength": 1 },
         "original_name": { "type": "string", "minLength": 1 },
-        "payload": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!.*\\/$).+$", "description": "Optional attachment path relative to the note directory, contained within Inbox. Omit for a self-contained note."},
+        "payload": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.(?:/|$))(?!.*//)(?!.*\\/$).+$", "description": "Optional attachment path relative to the note directory; parent segments are allowed only when the resolved path stays inside Inbox. Omit for a self-contained note."},
         "payload_hash": { "type": "string", "description": "Preserved capture metadata; not checked against the current attachment." },
         "payload_bytes": { "type": "integer", "description": "Preserved capture metadata; not checked against the current attachment size." },
         "processed_at": { "type": "string", "format": "date-time" },
@@ -64,6 +76,7 @@
         "title": { "type": "string", "minLength": 1 },
         "status": { "const": "published" },
         "lineage": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/lineage" } },
+        "attachments": { "type": "array", "items": { "$ref": "#/$defs/attachment" } },
         "published_at": { "type": "string", "format": "date-time" },
         "updated_at": { "type": "string", "format": "date-time" },
         "content_hash": { "$ref": "#/$defs/hash" },

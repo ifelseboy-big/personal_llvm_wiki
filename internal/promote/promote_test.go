@@ -18,7 +18,7 @@ import (
 
 func TestPromotionSupportsMultipleInputsAndOutputs(t *testing.T) {
 	cfg := initPromotionWiki(t)
-	first := addInbox(t, cfg, "first.txt", "first payload", 100)
+	first := addInbox(t, cfg, "first.pdf", "%PDF-1.0\nfirst payload", 100)
 	second := addInbox(t, cfg, "second.txt", "second payload", 101)
 	base := t.TempDir()
 	writeDraft(t, filepath.Join(base, "one.md"), "note", "First knowledge", "First self-contained fact.")
@@ -59,7 +59,7 @@ func TestPromotionSupportsMultipleInputsAndOutputs(t *testing.T) {
 	}
 	for _, id := range []string{firstKnowledge, secondKnowledge} {
 		doc, err := document.FindByID(cfg.KnowledgeDir(), id)
-		if err != nil || doc.Metadata.ID != id || len(doc.Metadata.Lineage) == 0 {
+		if err != nil || doc.Metadata.ID != id || len(doc.Metadata.Lineage) == 0 || len(doc.Metadata.Attachments) != 1 || doc.ValidateStoredAttachments() != nil {
 			t.Fatalf("knowledge %s missing: %#v %v", id, doc, err)
 		}
 	}
@@ -69,6 +69,96 @@ func TestPromotionSupportsMultipleInputsAndOutputs(t *testing.T) {
 	}
 	if err := CompleteOperation(cfg, applied.OperationID); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPromotionPublishesAttachmentIndependentlyOfInbox(t *testing.T) {
+	cfg := initPromotionWiki(t)
+	payload := []byte("%PDF-1.0\noriginal attachment\n")
+	items, err := inbox.Add(cfg, inbox.AddOptions{Input: "-", Name: "paper.pdf", Source: "test", Stdin: bytes.NewReader(payload), Now: time.Unix(100, 0).UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := items[0]
+	base := t.TempDir()
+	writeDraft(t, filepath.Join(base, "draft.md"), "note", "Attachment knowledge", "Facts from the paper.")
+	knowledgeID := "know_01arz3ndektsv4rrffq69g5faw"
+	manifest := Manifest{SchemaVersion: SchemaVersion,
+		Inboxes: []ManifestInbox{{ID: input.ID, PayloadHash: input.PayloadHash, ItemHash: input.ItemHash, Consume: true}},
+		Targets: []ManifestTarget{{Operation: "create", DraftFile: "draft.md", KnowledgeID: knowledgeID, InboxIDs: []string{input.ID}}},
+	}
+	planned, err := PlanPromotion(cfg, PlanOptions{ManifestPath: writeManifest(t, base, manifest), Now: time.Unix(200, 0).UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachments := planned.Plan.Targets[0].Attachments
+	if len(attachments) != 1 || attachments[0].Hash != document.HashBytes(payload) || !bytes.Contains([]byte(planned.Diff), []byte(attachments[0].Path)) {
+		t.Fatalf("attachment missing from frozen review: %#v", planned)
+	}
+	frozen, err := os.ReadFile(filepath.Join(promotionDir(cfg, planned.Plan.ID), filepath.FromSlash(attachments[0].FrozenFile)))
+	if err != nil || !bytes.Equal(frozen, payload) {
+		t.Fatalf("attachment bytes were not frozen: %v", err)
+	}
+	applied, err := Apply(cfg, planned.Plan.ID, planned.PlanHash, false, time.Unix(300, 0).UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(applied.Targets) != 1 || len(applied.Targets[0].Attachments) != 1 || applied.Targets[0].Attachments[0] != attachments[0].Path {
+		t.Fatalf("attachment missing from apply result: %#v", applied)
+	}
+	published := filepath.Join(cfg.Root, filepath.FromSlash(attachments[0].Path))
+	got, err := os.ReadFile(published)
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("published attachment differs from source: %v", err)
+	}
+	if err := CompleteOperation(cfg, applied.OperationID); err != nil {
+		t.Fatal(err)
+	}
+	current, err := document.FindByID(cfg.KnowledgeDir(), knowledgeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := addInbox(t, cfg, "revision.txt", "new facts", 400)
+	writeDraft(t, filepath.Join(base, "revised.md"), "note", "Attachment knowledge", "Revised facts from the paper.")
+	update := Manifest{SchemaVersion: SchemaVersion,
+		Inboxes: []ManifestInbox{{ID: second.ID, PayloadHash: second.PayloadHash, ItemHash: second.ItemHash, Consume: true}},
+		Targets: []ManifestTarget{{Operation: "update", DraftFile: "revised.md", KnowledgeID: knowledgeID, InboxIDs: []string{second.ID}, BaseContentHash: current.Metadata.ContentHash, BaseFileHash: current.FileHash}},
+	}
+	updatedPlan, err := PlanPromotion(cfg, PlanOptions{ManifestPath: writeManifest(t, base, update), Now: time.Unix(500, 0).UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updatedPlan.Plan.Targets[0].Attachments) != 0 {
+		t.Fatal("update tried to recopy an existing attachment")
+	}
+	if _, err := Apply(cfg, updatedPlan.Plan.ID, updatedPlan.PlanHash, false, time.Unix(600, 0).UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(cfg.InboxDir()); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := document.FindByID(cfg.KnowledgeDir(), knowledgeID)
+	if err != nil || len(doc.Metadata.Attachments) != 1 || doc.ValidateStoredAttachments() != nil {
+		t.Fatalf("knowledge depends on Inbox after publication: %#v %v", doc, err)
+	}
+	if err := os.WriteFile(published, []byte("changed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := doc.ValidateStoredAttachments(); err == nil {
+		t.Fatal("modified published attachment was accepted")
+	}
+	outside := filepath.Join(t.TempDir(), "same.pdf")
+	if err := os.WriteFile(outside, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(published); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, published); err != nil {
+		t.Fatal(err)
+	}
+	if err := doc.ValidateStoredAttachments(); err == nil {
+		t.Fatal("symlinked published attachment was accepted")
 	}
 }
 
@@ -458,7 +548,7 @@ func writeManifest(t *testing.T, base string, manifest Manifest) string {
 }
 
 func TestInboxChangesOnlyInvalidateFrozenPublication(t *testing.T) {
-	for _, change := range []string{"attachment", "delete"} {
+	for _, change := range []string{"attachment", "delete", "frozen"} {
 		t.Run(change, func(t *testing.T) {
 			cfg := initPromotionWiki(t)
 			items, err := inbox.Add(cfg, inbox.AddOptions{Input: "-", Name: "input.pdf", Stdin: bytes.NewReader([]byte("%PDF-1.0\noriginal")), Now: time.Unix(100, 0).UTC()})
@@ -480,9 +570,14 @@ func TestInboxChangesOnlyInvalidateFrozenPublication(t *testing.T) {
 				if _, err := inbox.Show(cfg, input.ID); err != nil {
 					t.Fatalf("normal Inbox edit rejected: %v", err)
 				}
-			} else {
+			} else if change == "delete" {
 				if _, err := inbox.Clean(cfg, inbox.CleanOptions{IDs: []string{input.ID}, Yes: true, Now: time.Unix(250, 0).UTC()}); err != nil {
 					t.Fatalf("explicit deletion of planned input failed: %v", err)
+				}
+			} else {
+				frozen := filepath.Join(promotionDir(cfg, planned.Plan.ID), filepath.FromSlash(planned.Plan.Targets[0].Attachments[0].FrozenFile))
+				if err := os.WriteFile(frozen, []byte("changed frozen attachment"), 0o600); err != nil {
+					t.Fatal(err)
 				}
 			}
 			if _, err := Apply(cfg, planned.Plan.ID, planned.PlanHash, false, time.Unix(300, 0).UTC()); !errors.Is(err, ErrApplyConflict) {

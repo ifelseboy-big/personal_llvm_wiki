@@ -20,11 +20,11 @@ func newInboxCommand(rt *Runtime) *cobra.Command {
 }
 
 func newInboxAddCommand(rt *Runtime) *cobra.Command {
-	var name, title, source, noteFile, batchManifest string
+	var name, title, summary, source, noteFile, batchManifest string
 	var allowSensitive bool
 	cmd := &cobra.Command{
 		Use: "add [file|-]", Args: cobra.MaximumNArgs(1),
-		Short: "Capture editable material with a date and readable title",
+		Short: "Capture editable material in a dated topic directory",
 		RunE: func(_ *cobra.Command, args []string) error {
 			cfg, ref, err := resolveWiki(rt)
 			if err != nil {
@@ -42,7 +42,7 @@ func newInboxAddCommand(rt *Runtime) *cobra.Command {
 				input = args[0]
 			}
 			added, err := inbox.Add(cfg, inbox.AddOptions{
-				Input: input, Name: name, Title: title, Source: source, NoteFile: noteFile,
+				Input: input, Name: name, Title: title, Summary: summary, Source: source, NoteFile: noteFile,
 				BatchManifest: batchManifest, AllowSensitive: allowSensitive, DryRun: rt.DryRun, Stdin: rt.Stdin,
 			})
 			if err != nil {
@@ -59,9 +59,14 @@ func newInboxAddCommand(rt *Runtime) *cobra.Command {
 				warnings = append(warnings, "sensitive-file protection was explicitly overridden")
 			}
 			files := []string{}
+			indexes := map[string]bool{}
 			var total int64
 			for _, item := range added {
 				files = append(files, item.ItemPath)
+				if !indexes[item.IndexPath] {
+					files = append(files, item.IndexPath)
+					indexes[item.IndexPath] = true
+				}
 				if item.PayloadPath != item.ItemPath {
 					files = append(files, item.PayloadPath)
 				}
@@ -71,7 +76,8 @@ func newInboxAddCommand(rt *Runtime) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&name, "name", "", "required understandable name for stdin input")
-	cmd.Flags().StringVar(&title, "title", "", "preliminary functional title used after the YYYY-MM-DD filename prefix")
+	cmd.Flags().StringVar(&title, "title", "", "preliminary topic title used after the YYYY-MM-DD directory prefix")
+	cmd.Flags().StringVar(&summary, "summary", "", "brief description for this inbox item in the topic index")
 	cmd.Flags().StringVar(&source, "source", "", "input source description")
 	cmd.Flags().StringVar(&noteFile, "note-file", "", "optional preliminary Markdown; capture does not require summarization")
 	cmd.Flags().StringVar(&batchManifest, "batch-manifest", "", "JSON manifest of multiple inputs with optional notes")

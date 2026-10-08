@@ -73,15 +73,25 @@ type PlanInbox struct {
 }
 
 type Target struct {
-	Operation       string   `json:"operation"`
-	KnowledgeID     string   `json:"knowledge_id"`
-	TargetPath      string   `json:"target_path"`
-	FrozenFile      string   `json:"frozen_file"`
-	InboxIDs        []string `json:"inbox_ids"`
-	BaseContentHash string   `json:"base_content_hash,omitempty"`
-	BaseFileHash    string   `json:"base_file_hash,omitempty"`
-	NewContentHash  string   `json:"new_content_hash"`
-	FileHash        string   `json:"file_hash"`
+	Operation       string             `json:"operation"`
+	KnowledgeID     string             `json:"knowledge_id"`
+	TargetPath      string             `json:"target_path"`
+	FrozenFile      string             `json:"frozen_file"`
+	InboxIDs        []string           `json:"inbox_ids"`
+	BaseContentHash string             `json:"base_content_hash,omitempty"`
+	BaseFileHash    string             `json:"base_file_hash,omitempty"`
+	NewContentHash  string             `json:"new_content_hash"`
+	FileHash        string             `json:"file_hash"`
+	Attachments     []TargetAttachment `json:"attachments"`
+}
+
+type TargetAttachment struct {
+	InboxID    string `json:"inbox_id"`
+	Name       string `json:"name"`
+	Path       string `json:"path"`
+	FrozenFile string `json:"frozen_file"`
+	Hash       string `json:"hash"`
+	Bytes      int64  `json:"bytes"`
 }
 
 type State struct {
@@ -114,9 +124,10 @@ type DiffResult struct {
 }
 
 type AppliedTarget struct {
-	KnowledgeID string `json:"knowledge_id"`
-	TargetPath  string `json:"target_path"`
-	ContentHash string `json:"content_hash"`
+	KnowledgeID string   `json:"knowledge_id"`
+	TargetPath  string   `json:"target_path"`
+	ContentHash string   `json:"content_hash"`
+	Attachments []string `json:"attachments"`
 }
 
 type ApplyResult struct {
@@ -242,7 +253,7 @@ func PlanPromotion(cfg *config.Instance, opts PlanOptions) (*PlanResult, error) 
 	seenTargetPaths := map[string]bool{}
 	seenKnowledge := map[string]bool{}
 	for _, spec := range manifest.Targets {
-		target, finalBytes, oldBytes, doc, err := prepareTarget(cfg, spec, manifestBase, inboxDocs, policy.GovernanceVersion, opts.Now)
+		target, finalBytes, oldBytes, attachments, doc, err := prepareTarget(cfg, spec, manifestBase, inboxDocs, policy.GovernanceVersion, opts.Now)
 		if err != nil {
 			return nil, err
 		}
@@ -254,6 +265,9 @@ func PlanPromotion(cfg *config.Instance, opts PlanOptions) (*PlanResult, error) 
 		target.FrozenFile = filepath.ToSlash(filepath.Join("files", target.KnowledgeID+".md"))
 		targets = append(targets, target)
 		frozen[target.FrozenFile] = finalBytes
+		for name, data := range attachments {
+			frozen[name] = data
+		}
 		oldFiles[target.TargetPath] = oldBytes
 		prospective[target.KnowledgeID] = doc
 	}
@@ -326,21 +340,21 @@ func PlanPromotion(cfg *config.Instance, opts PlanOptions) (*PlanResult, error) 
 	return result, nil
 }
 
-func prepareTarget(cfg *config.Instance, spec ManifestTarget, base string, inboxDocs map[string]*document.Document, governanceVersion string, now time.Time) (Target, []byte, []byte, *document.Document, error) {
+func prepareTarget(cfg *config.Instance, spec ManifestTarget, base string, inboxDocs map[string]*document.Document, governanceVersion string, now time.Time) (Target, []byte, []byte, map[string][]byte, *document.Document, error) {
 	draftPath := spec.DraftFile
 	if !filepath.IsAbs(draftPath) {
 		draftPath = filepath.Join(base, draftPath)
 	}
 	draftBytes, err := readManagedInput(draftPath, cfg.Security.MaxInputBytes)
 	if err != nil {
-		return Target{}, nil, nil, nil, fmt.Errorf("draft %s: %w", spec.DraftFile, err)
+		return Target{}, nil, nil, nil, nil, fmt.Errorf("draft %s: %w", spec.DraftFile, err)
 	}
 	draftMeta := document.Metadata{}
 	body := document.NormalizeMarkdownBody(draftBytes)
 	if bytes.HasPrefix(body, []byte("---\n")) || bytes.HasPrefix(body, []byte("---\r\n")) {
 		draftMeta, body, err = document.Parse(body)
 		if err != nil {
-			return Target{}, nil, nil, nil, err
+			return Target{}, nil, nil, nil, nil, err
 		}
 	}
 	var existing *document.Document
@@ -354,24 +368,24 @@ func prepareTarget(cfg *config.Instance, spec ManifestTarget, base string, inbox
 	if spec.Operation == "update" {
 		existing, err = document.FindByID(cfg.KnowledgeDir(), spec.KnowledgeID)
 		if err != nil {
-			return Target{}, nil, nil, nil, fmt.Errorf("update target %s: %w", spec.KnowledgeID, err)
+			return Target{}, nil, nil, nil, nil, fmt.Errorf("update target %s: %w", spec.KnowledgeID, err)
 		}
-		if err := existing.Validate("knowledge", true); err != nil {
-			return Target{}, nil, nil, nil, err
+		if err := existing.ValidateStoredAttachments(); err != nil {
+			return Target{}, nil, nil, nil, nil, err
 		}
 		oldBytes, err = os.ReadFile(existing.Path)
 		if err != nil {
-			return Target{}, nil, nil, nil, err
+			return Target{}, nil, nil, nil, nil, err
 		}
 		baseContentHash = existing.Metadata.ContentHash
 		baseFileHash = document.HashBytes(oldBytes)
 		if spec.BaseContentHash != baseContentHash || spec.BaseFileHash != baseFileHash {
-			return Target{}, nil, nil, nil, fmt.Errorf("update target %s baseline hash does not match", spec.KnowledgeID)
+			return Target{}, nil, nil, nil, nil, fmt.Errorf("update target %s baseline hash does not match", spec.KnowledgeID)
 		}
 		rel, _ := filepath.Rel(cfg.Root, existing.Path)
 		canonical := filepath.ToSlash(rel)
 		if targetPath != "" && targetPath != canonical {
-			return Target{}, nil, nil, nil, errors.New("update target_path is not canonical")
+			return Target{}, nil, nil, nil, nil, errors.New("update target_path is not canonical")
 		}
 		targetPath = canonical
 		publishedAt = existing.Metadata.PublishedAt
@@ -386,32 +400,32 @@ func prepareTarget(cfg *config.Instance, spec ManifestTarget, base string, inbox
 		if knowledgeID == "" {
 			knowledgeID, err = document.NewID("know", now)
 			if err != nil {
-				return Target{}, nil, nil, nil, err
+				return Target{}, nil, nil, nil, nil, err
 			}
 		}
 		if !document.ValidID("know", knowledgeID) {
-			return Target{}, nil, nil, nil, errors.New("create target knowledge_id is invalid")
+			return Target{}, nil, nil, nil, nil, errors.New("create target knowledge_id is invalid")
 		}
 		if _, err := document.FindByID(cfg.KnowledgeDir(), knowledgeID); err == nil {
-			return Target{}, nil, nil, nil, fmt.Errorf("create target knowledge id %s already exists", knowledgeID)
+			return Target{}, nil, nil, nil, nil, fmt.Errorf("create target knowledge id %s already exists", knowledgeID)
 		} else if !errors.Is(err, os.ErrNotExist) {
-			return Target{}, nil, nil, nil, err
+			return Target{}, nil, nil, nil, nil, err
 		}
 		if draftMeta.Type == "" {
-			return Target{}, nil, nil, nil, errors.New("create target draft requires an explicit content-pack type")
+			return Target{}, nil, nil, nil, nil, errors.New("create target draft requires an explicit content-pack type")
 		}
 		if draftMeta.Title == "" {
 			draftMeta.Title = firstHeading(body)
 		}
 	}
 	if !document.ValidID("know", knowledgeID) || strings.TrimSpace(draftMeta.Title) == "" {
-		return Target{}, nil, nil, nil, errors.New("target requires valid knowledge id and title")
+		return Target{}, nil, nil, nil, nil, errors.New("target requires valid knowledge id and title")
 	}
 	if targetPath == "" {
 		targetPath = filepath.ToSlash(filepath.Join(cfg.Paths.Knowledge, draftMeta.Type, document.Slug(draftMeta.Title)+"--"+knowledgeID+".md"))
 	}
 	if err := validateKnowledgePath(cfg, targetPath, knowledgeID); err != nil {
-		return Target{}, nil, nil, nil, err
+		return Target{}, nil, nil, nil, nil, err
 	}
 	lineageByID := map[string]document.LineageRef{}
 	for _, item := range lineage {
@@ -422,7 +436,7 @@ func prepareTarget(cfg *config.Instance, spec ManifestTarget, base string, inbox
 	for _, id := range inboxIDs {
 		item := inboxDocs[id]
 		if item == nil {
-			return Target{}, nil, nil, nil, fmt.Errorf("target references undeclared inbox %s", id)
+			return Target{}, nil, nil, nil, nil, fmt.Errorf("target references undeclared inbox %s", id)
 		}
 		lineageByID[id] = document.LineageRef{InboxID: id, PayloadHash: item.PayloadHash, Source: item.Metadata.Source, CapturedAt: item.Metadata.CapturedAt}
 	}
@@ -446,22 +460,68 @@ func prepareTarget(cfg *config.Instance, spec ManifestTarget, base string, inbox
 		Status: "published", PublishedAt: publishedAt, UpdatedAt: now.Format(time.RFC3339), ContentHash: document.HashBytes(body),
 		Lineage: lineage, Tags: cleanStrings(tags), Aliases: cleanStrings(aliases), GovernanceVersion: governanceVersion, Extra: extra,
 	}
-	if expected := document.KnowledgePath(cfg.Paths.Knowledge, meta); targetPath != expected {
-		return Target{}, nil, nil, nil, fmt.Errorf("knowledge target path is not canonical: expected %s", expected)
+	if existing != nil {
+		meta.Attachments = append(meta.Attachments, existing.Metadata.Attachments...)
 	}
+	if expected := document.KnowledgePath(cfg.Paths.Knowledge, meta); targetPath != expected {
+		return Target{}, nil, nil, nil, nil, fmt.Errorf("knowledge target path is not canonical: expected %s", expected)
+	}
+	attachments := []TargetAttachment{}
+	frozenAttachments := map[string][]byte{}
+	seenAttachments := map[string]document.AttachmentRef{}
+	for _, item := range meta.Attachments {
+		seenAttachments[item.InboxID] = item
+	}
+	for _, id := range inboxIDs {
+		item := inboxDocs[id]
+		if item.Metadata.Payload == "" {
+			continue
+		}
+		name := filepath.Base(item.PayloadPath)
+		if existingRef, exists := seenAttachments[id]; exists {
+			if existingRef.Hash != item.PayloadHash || existingRef.Name != name {
+				return Target{}, nil, nil, nil, nil, fmt.Errorf("knowledge %s already has a different attachment from inbox %s", knowledgeID, id)
+			}
+			continue
+		}
+		data, err := readManagedInput(item.PayloadPath, cfg.Security.MaxInputBytes)
+		if err != nil {
+			return Target{}, nil, nil, nil, nil, fmt.Errorf("inbox attachment %s: %w", id, err)
+		}
+		if document.HashBytes(data) != item.PayloadHash {
+			return Target{}, nil, nil, nil, nil, fmt.Errorf("inbox attachment %s changed while planning", id)
+		}
+		rel := document.AttachmentRelativePath(meta, id, name)
+		path := filepath.ToSlash(filepath.Join(filepath.Dir(targetPath), filepath.FromSlash(rel)))
+		frozenFile := filepath.ToSlash(filepath.Join("files", knowledgeID+".assets", id, name))
+		assetPath := filepath.Join(cfg.Root, filepath.FromSlash(path))
+		if err := fsutil.EnsureNoSymlinkPath(cfg.Root, assetPath); err != nil {
+			return Target{}, nil, nil, nil, nil, err
+		}
+		if _, err := os.Lstat(assetPath); err == nil {
+			return Target{}, nil, nil, nil, nil, fmt.Errorf("knowledge attachment already exists: %s", path)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return Target{}, nil, nil, nil, nil, err
+		}
+		meta.Attachments = append(meta.Attachments, document.AttachmentRef{InboxID: id, Name: name, Path: rel, Hash: item.PayloadHash, Bytes: int64(len(data))})
+		attachments = append(attachments, TargetAttachment{InboxID: id, Name: name, Path: path, FrozenFile: frozenFile, Hash: item.PayloadHash, Bytes: int64(len(data))})
+		frozenAttachments[frozenFile] = data
+		seenAttachments[id] = meta.Attachments[len(meta.Attachments)-1]
+	}
+	sort.Slice(meta.Attachments, func(i, j int) bool { return meta.Attachments[i].InboxID < meta.Attachments[j].InboxID })
 	finalBytes, err := document.Render(meta, body)
 	if err != nil {
-		return Target{}, nil, nil, nil, err
+		return Target{}, nil, nil, nil, nil, err
 	}
 	doc := &document.Document{Path: filepath.Join(cfg.Root, filepath.FromSlash(targetPath)), Metadata: meta, Body: body}
 	if err := doc.Validate("knowledge", true); err != nil {
-		return Target{}, nil, nil, nil, err
+		return Target{}, nil, nil, nil, nil, err
 	}
 	target := Target{
 		Operation: spec.Operation, KnowledgeID: knowledgeID, TargetPath: targetPath, InboxIDs: inboxIDs,
-		BaseContentHash: baseContentHash, BaseFileHash: baseFileHash, NewContentHash: meta.ContentHash, FileHash: document.HashBytes(finalBytes),
+		BaseContentHash: baseContentHash, BaseFileHash: baseFileHash, NewContentHash: meta.ContentHash, FileHash: document.HashBytes(finalBytes), Attachments: attachments,
 	}
-	return target, finalBytes, oldBytes, doc, nil
+	return target, finalBytes, oldBytes, frozenAttachments, doc, nil
 }
 
 func Load(cfg *config.Instance, promotionID string) (Plan, State, []byte, error) {
@@ -562,7 +622,11 @@ func Apply(cfg *config.Instance, promotionID, approve string, dryRun bool, now t
 	result := &ApplyResult{PromotionID: promotionID, PlanHash: state.PlanHash, DryRun: dryRun}
 	knowledgeByInbox := map[string][]string{}
 	for _, target := range plan.Targets {
-		result.Targets = append(result.Targets, AppliedTarget{KnowledgeID: target.KnowledgeID, TargetPath: target.TargetPath, ContentHash: target.NewContentHash})
+		paths := []string{}
+		for _, attachment := range target.Attachments {
+			paths = append(paths, attachment.Path)
+		}
+		result.Targets = append(result.Targets, AppliedTarget{KnowledgeID: target.KnowledgeID, TargetPath: target.TargetPath, ContentHash: target.NewContentHash, Attachments: paths})
 		for _, id := range target.InboxIDs {
 			knowledgeByInbox[id] = append(knowledgeByInbox[id], target.KnowledgeID)
 		}
@@ -664,6 +728,9 @@ func validateApplyBase(cfg *config.Instance, plan Plan, now time.Time) (map[stri
 	prospective := map[string]*document.Document{}
 	for _, target := range plan.Targets {
 		frozenPath := filepath.Join(promotionDir(cfg, plan.ID), filepath.FromSlash(target.FrozenFile))
+		if err := fsutil.EnsureNoSymlinkPath(promotionDir(cfg, plan.ID), frozenPath); err != nil {
+			return nil, nil, err
+		}
 		data, err := readRegularExact(frozenPath)
 		if err != nil {
 			return nil, nil, err
@@ -682,6 +749,7 @@ func validateApplyBase(cfg *config.Instance, plan Plan, now time.Time) (map[stri
 			return nil, nil, fmt.Errorf("frozen knowledge path is not canonical: expected %s", expected)
 		}
 		path := filepath.Join(cfg.Root, filepath.FromSlash(target.TargetPath))
+		oldAttachments := map[string]document.AttachmentRef{}
 		if target.Operation == "create" {
 			if _, err := os.Lstat(path); err == nil {
 				return nil, nil, fmt.Errorf("create target appeared after plan: %s", target.TargetPath)
@@ -700,10 +768,72 @@ func validateApplyBase(cfg *config.Instance, plan Plan, now time.Time) (map[stri
 			if currentMeta.ID != target.KnowledgeID || document.HashBytes(currentBody) != target.BaseContentHash || document.HashBytes(current) != target.BaseFileHash {
 				return nil, nil, fmt.Errorf("update target %s changed after plan", target.KnowledgeID)
 			}
+			currentDoc := &document.Document{Path: path, Metadata: currentMeta, Body: currentBody}
+			if err := currentDoc.ValidateStoredAttachments(); err != nil {
+				return nil, nil, fmt.Errorf("update target %s attachment changed after plan: %w", target.KnowledgeID, err)
+			}
+			for _, ref := range currentMeta.Attachments {
+				oldAttachments[ref.InboxID] = ref
+			}
 		}
 		doc := &document.Document{Path: path, Metadata: meta, Body: body}
 		if err := doc.Validate("knowledge", true); err != nil {
 			return nil, nil, err
+		}
+		refs := map[string]document.AttachmentRef{}
+		for _, ref := range meta.Attachments {
+			refs[ref.InboxID] = ref
+		}
+		for id, old := range oldAttachments {
+			if refs[id] != old {
+				return nil, nil, fmt.Errorf("existing attachment %s was removed or changed in frozen knowledge", id)
+			}
+		}
+		if len(refs) != len(oldAttachments)+len(target.Attachments) {
+			return nil, nil, errors.New("frozen knowledge attachment list does not match plan")
+		}
+		newAttachments := map[string]bool{}
+		for _, attachment := range target.Attachments {
+			if _, exists := oldAttachments[attachment.InboxID]; exists {
+				return nil, nil, errors.New("promotion attachment duplicates an existing knowledge attachment")
+			}
+			ref, ok := refs[attachment.InboxID]
+			if !ok || ref.Name != attachment.Name || ref.Hash != attachment.Hash || ref.Bytes != attachment.Bytes ||
+				filepath.ToSlash(filepath.Join(filepath.Dir(target.TargetPath), filepath.FromSlash(ref.Path))) != attachment.Path {
+				return nil, nil, errors.New("frozen attachment metadata does not match plan")
+			}
+			frozenAsset := filepath.Join(promotionDir(cfg, plan.ID), filepath.FromSlash(attachment.FrozenFile))
+			if err := fsutil.EnsureNoSymlinkPath(promotionDir(cfg, plan.ID), frozenAsset); err != nil {
+				return nil, nil, err
+			}
+			data, err := readManagedInput(frozenAsset, cfg.Security.MaxInputBytes)
+			if err != nil {
+				return nil, nil, err
+			}
+			if int64(len(data)) != attachment.Bytes || document.HashBytes(data) != attachment.Hash {
+				return nil, nil, fmt.Errorf("frozen attachment for %s changed after plan", attachment.InboxID)
+			}
+			assetPath := filepath.Join(cfg.Root, filepath.FromSlash(attachment.Path))
+			if err := fsutil.EnsureNoSymlinkPath(cfg.Root, assetPath); err != nil {
+				return nil, nil, err
+			}
+			if _, err := os.Lstat(assetPath); err == nil {
+				return nil, nil, fmt.Errorf("knowledge attachment appeared after plan: %s", attachment.Path)
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return nil, nil, err
+			}
+			files[attachment.Path] = data
+			newAttachments[attachment.InboxID] = true
+		}
+		for _, id := range target.InboxIDs {
+			input := inboxDocs[id]
+			if input.Metadata.Payload == "" || newAttachments[id] {
+				continue
+			}
+			old, exists := oldAttachments[id]
+			if !exists || old.Hash != input.PayloadHash || old.Name != filepath.Base(input.PayloadPath) {
+				return nil, nil, fmt.Errorf("inbox attachment %s is missing from the frozen target", id)
+			}
 		}
 		prospective[target.KnowledgeID] = doc
 		files[target.TargetPath] = data
@@ -743,7 +873,7 @@ func commitFiles(cfg *config.Instance, promotionID, opID string, files map[strin
 			return err
 		}
 		entry := JournalFile{Kind: fileKind(cfg, rel), Path: rel, NewHash: document.HashBytes(files[rel]), StageFile: stageRel}
-		if current, err := readRegularExact(target); err == nil {
+		if current, err := readRegularExactLimit(target, managedReadLimit(cfg, rel)); err == nil {
 			entry.HadTarget = true
 			entry.BackupFile = filepath.ToSlash(filepath.Join("backup", fmt.Sprintf("%04d", i)))
 			if err := document.AtomicWrite(filepath.Join(txnDir, filepath.FromSlash(entry.BackupFile)), current, 0o600); err != nil {
@@ -758,7 +888,7 @@ func commitFiles(cfg *config.Instance, promotionID, opID string, files map[strin
 		return err
 	}
 	for _, entry := range journal.Files {
-		data, err := readRegularExact(filepath.Join(txnDir, filepath.FromSlash(entry.StageFile)))
+		data, err := readRegularExactLimit(filepath.Join(txnDir, filepath.FromSlash(entry.StageFile)), managedReadLimit(cfg, entry.Path))
 		if err != nil {
 			return err
 		}
@@ -908,9 +1038,9 @@ func Recover(cfg *config.Instance) ([]RecoveryAction, error) {
 			for i := len(journal.Files) - 1; i >= 0; i-- {
 				file := journal.Files[i]
 				target := filepath.Join(cfg.Root, filepath.FromSlash(file.Path))
-				current, readErr := readRegularExact(target)
+				current, readErr := readRegularExactLimit(target, managedReadLimit(cfg, file.Path))
 				if file.HadTarget {
-					backup, err := readRegularExact(filepath.Join(txnDir, filepath.FromSlash(file.BackupFile)))
+					backup, err := readRegularExactLimit(filepath.Join(txnDir, filepath.FromSlash(file.BackupFile)), managedReadLimit(cfg, file.Path))
 					if err != nil {
 						return actions, err
 					}
@@ -939,7 +1069,7 @@ func Recover(cfg *config.Instance) ([]RecoveryAction, error) {
 			actions = append(actions, RecoveryAction{OperationID: journal.OperationID, Previous: "prepared", Action: "rolled_back"})
 		case "files_committed":
 			for _, file := range journal.Files {
-				current, err := readRegularExact(filepath.Join(cfg.Root, filepath.FromSlash(file.Path)))
+				current, err := readRegularExactLimit(filepath.Join(cfg.Root, filepath.FromSlash(file.Path)), managedReadLimit(cfg, file.Path))
 				if err != nil || document.HashBytes(current) != file.NewHash {
 					return actions, fmt.Errorf("transaction %s committed file is missing or changed", journal.OperationID)
 				}
@@ -1078,6 +1208,23 @@ func validatePlan(cfg *config.Instance, plan Plan, expected string) error {
 		expectedFrozen := filepath.ToSlash(filepath.Join("files", target.KnowledgeID+".md"))
 		if target.FrozenFile != expectedFrozen {
 			return errors.New("promotion frozen file path is not canonical")
+		}
+		if target.Attachments == nil {
+			return errors.New("promotion target requires an attachments list")
+		}
+		seenAttachments := map[string]bool{}
+		for _, attachment := range target.Attachments {
+			if !targetInboxes[attachment.InboxID] || seenAttachments[attachment.InboxID] || !document.ValidAttachmentName(attachment.Name) ||
+				!document.ValidHash(attachment.Hash) || attachment.Bytes < 0 {
+				return errors.New("promotion target has an invalid or duplicate attachment")
+			}
+			rel := strings.TrimSuffix(filepath.Base(target.TargetPath), ".md") + ".assets/" + attachment.InboxID + "/" + attachment.Name
+			expectedPath := filepath.ToSlash(filepath.Join(filepath.Dir(target.TargetPath), filepath.FromSlash(rel)))
+			expectedFrozen := filepath.ToSlash(filepath.Join("files", target.KnowledgeID+".assets", attachment.InboxID, attachment.Name))
+			if attachment.Path != expectedPath || attachment.FrozenFile != expectedFrozen {
+				return errors.New("promotion attachment path is not canonical")
+			}
+			seenAttachments[attachment.InboxID] = true
 		}
 		seenIDs[target.KnowledgeID] = true
 		seenPaths[target.TargetPath] = true
@@ -1247,6 +1394,17 @@ func readManagedInput(path string, limit int64) ([]byte, error) {
 }
 
 func readRegularExact(path string) ([]byte, error) {
+	return readRegularExactLimit(path, document.MaxMarkdownBytes)
+}
+
+func managedReadLimit(cfg *config.Instance, rel string) int64 {
+	if fileKind(cfg, rel) == "knowledge" && strings.Contains(rel, ".assets/") && cfg.Security.MaxInputBytes > document.MaxMarkdownBytes {
+		return cfg.Security.MaxInputBytes
+	}
+	return document.MaxMarkdownBytes
+}
+
+func readRegularExactLimit(path string, limit int64) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
@@ -1254,8 +1412,8 @@ func readRegularExact(path string) ([]byte, error) {
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("managed file is not a regular non-symlink file: %s", path)
 	}
-	if info.Size() > document.MaxMarkdownBytes {
-		return nil, fmt.Errorf("managed file exceeds %d byte safety limit: %s", document.MaxMarkdownBytes, path)
+	if info.Size() > limit {
+		return nil, fmt.Errorf("managed file exceeds %d byte safety limit: %s", limit, path)
 	}
 	if err := fsutil.EnsureSingleLink(path); err != nil {
 		return nil, err
@@ -1287,6 +1445,9 @@ func promotionDiff(targets []Target, oldFiles map[string][]byte, frozen map[stri
 	var out strings.Builder
 	for _, target := range targets {
 		out.WriteString(lineDiff(target.TargetPath, oldFiles[target.TargetPath], frozen[target.FrozenFile]))
+		for _, attachment := range target.Attachments {
+			fmt.Fprintf(&out, "--- /dev/null\n+++ b/%s\n@@ binary attachment: %d bytes, %s @@\n", attachment.Path, attachment.Bytes, attachment.Hash)
+		}
 	}
 	return out.String()
 }

@@ -50,29 +50,38 @@ type LineageRef struct {
 	CapturedAt  string `yaml:"captured_at" json:"captured_at"`
 }
 
+type AttachmentRef struct {
+	InboxID string `yaml:"inbox_id" json:"inbox_id"`
+	Name    string `yaml:"name" json:"name"`
+	Path    string `yaml:"path" json:"path"`
+	Hash    string `yaml:"hash" json:"hash"`
+	Bytes   int64  `yaml:"bytes" json:"bytes"`
+}
+
 type Metadata struct {
-	SchemaVersion     int            `yaml:"schema_version" json:"schema_version"`
-	ID                string         `yaml:"id" json:"id"`
-	Type              string         `yaml:"type,omitempty" json:"type,omitempty"`
-	Title             string         `yaml:"title,omitempty" json:"title,omitempty"`
-	Status            string         `yaml:"status,omitempty" json:"status,omitempty"`
-	Source            string         `yaml:"source,omitempty" json:"source,omitempty"`
-	CapturedAt        string         `yaml:"captured_at,omitempty" json:"captured_at,omitempty"`
-	PublishedAt       string         `yaml:"published_at,omitempty" json:"published_at,omitempty"`
-	UpdatedAt         string         `yaml:"updated_at,omitempty" json:"updated_at,omitempty"`
-	ContentHash       string         `yaml:"content_hash,omitempty" json:"content_hash,omitempty"`
-	MediaType         string         `yaml:"media_type,omitempty" json:"media_type,omitempty"`
-	OriginalName      string         `yaml:"original_name,omitempty" json:"original_name,omitempty"`
-	Payload           string         `yaml:"payload,omitempty" json:"payload,omitempty"`
-	PayloadHash       string         `yaml:"payload_hash,omitempty" json:"payload_hash,omitempty"`
-	PayloadBytes      int64          `yaml:"payload_bytes,omitempty" json:"payload_bytes,omitempty"`
-	ProcessedAt       string         `yaml:"processed_at,omitempty" json:"processed_at,omitempty"`
-	KnowledgeIDs      []string       `yaml:"knowledge_ids,omitempty" json:"knowledge_ids,omitempty"`
-	Lineage           []LineageRef   `yaml:"lineage,omitempty" json:"lineage,omitempty"`
-	Tags              []string       `yaml:"tags,omitempty" json:"tags,omitempty"`
-	Aliases           []string       `yaml:"aliases,omitempty" json:"aliases,omitempty"`
-	GovernanceVersion string         `yaml:"governance_version,omitempty" json:"governance_version,omitempty"`
-	Extra             map[string]any `yaml:",inline" json:"extra,omitempty"`
+	SchemaVersion     int             `yaml:"schema_version" json:"schema_version"`
+	ID                string          `yaml:"id" json:"id"`
+	Type              string          `yaml:"type,omitempty" json:"type,omitempty"`
+	Title             string          `yaml:"title,omitempty" json:"title,omitempty"`
+	Status            string          `yaml:"status,omitempty" json:"status,omitempty"`
+	Source            string          `yaml:"source,omitempty" json:"source,omitempty"`
+	CapturedAt        string          `yaml:"captured_at,omitempty" json:"captured_at,omitempty"`
+	PublishedAt       string          `yaml:"published_at,omitempty" json:"published_at,omitempty"`
+	UpdatedAt         string          `yaml:"updated_at,omitempty" json:"updated_at,omitempty"`
+	ContentHash       string          `yaml:"content_hash,omitempty" json:"content_hash,omitempty"`
+	MediaType         string          `yaml:"media_type,omitempty" json:"media_type,omitempty"`
+	OriginalName      string          `yaml:"original_name,omitempty" json:"original_name,omitempty"`
+	Payload           string          `yaml:"payload,omitempty" json:"payload,omitempty"`
+	PayloadHash       string          `yaml:"payload_hash,omitempty" json:"payload_hash,omitempty"`
+	PayloadBytes      int64           `yaml:"payload_bytes,omitempty" json:"payload_bytes,omitempty"`
+	ProcessedAt       string          `yaml:"processed_at,omitempty" json:"processed_at,omitempty"`
+	KnowledgeIDs      []string        `yaml:"knowledge_ids,omitempty" json:"knowledge_ids,omitempty"`
+	Lineage           []LineageRef    `yaml:"lineage,omitempty" json:"lineage,omitempty"`
+	Attachments       []AttachmentRef `yaml:"attachments,omitempty" json:"attachments,omitempty"`
+	Tags              []string        `yaml:"tags,omitempty" json:"tags,omitempty"`
+	Aliases           []string        `yaml:"aliases,omitempty" json:"aliases,omitempty"`
+	GovernanceVersion string          `yaml:"governance_version,omitempty" json:"governance_version,omitempty"`
+	Extra             map[string]any  `yaml:",inline" json:"extra,omitempty"`
 }
 
 type Document struct {
@@ -267,6 +276,58 @@ func (d *Document) Validate(layer string, strict bool) error {
 			}
 			seenLineage[item.InboxID] = true
 		}
+		seenAttachments := map[string]bool{}
+		for _, item := range d.Metadata.Attachments {
+			if !ValidID("inbox", item.InboxID) || !ValidHash(item.Hash) || item.Bytes < 0 ||
+				!ValidAttachmentName(item.Name) || item.Path != AttachmentRelativePath(d.Metadata, item.InboxID, item.Name) ||
+				seenAttachments[item.InboxID] {
+				return errors.New("knowledge attachments require unique inbox id, canonical path, name, hash, and bytes")
+			}
+			if !seenLineage[item.InboxID] {
+				return errors.New("knowledge attachment inbox id is not in lineage")
+			}
+			seenAttachments[item.InboxID] = true
+		}
+	}
+	return nil
+}
+
+func ValidAttachmentName(name string) bool {
+	return name != "" && name != "." && name != ".." && filepath.Base(name) == name && !strings.ContainsAny(name, "\\/\x00")
+}
+
+func AttachmentRelativePath(meta Metadata, inboxID, name string) string {
+	base := Slug(meta.Title) + "--" + meta.ID + ".assets"
+	return filepath.ToSlash(filepath.Join(base, inboxID, name))
+}
+
+func (d *Document) ValidateStoredAttachments() error {
+	if err := d.Validate("knowledge", true); err != nil {
+		return err
+	}
+	root := filepath.Dir(d.Path)
+	for _, item := range d.Metadata.Attachments {
+		path := filepath.Join(root, filepath.FromSlash(item.Path))
+		if err := fsutil.EnsureNoSymlinkPath(root, path); err != nil {
+			return err
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return fmt.Errorf("knowledge attachment %s: %w", item.Path, err)
+		}
+		if !info.Mode().IsRegular() || info.Size() != item.Bytes {
+			return fmt.Errorf("knowledge attachment %s type or size changed", item.Path)
+		}
+		if err := fsutil.EnsureSingleLink(path); err != nil {
+			return err
+		}
+		hash, err := HashFile(path)
+		if err != nil {
+			return err
+		}
+		if hash != item.Hash {
+			return fmt.Errorf("knowledge attachment %s hash changed", item.Path)
+		}
 	}
 	return nil
 }
@@ -290,6 +351,9 @@ func ScanMarkdown(root string) ([]*Document, []error) {
 				return filepath.SkipDir
 			}
 			return nil
+		}
+		if entry.IsDir() && strings.HasSuffix(entry.Name(), ".assets") {
+			return filepath.SkipDir
 		}
 		if entry.IsDir() || strings.ToLower(filepath.Ext(entry.Name())) != ".md" {
 			return nil

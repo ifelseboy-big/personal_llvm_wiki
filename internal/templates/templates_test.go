@@ -94,7 +94,7 @@ func TestPersonalTemplatesExposeInboxPromotionAndOptionalViews(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Version != "2.0.0" || manifest.ContentPack != "content-pack.json" {
+	if manifest.Version != "2.0.2" || manifest.ContentPack != "content-pack.json" {
 		t.Fatalf("unexpected personal template version %s", manifest.Version)
 	}
 	agents, err := templates.ReadFile("personal", "AGENTS.md")
@@ -109,7 +109,7 @@ func TestPersonalTemplatesExposeInboxPromotionAndOptionalViews(t *testing.T) {
 		t.Fatalf("personal AGENTS.md omitted its management-only or retrieval boundary: %s", agents)
 	}
 	workflowRequirements := map[string][]string{
-		"capture":  {"stdin 输入时必须提供", "--name <name>", "--batch-manifest", "不得自动添加 `--allow-sensitive`"},
+		"capture":  {"stdin 输入时必须提供", "--name <name>", "--summary", "index.md", "--batch-manifest", "相同 title", "docs/", "attachments/", "不得自动添加 `--allow-sensitive`"},
 		"organize": {"规范 `payload_path`", "`content_hash` 和 `file_hash`", "`proposed_knowledge_id`", "Organize 不运行 `promote plan/apply`"},
 		"publish":  {"plan hash 完全一致", "然后停止", "`transaction_state`", "不得重建一个“相似计划”沿用旧批准"},
 		"maintain": {"检查阶段", "零写入", "通过 Capture 保存为 pending Inbox", "同一 Promotion"},
@@ -200,7 +200,7 @@ func TestCreateDraftRendersSafelyAndProtectsManagedPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.TemplateVersion != "2.0.0" || !strings.Contains(result.NextCommandHint, "promote plan") {
+	if result.TemplateVersion != "2.0.2" || !strings.Contains(result.NextCommandHint, "promote plan") {
 		t.Fatalf("unexpected result: %#v", result)
 	}
 	if !document.ValidID("know", result.ProposedID) || !strings.Contains(result.NextCommandHint, result.ProposedID) {

@@ -20,7 +20,7 @@ func TestCompleteInboxPromotionKnowledgeCleanWorkflow(t *testing.T) {
 	if err := os.WriteFile(note, []byte("# Stable IR input\n\nInitial organization for later review.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	added := runCLI(t, "Stable IR decouples compiler components.", "inbox", "add", "-", "--name", "source.txt", "--source", "user", "--note-file", note, "--wiki", root, "--json", "--no-interactive")
+	added := runCLI(t, "Stable IR decouples compiler components.", "inbox", "add", "-", "--name", "source.md", "--source", "user", "--note-file", note, "--wiki", root, "--json", "--no-interactive")
 	inboxID := nestedString(t, added.Data, "items", 0, "id")
 	if status := nestedString(t, added.Data, "items", 0, "status"); status != "pending" {
 		t.Fatalf("add did not create pending inbox: %#v", added.Data)
@@ -39,12 +39,16 @@ func TestCompleteInboxPromotionKnowledgeCleanWorkflow(t *testing.T) {
 	if err := os.WriteFile(itemPath, itemBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	movedPath := filepath.Join(root, "inbox", "renamed.md")
+	movedPath := filepath.Join(filepath.Dir(itemPath), "renamed.md")
 	if err := os.Rename(itemPath, movedPath); err != nil {
 		t.Fatal(err)
 	}
 	shownInbox := runCLI(t, "", "inbox", "show", inboxID, "--wiki", root, "--json", "--no-interactive")
-	if nestedString(t, shownInbox.Data, "path") != "inbox/renamed.md" || nestedString(t, shownInbox.Data, "item_hash") != document.HashBytes(itemBytes) {
+	movedRel, err := filepath.Rel(root, movedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nestedString(t, shownInbox.Data, "path") != filepath.ToSlash(movedRel) || nestedString(t, shownInbox.Data, "item_hash") != document.HashBytes(itemBytes) {
 		t.Fatalf("edited Inbox snapshot is inconsistent: %#v", shownInbox.Data)
 	}
 	runCLI(t, "", "doctor", "--wiki", root, "--json", "--no-interactive")
@@ -75,23 +79,31 @@ func TestCompleteInboxPromotionKnowledgeCleanWorkflow(t *testing.T) {
 	planned := runCLI(t, "", "promote", "plan", "--manifest", manifest, "--wiki", root, "--json", "--no-interactive")
 	promotionID := nestedString(t, planned.Data, "promotion_id")
 	planHash := nestedString(t, planned.Data, "plan_hash")
-	if nestedString(t, planned.Data, "content_pack", "version") != "2.0.0" || nestedString(t, planned.Data, "content_pack", "policy_hash") == "" {
+	attachmentPath := nestedString(t, planned.Data, "targets", 0, "attachments", 0, "path")
+	if attachmentPath == "" || !strings.Contains(strings.Join(planned.AffectedFiles, "\n"), ".assets/") {
+		t.Fatalf("plan omitted frozen attachment: %#v", planned)
+	}
+	if nestedString(t, planned.Data, "content_pack", "version") != "2.0.2" || nestedString(t, planned.Data, "content_pack", "policy_hash") == "" {
 		t.Fatalf("plan omitted its frozen content-pack identity: %#v", planned.Data)
 	}
 	diff := runCLI(t, "", "promote", "diff", promotionID, "--wiki", root, "--json", "--no-interactive")
-	if nestedString(t, diff.Data, "plan_hash") != planHash || !bytes.Contains([]byte(nestedString(t, diff.Data, "diff")), []byte("Stable IR")) {
+	if nestedString(t, diff.Data, "plan_hash") != planHash || !bytes.Contains([]byte(nestedString(t, diff.Data, "diff")), []byte("Stable IR")) ||
+		!bytes.Contains([]byte(nestedString(t, diff.Data, "diff")), []byte(attachmentPath)) {
 		t.Fatalf("diff is not bound to plan: %#v", diff.Data)
 	}
 	// Renaming without a content change must not invalidate the approved snapshot.
-	if err := os.Rename(movedPath, filepath.Join(root, "inbox", "renamed-again.md")); err != nil {
+	if err := os.Rename(movedPath, filepath.Join(filepath.Dir(movedPath), "renamed-again.md")); err != nil {
 		t.Fatal(err)
 	}
 	apply := runCLI(t, "", "promote", "apply", promotionID, "--approve", planHash, "--wiki", root, "--json", "--no-interactive")
-	if !strings.Contains(strings.Join(apply.AffectedFiles, "\n"), "inbox/renamed-again.md") {
+	if !strings.Contains(strings.Join(apply.AffectedFiles, "\n"), "renamed-again.md") {
 		t.Fatalf("apply reported guessed rather than actual Inbox path: %#v", apply.AffectedFiles)
 	}
 	if nestedString(t, apply.Data, "targets", 0, "knowledge_id") != knowledgeID {
 		t.Fatalf("promotion did not publish target: %#v", apply.Data)
+	}
+	if !strings.Contains(strings.Join(apply.AffectedFiles, "\n"), attachmentPath) || nestedString(t, apply.Data, "targets", 0, "attachments", 0) != attachmentPath {
+		t.Fatalf("promotion did not report its published attachment: %#v", apply)
 	}
 	if nestedString(t, apply.Data, "transaction_state") != "complete" {
 		t.Fatalf("promotion did not report a complete transaction: %#v", apply.Data)
@@ -123,12 +135,26 @@ func TestCompleteInboxPromotionKnowledgeCleanWorkflow(t *testing.T) {
 		t.Fatalf("clean preview is incomplete: %#v", preview)
 	}
 	runCLI(t, "", "inbox", "clean", inboxID, "--yes", "--wiki", root, "--json", "--no-interactive")
+	if err := os.Remove(payloadPath); err != nil {
+		t.Fatal(err)
+	}
 	query = runCLI(t, "", "query", "compiler frontends backends", "--wiki", root, "--json", "--no-interactive")
 	if nestedFloat(t, query.Data, "count") < 1 {
 		t.Fatalf("clean broke Knowledge query: %#v", query.Data)
 	}
 	runCLI(t, "", "doctor", "--wiki", root, "--json", "--no-interactive")
 	runCLI(t, "", "index", "rebuild", "--wiki", root, "--json", "--no-interactive")
+	if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(attachmentPath)), []byte("changed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	invalid := runCLIFailure(t, "", "show", knowledgeID, "--wiki", root, "--json", "--no-interactive")
+	if invalid.Error == nil || invalid.Error.Code != "KNOWLEDGE_INVALID" {
+		t.Fatalf("show accepted a changed Knowledge attachment: %#v", invalid)
+	}
+	stale := runCLIFailure(t, "", "query", "compiler frontends backends", "--wiki", root, "--json", "--no-interactive")
+	if stale.Error == nil || stale.Error.Code != "INDEX_STALE" {
+		t.Fatalf("query returned facts from a Knowledge document with a changed attachment: %#v", stale)
+	}
 }
 
 func TestPromotionApprovalAndStaleErrorsAreStable(t *testing.T) {
@@ -347,10 +373,16 @@ func nestedFloat(t *testing.T, value any, key string) float64 {
 func TestSelfContainedInboxJSONSnapshotAndPendingCleanup(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "wiki")
 	runCLI(t, "", "init", root, "--json", "--no-interactive")
-	added := runCLI(t, "raw text", "inbox", "add", "-", "--name", "raw.txt", "--title", "登录功能", "--wiki", root, "--json", "--no-interactive")
+	added := runCLI(t, "raw text", "inbox", "add", "-", "--name", "raw.txt", "--title", "登录功能", "--summary", "登录流程的原始记录", "--wiki", root, "--json", "--no-interactive")
 	id := nestedString(t, added.Data, "items", 0, "id")
-	if len(added.AffectedFiles) != 1 {
-		t.Fatalf("text capture produced duplicate files: %#v", added)
+	if len(added.AffectedFiles) != 2 {
+		t.Fatalf("text capture omitted the topic index: %#v", added)
+	}
+	itemPath := nestedString(t, added.Data, "items", 0, "item_path")
+	indexPath := filepath.Join(filepath.Dir(filepath.Dir(itemPath)), "index.md")
+	index, err := os.ReadFile(filepath.Join(root, indexPath))
+	if err != nil || !bytes.Contains(index, []byte("登录流程的原始记录")) || !strings.Contains(strings.Join(added.AffectedFiles, "\n"), filepath.ToSlash(indexPath)) {
+		t.Fatalf("CLI did not return the topic index: %s %#v %v", index, added.AffectedFiles, err)
 	}
 	shown := runCLI(t, "", "inbox", "show", id, "--wiki", root, "--json", "--no-interactive")
 	path := nestedString(t, shown.Data, "path")
@@ -369,5 +401,33 @@ func TestSelfContainedInboxJSONSnapshotAndPendingCleanup(t *testing.T) {
 	runCLI(t, "", "inbox", "clean", id, "--yes", "--wiki", root, "--json", "--no-interactive")
 	if _, err := os.Stat(filepath.Join(root, path)); !os.IsNotExist(err) {
 		t.Fatalf("pending note was not deleted: %v", err)
+	}
+}
+
+func TestBatchInboxJSONReportsSharedTopicIndexOnce(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "wiki")
+	runCLI(t, "", "init", root, "--json", "--no-interactive")
+	base := t.TempDir()
+	for _, name := range []string{"a.txt", "b.txt"} {
+		if err := os.WriteFile(filepath.Join(base, name), []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manifest := filepath.Join(base, "batch.json")
+	if err := os.WriteFile(manifest, []byte(`{"schema_version":1,"items":[{"input":"a.txt","title":"同一主题"},{"input":"b.txt","title":"同一主题"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	added := runCLI(t, "", "inbox", "add", "--batch-manifest", manifest, "--wiki", root, "--json", "--no-interactive")
+	if len(added.AffectedFiles) != 3 {
+		t.Fatalf("batch must report two notes and one index: %#v", added.AffectedFiles)
+	}
+	indexes := 0
+	for _, path := range added.AffectedFiles {
+		if strings.HasSuffix(path, "/index.md") {
+			indexes++
+		}
+	}
+	if indexes != 1 {
+		t.Fatalf("batch reported duplicate topic indexes: %#v", added.AffectedFiles)
 	}
 }

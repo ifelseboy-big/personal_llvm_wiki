@@ -58,9 +58,12 @@ Go Core 不得出现内容包中的 category、type、模板名、类型字段�
     maintain.md
     query.md
   inbox/
-    YYYY-MM-DD-初步功能名称.md
-    attachments/<original>
+    YYYY-MM-DD-初步功能名称/
+      index.md
+      docs/<original-stem>.md
+      attachments/<original>  # only when needed
   knowledge/<type>/<slug>--<knowledge-id>.md
+  knowledge/<type>/<slug>--<knowledge-id>.assets/<inbox-id>/<original>  # only when needed
   templates/
   rules/
   views/
@@ -95,19 +98,19 @@ Go Core 不得出现内容包中的 category、type、模板名、类型字段�
 
 ### 5.1 数据模型
 
-Inbox 是可变工作区，不是事实。每条登记笔记是普通 Markdown，创建时按 `YYYY-MM-DD-初步功能名称.md` 命名；日期来自采集时间，名称优先使用显式 title、正文一级标题、原文件名。冲突追加人可读序号，预览与实际写入复用相同目标解析；不覆盖已有文件。不要求日期目录、ID 目录或固定文件名，创建后的改名与 Inbox 内移动不构成漂移。
+Inbox 是可变工作区，不是事实。新增主题目录按 `YYYY-MM-DD-初步功能名称` 命名；日期来自采集时间，名称优先使用显式 title、正文一级标题、原文件名。批量采集中相同 title 的输入共用目录，不同 title 分开；再次添加同名主题或文档重名时追加人可读序号。主题根部生成普通 Markdown `index.md`，记录本次添加的简述及文档、附件链接；索引不含受管 ID，不作为登记笔记扫描。登记笔记放在主题目录的 `docs/`，附件按需放在并列的 `attachments/`。预览与实际写入复用相同目标解析，不覆盖已有文件。读取不要求固定目录或文件名，创建后的改名与 Inbox 内移动不构成漂移。
 
 新笔记 frontmatter 保存 schema_version、稳定 `inbox_` ID、title、source、captured_at、media_type、original_name、可选 payload 与 pending/processed 状态。processed 包含 processed_at 和关联 Knowledge ID。Inbox 不校验 schema_version 是否为当前值；已有正文 hash、payload hash/bytes 仅作为历史属性原样保留，不与当前内容比较，新笔记不生成这些字段。用户属性往返保留。Knowledge frontmatter 的严格版本和哈希契约不变。
 
-文本输入默认完整保存为规范化 Markdown 正文，原文中的 frontmatter 也作为输入内容保留，不要求原文符合任何元数据 Schema；显式 note_file 的用户 frontmatter 属性并入笔记。二进制输入或显式提供 note 的输入按原始字节复制到共享 `attachments/`，不为每项新建文件夹。payload 统一相对笔记所在目录，必须是 Inbox 内安全路径；相对位置变化时须更新引用。共享 attachments 与各级 payload 目录只保存原始材料，不作为 Inbox 笔记扫描。已有 `YYYY/MM/<id>/item.md` 与 `payload/` 使用相同解析逻辑直接发布，不要求转换布局或重写元数据。
+文本输入默认完整保存为规范化 Markdown 正文，原文中的 frontmatter 也作为输入内容保留，不要求原文符合任何元数据 Schema；显式 note_file 的用户 frontmatter 属性并入笔记。二进制输入或显式提供 note 的输入按原始字节复制到所属主题的 `attachments/`，没有附件时不创建该目录。payload 统一相对笔记所在目录，可使用 `..` 指向同级附件目录，但规范化后必须位于 Inbox 内；相对位置变化时须更新引用。各级 attachments 与 payload 目录只保存原始材料，不作为 Inbox 笔记扫描。已有 `YYYY/MM/<id>/item.md` 与 `payload/` 使用相同解析逻辑直接发布，不要求转换布局或重写元数据。
 
 用户与获授权 Agent 可直接编辑正文、标题、用户属性和附件，改名、移动或删除材料。稳定 ID、Schema 与发布状态仍由 CLI 生成。未登记的普通文件可留在 Inbox；使用 add 登记后才参与基于 ID 的发布，不从路径或内容猜测身份。
 
 ### 5.2 Add
 
-单文件或 stdin Add 在首次持久化前读取并预检全部输入与输出路径，写入时持有实例独占锁。stdin 只允许显式 `-`，且必须提供 name。采集不要求摘要或初步整理，note_file 可选。
+单文件或 stdin Add 在首次持久化前读取并预检全部输入与输出路径，写入时持有实例独占锁。stdin 只允许显式 `-`，且必须提供 name。简述可由 `--summary` 提供；缺省时索引按标题和文件名生成概览，不替代完整原始输入。note_file 可选。
 
-目录批量输入通过 batch manifest，每项 input 可带可选 note 和元数据。全部输入先校验重复、类型、大小、敏感文件、symlink/hardlink，再在同一文件系统暂存完整文件。逐文件以不可覆盖的安装操作提交；任一失败回滚本次新增文件，不删相邻文件。不会创建逐条材料目录。
+目录批量输入通过 batch manifest，每项 input 可带可选 note、summary 和元数据。全部输入先校验重复、类型、大小、敏感文件、symlink/hardlink，再在同一文件系统暂存完整文件。逐文件以不可覆盖的安装操作提交；任一失败回滚本次新增文件与空目录，不删相邻文件。同一批次按 title 归入主题目录，每个主题只生成一份索引。
 
 dry-run 复用相同规划和校验，但不创建锁、目录或事务。
 
@@ -121,9 +124,11 @@ Clean 接受明确 ID 或 `--processed`。明确 ID 可选 pending/processed，�
 
 ## 6. Knowledge 与声明式治理
 
-Knowledge frontmatter 包含 `know_` ID、type、title、published 状态、published_at、updated_at、content_hash、governance_version、lineage、通用用户属性和未知扩展属性。category、description、lifecycle 及所有类型专属属性均由当前内容包声明，不属于 Core 固定字段。
+Knowledge frontmatter 包含 `know_` ID、type、title、published 状态、published_at、updated_at、content_hash、governance_version、lineage、可选 attachments、通用用户属性和未知扩展属性。category、description、lifecycle 及所有类型专属属性均由当前内容包声明，不属于 Core 固定字段。
 
 lineage 每项保存 Inbox ID、发布时 payload hash、source 和 captured_at。运行时不会查找 Inbox 来验证 Knowledge。
+
+每个 target 自动复制其引用的 Inbox 原始附件到该 Knowledge Markdown 相邻的 `.assets/` 目录；同一 Inbox 被多个 target 使用时各自保存副本。attachments 逐项记录来源 Inbox ID、原文件名、相对路径、字节数与 SHA-256。更新 target 保留已有附件并校验其字节，新增附件不得覆盖已有副本。Knowledge 的读取、查询、索引和诊断需验证已声明附件的规范路径、文件类型、链接数、大小与哈希；清理 Inbox 不影响这些副本。
 
 通用治理执行器按内容包数据完成：type/category membership、公共和类型字段规则、H1、未解析模板标记、脚注完整性、稳定 ID 关系与 reciprocal 关系校验。未知用户属性必须在 draft、Promotion、索引、query/show 全链路往返保留。
 
@@ -142,7 +147,7 @@ Manifest 包含：
 
 冻结 Plan 额外绑定内容包 name、version、governance version 与规范策略 hash；同版本策略内容漂移也必须使 apply 失败并标记 stale。
 
-Create draft 必须显式提供内容包允许的 type；Core 不猜测默认类型。`template create` 为 Knowledge 草稿返回一个 `proposed_knowledge_id`，该 ID 尚未写入事实或保留，但由 CLI 使用加密随机源生成，Plan 会再次校验格式、唯一性和目标冲突；manifest 未提供时 Plan 仍可生成 ID。Plan 先校验内容包版本、全部 Inbox、draft、Knowledge baseline、声明式治理、关系、路径和重复目标。然后生成 `prm_` ID，将最终渲染文件复制到 Promotion 的 `files/`，生成覆盖所有 target 的 diff，并以规范 plan JSON 的 SHA-256 作为 plan hash 写入 state。
+Create draft 必须显式提供内容包允许的 type；Core 不猜测默认类型。`template create` 为 Knowledge 草稿返回一个 `proposed_knowledge_id`，该 ID 尚未写入事实或保留，但由 CLI 使用加密随机源生成，Plan 会再次校验格式、唯一性和目标冲突；manifest 未提供时 Plan 仍可生成 ID。Plan 先校验内容包版本、全部 Inbox、draft、Knowledge baseline、已有附件、声明式治理、关系、路径和重复目标。然后生成 `prm_` ID，将最终渲染文件和本次新增附件复制到 Promotion 的 `files/`，diff 列出全部 target 与附件的路径、大小和哈希，并以规范 plan JSON 的 SHA-256 作为 plan hash 写入 state。
 
 状态机固定为：
 
@@ -158,11 +163,11 @@ Plan 不写 Knowledge、不修改 Inbox、不更新索引。创建后 Apply 不�
 
 Diff 返回冻结完整 diff 与 plan hash。人工批准对象是 promotion ID、完整 diff 和 plan hash。Apply 必须显式传入 `--approve <plan-hash>`；缺少或不一致直接冲突。
 
-Apply 在实例独占写锁内重新验证 state/plan、内容包 identity 与策略 hash、Inbox hash、Knowledge baseline、冻结文件 hash、声明式治理、规范路径和跨目标关系。任一漂移将 Promotion 标记 stale，Knowledge 与 Inbox 零写入。
+Apply 在实例独占写锁内重新验证 state/plan、内容包 identity 与策略 hash、Inbox hash、Knowledge 与已有附件 baseline、全部冻结文件 hash、声明式治理、规范路径和跨目标关系。任一漂移将 Promotion 标记 stale，Knowledge 与 Inbox 零写入。
 
 ### 7.3 多文件事实事务
 
-真实 Apply 生成 `op_` journal。journal 枚举全部 Knowledge target、被 consume Inbox 的当前笔记路径和 Promotion `state.json`，记录 staged file、backup、new hash 和是否原本存在。
+真实 Apply 生成 `op_` journal。journal 枚举全部 Knowledge target、新附件、被 consume Inbox 的当前笔记路径和 Promotion `state.json`，记录 staged file、backup、new hash 和是否原本存在。
 
 ```text
 prepared -> files_committed -> complete

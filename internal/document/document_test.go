@@ -1,6 +1,7 @@
 package document
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -20,6 +21,21 @@ func TestMarkdownHashNormalizesLineEndingsOnly(t *testing.T) {
 	}
 	if a == HashBytes(NormalizeMarkdownBody([]byte("a\nb"))) {
 		t.Fatal("final newline must remain hash-significant")
+	}
+}
+
+func TestKnowledgeAttachmentMarkdownIsNotScannedAsDocument(t *testing.T) {
+	root := t.TempDir()
+	assetDir := filepath.Join(root, "note--"+testKnowledgeID+".assets", testInboxID)
+	if err := os.MkdirAll(assetDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(assetDir, "source.md"), []byte("# raw source\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	docs, problems := ScanMarkdown(root)
+	if len(docs) != 0 || len(problems) != 0 {
+		t.Fatalf("attachment was scanned as Knowledge: docs=%d problems=%v", len(docs), problems)
 	}
 }
 

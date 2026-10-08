@@ -184,7 +184,7 @@ func rebuildLocked(cfg *config.Instance) (*RebuildResult, error) {
 	}
 	seenIDs := map[string]bool{}
 	for _, doc := range docs {
-		if err := doc.Validate("knowledge", true); err != nil {
+		if err := doc.ValidateStoredAttachments(); err != nil {
 			return nil, fmt.Errorf("validate %s: %w", doc.Path, err)
 		}
 		if seenIDs[doc.Metadata.ID] {
@@ -506,7 +506,7 @@ func scanValidated(cfg *config.Instance) ([]*scannedDocument, error) {
 	}
 	seenIDs := map[string]bool{}
 	for _, doc := range docs {
-		if err := doc.Validate("knowledge", true); err != nil {
+		if err := doc.ValidateStoredAttachments(); err != nil {
 			return nil, fmt.Errorf("validate %s: %w", doc.Path, err)
 		}
 		if seenIDs[doc.Metadata.ID] {
@@ -822,6 +822,9 @@ func scanKnowledgeFileHashes(cfg *config.Instance) (map[string]string, error) {
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
 			return fmt.Errorf("symbolic link is not allowed: %s", path)
+		}
+		if entry.IsDir() && strings.HasSuffix(entry.Name(), ".assets") {
+			return filepath.SkipDir
 		}
 		if entry.IsDir() || strings.ToLower(filepath.Ext(entry.Name())) != ".md" {
 			return nil

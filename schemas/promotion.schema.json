@@ -22,7 +22,7 @@
       "type": "object",
       "required": ["name", "version", "governance_version", "policy_hash"],
       "properties": {
-        "name": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1, "pattern": "^[^/\\\\]+$", "not": { "enum": [".", ".."] } },
         "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
         "governance_version": { "type": "string", "minLength": 1, "pattern": "^\\S(.*\\S)?$" },
         "policy_hash": { "$ref": "#/$defs/hash" }
@@ -40,9 +40,22 @@
       },
       "additionalProperties": false
     },
+    "attachment": {
+      "type": "object",
+      "required": ["inbox_id", "name", "path", "frozen_file", "hash", "bytes"],
+      "properties": {
+        "inbox_id": { "$ref": "#/$defs/inboxId" },
+        "name": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 },
+        "frozen_file": { "type": "string", "minLength": 1 },
+        "hash": { "$ref": "#/$defs/hash" },
+        "bytes": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
     "target": {
       "type": "object",
-      "required": ["operation", "knowledge_id", "target_path", "frozen_file", "inbox_ids", "new_content_hash", "file_hash"],
+      "required": ["operation", "knowledge_id", "target_path", "frozen_file", "inbox_ids", "new_content_hash", "file_hash", "attachments"],
       "properties": {
         "operation": { "enum": ["create", "update"] },
         "knowledge_id": { "$ref": "#/$defs/knowledgeId" },
@@ -52,7 +65,8 @@
         "base_content_hash": { "$ref": "#/$defs/hash" },
         "base_file_hash": { "$ref": "#/$defs/hash" },
         "new_content_hash": { "$ref": "#/$defs/hash" },
-        "file_hash": { "$ref": "#/$defs/hash" }
+        "file_hash": { "$ref": "#/$defs/hash" },
+        "attachments": { "type": "array", "items": { "$ref": "#/$defs/attachment" } }
       },
       "additionalProperties": false
     }

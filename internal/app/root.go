@@ -358,7 +358,7 @@ func newStatusCommand(rt *Runtime) *cobra.Command {
 				if relErr != nil || filepath.ToSlash(rel) != document.KnowledgePath(cfg.Paths.Knowledge, doc.Metadata) {
 					problems = append(problems, "knowledge path is not canonical: "+doc.Path)
 				}
-				if validateErr := doc.Validate("knowledge", true); validateErr != nil {
+				if validateErr := doc.ValidateStoredAttachments(); validateErr != nil {
 					problems = append(problems, doc.Path+": "+validateErr.Error())
 				} else if governanceErr := governance.ValidateStored(cfg, doc, time.Now()); governanceErr != nil {
 					problems = append(problems, doc.Path+": "+governanceErr.Error())
@@ -423,7 +423,7 @@ func newDoctorCommand(rt *Runtime) *cobra.Command {
 			knowledgeDocs, knowledgeProblems := document.ScanMarkdown(cfg.KnowledgeDir())
 			knowledgeIDs := map[string]bool{}
 			for _, doc := range knowledgeDocs {
-				err := doc.Validate("knowledge", true)
+				err := doc.ValidateStoredAttachments()
 				rel, relErr := filepath.Rel(cfg.Root, doc.Path)
 				if err == nil && (relErr != nil || filepath.ToSlash(rel) != document.KnowledgePath(cfg.Paths.Knowledge, doc.Metadata)) {
 					err = errors.New("knowledge path is not canonical")

@@ -383,7 +383,13 @@ func validateRelations(policy *Policy, cfg *config.Instance, doc *document.Docum
 				problems = append(problems, fmt.Errorf("%s: %w", rule.Field, resolveErr))
 				continue
 			}
-			if err := target.Validate("knowledge", true); err != nil {
+			var err error
+			if prospective[id] == nil {
+				err = target.ValidateStoredAttachments()
+			} else {
+				err = target.Validate("knowledge", true)
+			}
+			if err != nil {
 				problems = append(problems, fmt.Errorf("%s: %w", rule.Field, err))
 				continue
 			}

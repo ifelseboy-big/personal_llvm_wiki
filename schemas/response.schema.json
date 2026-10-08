@@ -72,7 +72,7 @@
     },
     "data": true,
     "warnings": { "type": "array", "items": { "type": "string" } },
-    "affected_files": { "type": "array", "items": { "type": "string" } },
+    "affected_files": { "type": "array", "items": { "type": "string" }, "description": "For inbox.add, includes each topic index once alongside captured notes and attachments. For promote.plan and promote.apply, includes frozen and published attachments respectively." },
     "error": {
       "type": "object",
       "required": ["code", "message", "retryable"],

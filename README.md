@@ -101,15 +101,15 @@ skill status|install|update|uninstall
 
 ```bash
 llm-wiki init ~/wiki --name personal --no-interactive
-llm-wiki inbox add ./article.pdf --title "登录功能资料" --wiki ~/wiki
+llm-wiki inbox add ./article.pdf --title "登录功能资料" --summary "登录方案的原始资料" --wiki ~/wiki
 printf '%s' '原始输入' | llm-wiki inbox add - --name note.txt --title "登录功能想法" --wiki ~/wiki
 llm-wiki inbox list --status pending --wiki ~/wiki --json --no-interactive
 llm-wiki inbox show <inbox-id> --wiki ~/wiki --json --no-interactive
 ```
 
-Inbox 是可编辑的临时工作区。新增笔记按 `YYYY-MM-DD-初步功能名称.md` 命名，例如 `inbox/2026-08-26-登录功能.md`；功能名来自 `--title`，未提供时取正文一级标题或原文件名。同名追加 ` (2)`、` (3)`，不覆盖现有文件，不生成日期层级或 ID 文件夹。ID 只保存在 frontmatter，后续改名、在 Inbox 内移动不会改变身份。
+Inbox 是可编辑的临时工作区。每次添加新主题创建 `inbox/YYYY-MM-DD-初步功能名称/`，例如 `inbox/2026-08-26-登录功能/`；功能名来自 `--title`，未提供时取正文一级标题或原文件名。同名主题目录追加 ` (2)`、` (3)`，不覆盖现有内容。一个 batch manifest 中相同 title 的输入共用主题目录，不同 title 分开。主题根部的 `index.md` 写入本次内容简述，并链接到笔记和附件；可用单输入 `--summary` 或 batch 每项 `summary` 提供不超过 500 字的简述，缺省时按标题和文件名生成概览。索引是可编辑的采集快照，不作为登记笔记扫描。ID 只保存在笔记 frontmatter，后续改名、在 Inbox 内移动不会改变身份。
 
-文本和 Markdown 默认直接成为笔记正文，无须先写摘要。PDF 等二进制材料复制到共用的 `inbox/attachments/`，由笔记的 `payload` 引用；显式 `--note-file` 可额外提供初步整理并保留输入附件。`payload` 相对笔记所在目录，笔记与附件的相对位置变化时需同步修改引用。共享 `attachments/` 和已有条目中的 `payload/` 专门保存原始材料，不扫描为登记笔记。
+文本和 Markdown 默认直接成为 `docs/<原文件名>.md` 的笔记正文，无须先写摘要。PDF 等二进制材料复制到同一主题的 `attachments/`，由笔记的 `payload` 引用；没有附件就不创建该目录。显式 `--note-file` 可额外提供初步整理并保留输入附件。`payload` 相对笔记所在目录，例如 `../attachments/article.pdf`；移动笔记或附件后需同步修改引用，路径规范化后必须仍在 Inbox 内。`attachments/` 和已有条目中的 `payload/` 专门保存原始材料，不扫描为登记笔记。
 
 正文、标题、用户属性和附件可以直接编辑；无需维护正文或附件哈希。ID、Schema 与发布状态属于系统元数据。直接放入的未登记材料不会被当成受管笔记或事实，使用 `inbox add` 登记后再参与发布。目录批量采集使用 `--batch-manifest`，每项 `note_file` 可省略；任何输入预检失败时零写入。
 
@@ -171,9 +171,9 @@ llm-wiki promote diff <promotion-id> --wiki ~/wiki
 llm-wiki promote apply <promotion-id> --approve <plan-hash> --wiki ~/wiki
 ```
 
-Plan 会冻结所有最终文件和内容包 identity/策略 hash，并生成完整 diff。Apply 只接受完全相同的 plan hash，且只读取冻结副本；内容包、Inbox、Knowledge、plan 或冻结文件漂移会使 Promotion 进入 `stale`，不会写入事实。
+Plan 会冻结最终 Knowledge 文档、本次引用的原始附件和内容包 identity/策略 hash；diff 列出附件目标路径、大小与哈希。Apply 只接受完全相同的 plan hash，且只读取冻结副本；内容包、Inbox、Knowledge、已有附件、plan 或冻结文件漂移会使 Promotion 进入 `stale`，不会写入事实。
 
-一次 Promotion 可多输入、多输出，可同时创建和更新多篇 Knowledge。成功 Apply 将声明 consume 的 Inbox 标记为 processed，并自动增量更新索引；结果中的 `transaction_state` 明确区分 `complete` 与仍需恢复的 `files_committed`。清理仍是独立动作。
+一次 Promotion 可多输入、多输出，可同时创建和更新多篇 Knowledge。每篇文档引用的原始附件会复制到相邻的 `<slug>--<knowledge-id>.assets/<inbox-id>/`；同一 Inbox 被多篇文档使用时，每篇均有独立副本。文档 frontmatter 的 `attachments` 记录文件名、相对路径、大小和哈希，`show`、`query`、索引与诊断会检查副本完整性。成功 Apply 将声明 consume 的 Inbox 标记为 processed，并自动增量更新索引；结果中的 `transaction_state` 明确区分 `complete` 与仍需恢复的 `files_committed`。清理仍是独立动作。
 
 ## 查询与清理
 

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "name": "personal",
-  "version": "2.0.0",
+  "version": "2.0.2",
   "governance_version": "personal-2.0.0",
   "categories": [
     { "name": "development", "description": "需求、设计、工程决策、交付运行和研发复盘" },

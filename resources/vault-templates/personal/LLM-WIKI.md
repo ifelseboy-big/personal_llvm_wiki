@@ -30,7 +30,7 @@ llm-wiki inbox list --status pending --wiki <vault-root> --json --no-interactive
 
 文本从 stdin 输入时必须提供 `--name`。多文件使用 batch manifest，note 可省略；任一输入预检失败时零写入。
 
-笔记初始名称为 `YYYY-MM-DD-初步功能名称.md`，重名追加序号。可直接编辑、改名、在 Inbox 内移动或删除，不必维护哈希；ID 保留在元数据中。新附件集中放在 `inbox/attachments/`。已有 `item.md + payload/` 可直接继续整理发布，不要求迁移、改名或维护旧哈希。
+每次添加创建 `inbox/YYYY-MM-DD-初步功能名称/`，根部 `index.md` 写入本次内容简述及文件链接，笔记放 `docs/`，原始附件按需放并列的 `attachments/`；批量采集相同 title 共用主题目录。单输入 `--summary` 或 batch 每项 `summary` 可提供简述，缺省时按标题和文件名生成概览。重名追加序号。可直接编辑、改名、在 Inbox 内移动或删除，不必维护哈希；ID 保留在笔记元数据中。已有 `item.md + payload/` 可直接继续整理发布，不要求迁移、改名或维护旧哈希。
 
 ## Query：只回答已发布事实
 
@@ -49,8 +49,8 @@ Query 只使用 CLI 回读验证后的 Knowledge。没有足够证据时会明�
 
 发布分为两个明确阶段：
 
-1. Agent 运行 plan/diff，展示 promotion ID、plan hash、目标、consume 决策和完整 diff，然后停止。
-2. 你针对该冻结计划明确批准后，Agent 才能 apply。计划发生任何变化都必须重新展示和批准。
+1. Agent 运行 plan/diff，展示 promotion ID、plan hash、目标、随文档复制的附件路径/大小/哈希、consume 决策和完整 diff，然后停止。
+2. 你针对该冻结计划明确批准后，Agent 才能 apply。原始附件会复制到每篇 Knowledge 文档相邻的 `.assets/` 目录，清理 Inbox 后仍由 Knowledge 独立保存；计划发生任何变化都必须重新展示和批准。
 
 ## 维护
 

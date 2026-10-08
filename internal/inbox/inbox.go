@@ -23,6 +23,7 @@ import (
 
 const (
 	AttachmentsDir     = "attachments"
+	DocsDir            = "docs"
 	BatchSchemaVersion = 1
 )
 
@@ -32,6 +33,7 @@ type AddOptions struct {
 	Input          string
 	Name           string
 	Title          string
+	Summary        string
 	Source         string
 	NoteFile       string
 	BatchManifest  string
@@ -51,6 +53,7 @@ type BatchItem struct {
 	NoteFile string `json:"note_file"`
 	Name     string `json:"name,omitempty"`
 	Title    string `json:"title,omitempty"`
+	Summary  string `json:"summary,omitempty"`
 	Source   string `json:"source,omitempty"`
 }
 
@@ -58,6 +61,7 @@ type Added struct {
 	ID          string `json:"id"`
 	Status      string `json:"status"`
 	ItemPath    string `json:"item_path"`
+	IndexPath   string `json:"-"`
 	PayloadPath string `json:"payload_path"`
 	ItemHash    string `json:"item_hash"`
 	PayloadHash string `json:"payload_hash"`
@@ -66,8 +70,12 @@ type Added struct {
 }
 
 type prepared struct {
-	files  map[string][]byte
-	result Added
+	files    map[string][]byte
+	result   Added
+	topic    string
+	title    string
+	original string
+	summary  string
 }
 
 type CleanOptions struct {
@@ -110,6 +118,7 @@ func Add(cfg *config.Instance, opts AddOptions) ([]Added, error) {
 	}
 	preparedItems := make([]prepared, 0, len(items))
 	reserved := map[string]bool{}
+	topics := map[string]string{}
 	seenInputs := map[string]bool{}
 	for _, item := range items {
 		key := item.Input
@@ -123,11 +132,14 @@ func Add(cfg *config.Instance, opts AddOptions) ([]Added, error) {
 			return nil, fmt.Errorf("duplicate batch input %q", item.Input)
 		}
 		seenInputs[key] = true
-		entry, err := prepare(cfg, opts, item, reserved)
+		entry, err := prepare(cfg, opts, item, reserved, topics)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %w", ErrInputRejected, err)
 		}
 		preparedItems = append(preparedItems, entry)
+	}
+	if err := addIndexes(cfg, preparedItems); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInputRejected, err)
 	}
 	if opts.DryRun {
 		return addedResults(preparedItems), nil
@@ -140,7 +152,7 @@ func Add(cfg *config.Instance, opts AddOptions) ([]Added, error) {
 
 func inputItems(cfg *config.Instance, opts AddOptions) ([]BatchItem, error) {
 	if opts.BatchManifest != "" {
-		if opts.Input != "" || opts.NoteFile != "" || opts.Name != "" || opts.Title != "" || opts.Source != "" {
+		if opts.Input != "" || opts.NoteFile != "" || opts.Name != "" || opts.Title != "" || opts.Summary != "" || opts.Source != "" {
 			return nil, errors.New("batch manifest cannot be combined with single-input options")
 		}
 		data, err := readRegularLimited(opts.BatchManifest, cfg.Security.MaxInputBytes, true)
@@ -182,11 +194,15 @@ func inputItems(cfg *config.Instance, opts AddOptions) ([]BatchItem, error) {
 			return nil, errors.New("directory add requires --batch-manifest")
 		}
 	}
-	return []BatchItem{{Input: opts.Input, NoteFile: opts.NoteFile, Name: opts.Name, Title: opts.Title, Source: opts.Source}}, nil
+	return []BatchItem{{Input: opts.Input, NoteFile: opts.NoteFile, Name: opts.Name, Title: opts.Title, Summary: opts.Summary, Source: opts.Source}}, nil
 }
 
-func prepare(cfg *config.Instance, opts AddOptions, item BatchItem, reserved map[string]bool) (prepared, error) {
+func prepare(cfg *config.Instance, opts AddOptions, item BatchItem, reserved map[string]bool, topics map[string]string) (prepared, error) {
 	item.Title, item.Source = strings.TrimSpace(item.Title), strings.TrimSpace(item.Source)
+	item.Summary = strings.Join(strings.Fields(item.Summary), " ")
+	if !utf8.ValidString(item.Summary) || strings.ContainsRune(item.Summary, 0) || utf8.RuneCountInString(item.Summary) > 500 {
+		return prepared{}, errors.New("summary must be valid text of at most 500 characters")
+	}
 	var payload []byte
 	var original string
 	var err error
@@ -258,7 +274,15 @@ func prepare(cfg *config.Instance, opts AddOptions, item BatchItem, reserved map
 	if err != nil {
 		return prepared{}, err
 	}
-	itemRel, err := availablePath(cfg, cfg.Paths.Inbox, opts.Now.Format("2006-01-02")+"-"+readableName(item.Title)+".md", reserved)
+	topicRel := topics[item.Title]
+	if topicRel == "" {
+		topicRel, err = availableDirectory(cfg, cfg.Paths.Inbox, opts.Now.Format("2006-01-02")+"-"+readableName(item.Title), reserved)
+		if err != nil {
+			return prepared{}, err
+		}
+		topics[item.Title] = topicRel
+	}
+	itemRel, err := availablePath(cfg, filepath.Join(topicRel, DocsDir), readableName(strings.TrimSuffix(original, filepath.Ext(original)))+".md", reserved)
 	if err != nil {
 		return prepared{}, err
 	}
@@ -271,11 +295,14 @@ func prepare(cfg *config.Instance, opts AddOptions, item BatchItem, reserved map
 	payloadRel := itemRel
 	payloadHash := ""
 	if !inline {
-		payloadRel, err = availablePath(cfg, filepath.Join(cfg.Paths.Inbox, AttachmentsDir), readableName(original), reserved)
+		payloadRel, err = availablePath(cfg, filepath.Join(topicRel, AttachmentsDir), readableName(original), reserved)
 		if err != nil {
 			return prepared{}, err
 		}
-		payloadLocal, _ := filepath.Rel(cfg.Paths.Inbox, payloadRel)
+		payloadLocal, err := filepath.Rel(filepath.Dir(itemRel), payloadRel)
+		if err != nil {
+			return prepared{}, err
+		}
 		meta.Payload = filepath.ToSlash(payloadLocal)
 		files[payloadRel] = payload
 		payloadHash = document.HashBytes(payload)
@@ -294,10 +321,76 @@ func prepare(cfg *config.Instance, opts AddOptions, item BatchItem, reserved map
 	if inline {
 		payloadHash = document.HashBytes(document.NormalizeMarkdownBody(body))
 	}
-	return prepared{files: files, result: Added{
+	return prepared{files: files, topic: topicRel, title: item.Title, original: original, summary: item.Summary, result: Added{
 		ID: id, Status: "pending", ItemPath: filepath.ToSlash(itemRel), PayloadPath: filepath.ToSlash(payloadRel),
 		ItemHash: document.HashBytes(itemBytes), PayloadHash: payloadHash, MediaType: mediaType, Bytes: int64(len(payload)),
 	}}, nil
+}
+
+func addIndexes(cfg *config.Instance, items []prepared) error {
+	byTopic := map[string][]int{}
+	for i := range items {
+		byTopic[items[i].topic] = append(byTopic[items[i].topic], i)
+	}
+	for topic, indexes := range byTopic {
+		sort.Slice(indexes, func(i, j int) bool {
+			return items[indexes[i]].result.ItemPath < items[indexes[j]].result.ItemPath
+		})
+		indexRel := filepath.Join(topic, "index.md")
+		if err := fsutil.EnsureNoSymlinkPath(cfg.Root, filepath.Join(cfg.Root, indexRel)); err != nil {
+			return err
+		}
+		var content strings.Builder
+		fmt.Fprintf(&content, "# %s\n\n## 本次 Inbox 内容简述\n\n", indexText(items[indexes[0]].title))
+		for _, i := range indexes {
+			entry := items[i]
+			summary := entry.summary
+			if summary == "" {
+				summary = fmt.Sprintf("收录与「%s」有关的 %s。", entry.title, entry.original)
+			}
+			fmt.Fprintf(&content, "- **%s**：%s\n", indexText(entry.original), indexText(summary))
+		}
+		content.WriteString("\n## 文档\n\n")
+		for _, i := range indexes {
+			entry := items[i]
+			rel, err := filepath.Rel(topic, filepath.FromSlash(entry.result.ItemPath))
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(&content, "- [%s](<%s>)\n", indexText(entry.original), filepath.ToSlash(rel))
+		}
+		attachments := []string{}
+		for _, i := range indexes {
+			entry := items[i]
+			if entry.result.PayloadPath == entry.result.ItemPath {
+				continue
+			}
+			rel, err := filepath.Rel(topic, filepath.FromSlash(entry.result.PayloadPath))
+			if err != nil {
+				return err
+			}
+			attachments = append(attachments, fmt.Sprintf("- [%s](<%s>)\n", indexText(entry.original), filepath.ToSlash(rel)))
+		}
+		if len(attachments) != 0 {
+			content.WriteString("\n## 附件\n\n")
+			for _, attachment := range attachments {
+				content.WriteString(attachment)
+			}
+		}
+		if content.Len() > document.MaxMarkdownBytes {
+			return errors.New("inbox index exceeds Markdown size limit")
+		}
+		items[indexes[0]].files[indexRel] = []byte(content.String())
+		for _, i := range indexes {
+			items[i].result.IndexPath = filepath.ToSlash(indexRel)
+		}
+	}
+	return nil
+}
+
+func indexText(value string) string {
+	value = strings.Join(strings.Fields(value), " ")
+	return strings.NewReplacer("\\", "\\\\", "*", "\\*", "_", "\\_", "`", "\\`", "[", "\\[", "]", "\\]", "<", "\\<", ">", "\\>").Replace(value)
 }
 
 func readableName(name string) string {
@@ -317,6 +410,29 @@ func availablePath(cfg *config.Instance, dir, name string, reserved map[string]b
 		candidate := name
 		if n > 1 {
 			candidate = fmt.Sprintf("%s (%d)%s", stem, n, ext)
+		}
+		rel := filepath.Join(dir, candidate)
+		path := filepath.Join(cfg.Root, rel)
+		if err := fsutil.EnsureNoSymlinkPath(cfg.Root, path); err != nil {
+			return "", err
+		}
+		if reserved[rel] {
+			continue
+		}
+		if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+			reserved[rel] = true
+			return rel, nil
+		} else if err != nil {
+			return "", err
+		}
+	}
+}
+
+func availableDirectory(cfg *config.Instance, dir, name string, reserved map[string]bool) (string, error) {
+	for n := 1; ; n++ {
+		candidate := name
+		if n > 1 {
+			candidate = fmt.Sprintf("%s (%d)", name, n)
 		}
 		rel := filepath.Join(dir, candidate)
 		path := filepath.Join(cfg.Root, rel)
@@ -377,13 +493,9 @@ func commit(cfg *config.Instance, items []prepared, now time.Time) error {
 			rollback()
 			return err
 		}
-		dir := filepath.Dir(target)
-		if _, err := os.Lstat(dir); errors.Is(err, os.ErrNotExist) {
-			if err := os.Mkdir(dir, 0o700); err != nil {
-				rollback()
-				return err
-			}
-			createdDirs = append(createdDirs, dir)
+		if err := createParents(cfg.Root, target, &createdDirs); err != nil {
+			rollback()
+			return err
 		}
 		stage := filepath.Join(txnRoot, fmt.Sprint(i))
 		// Link then unlink installs a complete file without overwriting a concurrently created target.
@@ -395,6 +507,32 @@ func commit(cfg *config.Instance, items []prepared, now time.Time) error {
 		if err := os.Remove(stage); err != nil {
 			rollback()
 			return err
+		}
+	}
+	return nil
+}
+
+func createParents(root, target string, created *[]string) error {
+	rel, err := filepath.Rel(root, filepath.Dir(target))
+	if err != nil {
+		return err
+	}
+	dir := root
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		dir = filepath.Join(dir, part)
+		info, err := os.Lstat(dir)
+		if errors.Is(err, os.ErrNotExist) {
+			if err := os.Mkdir(dir, 0o700); err != nil {
+				return err
+			}
+			*created = append(*created, dir)
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("inbox parent is not a regular directory: %s", dir)
 		}
 	}
 	return nil
@@ -432,9 +570,9 @@ func List(cfg *config.Instance, status string) ([]*document.Document, []error) {
 			return nil
 		}
 		if entry.IsDir() {
-			// Both shared attachments and existing per-item payload directories
+			// Attachment directories and existing per-item payload directories
 			// contain raw input, which may itself have Markdown frontmatter.
-			if path == filepath.Join(cfg.InboxDir(), AttachmentsDir) || entry.Name() == "payload" {
+			if entry.Name() == AttachmentsDir || entry.Name() == "payload" {
 				return filepath.SkipDir
 			}
 			return nil
@@ -476,7 +614,7 @@ func List(cfg *config.Instance, status string) ([]*document.Document, []error) {
 }
 
 // PayloadPath resolves an optional attachment relative to its note, for both
-// existing item/payload bundles and new date-named notes. No guessed paths.
+// existing item/payload bundles and topic docs. No guessed paths.
 func PayloadPath(cfg *config.Instance, doc *document.Document) (string, error) {
 	path := doc.Path
 	if doc.Metadata.Payload != "" {
@@ -485,7 +623,7 @@ func PayloadPath(cfg *config.Instance, doc *document.Document) (string, error) {
 			return "", errors.New("inbox attachment must be a note-relative path inside Inbox")
 		}
 		for _, part := range strings.Split(rel, "/") {
-			if part == ".." || part == "." || part == "" {
+			if part == "." || part == "" {
 				return "", errors.New("inbox attachment path contains an invalid component")
 			}
 		}
