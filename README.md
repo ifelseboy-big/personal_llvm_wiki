@@ -173,6 +173,8 @@ llm-wiki promote apply <promotion-id> --approve <plan-hash> --wiki ~/wiki
 
 Plan 会冻结最终 Knowledge 文档、本次引用的原始附件和内容包 identity/策略 hash；diff 列出附件目标路径、大小与哈希。Apply 只接受完全相同的 plan hash，且只读取冻结副本；内容包、Inbox、Knowledge、已有附件、plan 或冻结文件漂移会使 Promotion 进入 `stale`，不会写入事实。
 
+旧的冻结计划若不符合当前 Plan Schema，不能继续 diff/apply。`promote reject <promotion-id> --dry-run` 可先预览；确认后执行 `promote reject <promotion-id> --reason "重新规划"`，仅将哈希匹配的计划状态改为 `rejected`，保留原计划和差异文件，不改 Inbox 或 Knowledge。已完成的历史计划不占用 Inbox；新发布应重新生成并审阅当前格式的计划。
+
 一次 Promotion 可多输入、多输出，可同时创建和更新多篇 Knowledge。每篇文档引用的原始附件会复制到相邻的 `<slug>--<knowledge-id>.assets/<inbox-id>/`；同一 Inbox 被多篇文档使用时，每篇均有独立副本。文档 frontmatter 的 `attachments` 记录文件名、相对路径、大小和哈希，`show`、`query`、索引与诊断会检查副本完整性。成功 Apply 将声明 consume 的 Inbox 标记为 processed，并自动增量更新索引；结果中的 `transaction_state` 明确区分 `complete` 与仍需恢复的 `files_committed`。清理仍是独立动作。
 
 ## 查询与清理

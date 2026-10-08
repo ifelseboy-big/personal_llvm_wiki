@@ -197,6 +197,81 @@ func TestPromotionApprovalAndStaleErrorsAreStable(t *testing.T) {
 	}
 }
 
+func TestInvalidHistoricalPromotionCanBeRetiredWithoutChangingInbox(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "wiki")
+	runCLI(t, "", "init", root, "--name", "historical-plan", "--json", "--no-interactive")
+	added := runCLI(t, "original source", "inbox", "add", "-", "--name", "source.txt", "--wiki", root, "--json", "--no-interactive")
+	inputID := nestedString(t, added.Data, "items", 0, "id")
+	work := t.TempDir()
+	if err := os.WriteFile(filepath.Join(work, "draft.md"), []byte("---\ntype: note\ncategory: learning\ntitle: Historical plan\ndescription: Example\nlifecycle: current\n---\n# Historical plan\n\nExample fact.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest := fmt.Sprintf(`{"schema_version":1,"inboxes":[{"id":%q,"payload_hash":%q,"item_hash":%q,"consume":true}],"targets":[{"operation":"create","draft_file":"draft.md","inbox_ids":[%q]}]}`,
+		inputID, nestedString(t, added.Data, "items", 0, "payload_hash"), nestedString(t, added.Data, "items", 0, "item_hash"), inputID)
+	manifestPath := filepath.Join(work, "promotion.json")
+	if err := os.WriteFile(manifestPath, []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	planned := runCLI(t, "", "promote", "plan", "--manifest", manifestPath, "--wiki", root, "--json", "--no-interactive")
+	promotionID := nestedString(t, planned.Data, "promotion_id")
+	promotionDir := filepath.Join(root, ".llm-wiki", "promotions", promotionID)
+	planPath := filepath.Join(promotionDir, "plan.json")
+	planBytes, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan map[string]any
+	if err := json.Unmarshal(planBytes, &plan); err != nil {
+		t.Fatal(err)
+	}
+	delete(plan["targets"].([]any)[0].(map[string]any), "attachments")
+	planBytes, err = json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(planPath, planBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(promotionDir, "state.json")
+	stateBytes, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state map[string]any
+	if err := json.Unmarshal(stateBytes, &state); err != nil {
+		t.Fatal(err)
+	}
+	state["plan_hash"] = document.HashBytes(planBytes)
+	stateBytes, err = json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, stateBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	blocked := runCLIFailure(t, "", "inbox", "list", "--status", "pending", "--wiki", root, "--json", "--no-interactive")
+	if blocked.Error == nil || blocked.Error.Code != "PROMOTION_READ_FAILED" {
+		t.Fatalf("invalid planned promotion did not block active Inbox scan: %#v", blocked)
+	}
+	runCLI(t, "", "promote", "reject", promotionID, "--dry-run", "--wiki", root, "--json", "--no-interactive")
+	afterPreview, err := os.ReadFile(statePath)
+	if err != nil || !bytes.Equal(stateBytes, afterPreview) {
+		t.Fatalf("reject preview changed promotion state: %v", err)
+	}
+	runCLI(t, "", "promote", "reject", promotionID, "--reason", "replan", "--wiki", root, "--json", "--no-interactive")
+	listed := runCLI(t, "", "inbox", "list", "--status", "pending", "--wiki", root, "--json", "--no-interactive")
+	if nestedFloat(t, listed.Data, "count") != 1 || nestedString(t, listed.Data, "items", 0, "id") != inputID {
+		t.Fatalf("retiring old plan changed Inbox: %#v", listed.Data)
+	}
+	status := runCLI(t, "", "status", "--wiki", root, "--json", "--no-interactive")
+	if nestedFloat(t, status.Data, "active_promotions") != 0 || len(status.Warnings) != 0 {
+		t.Fatalf("retired plan still blocks status: %#v", status)
+	}
+	if diff := runCLIFailure(t, "", "promote", "diff", promotionID, "--wiki", root, "--json", "--no-interactive"); diff.Error == nil {
+		t.Fatal("invalid historical plan became readable for publication")
+	}
+}
+
 func TestProposedKnowledgeIDEnablesAtomicReciprocalPromotion(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "wiki")
 	runCLI(t, "", "init", root, "--name", "reciprocal", "--json", "--no-interactive")

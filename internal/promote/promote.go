@@ -901,16 +901,18 @@ func commitFiles(cfg *config.Instance, promotionID, opID string, files map[strin
 	return writeJournal(txnDir, journal)
 }
 
-func Reject(cfg *config.Instance, promotionID, reason string, now time.Time) (State, error) {
+func Reject(cfg *config.Instance, promotionID, reason string, now time.Time, dryRun bool) (State, error) {
 	if now.IsZero() {
 		now = time.Now()
 	}
-	lock, err := vault.AcquireWrite(cfg, 5*time.Second)
-	if err != nil {
-		return State{}, err
+	if !dryRun {
+		lock, err := vault.AcquireWrite(cfg, 5*time.Second)
+		if err != nil {
+			return State{}, err
+		}
+		defer lock.Close()
 	}
-	defer lock.Close()
-	_, state, _, err := Load(cfg, promotionID)
+	state, err := loadStateAndPlanHash(cfg, promotionID)
 	if err != nil {
 		return State{}, err
 	}
@@ -921,8 +923,39 @@ func Reject(cfg *config.Instance, promotionID, reason string, now time.Time) (St
 	state.Reason = strings.TrimSpace(reason)
 	state.RejectedAt = now.Format(time.RFC3339)
 	state.UpdatedAt = now.Format(time.RFC3339)
-	if err := writeState(cfg, promotionID, state); err != nil {
-		return State{}, err
+	if !dryRun {
+		if err := writeState(cfg, promotionID, state); err != nil {
+			return State{}, err
+		}
+	}
+	return state, nil
+}
+
+func loadStateAndPlanHash(cfg *config.Instance, promotionID string) (State, error) {
+	var state State
+	if !document.ValidID("prm", promotionID) {
+		return state, errors.New("invalid promotion id")
+	}
+	dir := promotionDir(cfg, promotionID)
+	if err := fsutil.EnsureNoSymlinkPath(cfg.Root, dir); err != nil {
+		return state, err
+	}
+	planBytes, err := readRegularExact(filepath.Join(dir, "plan.json"))
+	if err != nil {
+		return state, err
+	}
+	stateBytes, err := readRegularExact(filepath.Join(dir, "state.json"))
+	if err != nil {
+		return state, err
+	}
+	if err := decodeStrict(stateBytes, &state); err != nil {
+		return state, err
+	}
+	if err := validateState(state); err != nil {
+		return state, err
+	}
+	if state.PlanHash != document.HashBytes(planBytes) {
+		return state, errors.New("promotion plan integrity hash mismatch")
 	}
 	return state, nil
 }
@@ -941,12 +974,16 @@ func ActiveInboxIDs(cfg *config.Instance) (map[string]bool, error) {
 		if !entry.IsDir() || !document.ValidID("prm", entry.Name()) {
 			continue
 		}
-		plan, state, _, err := Load(cfg, entry.Name())
+		state, err := loadStateAndPlanHash(cfg, entry.Name())
 		if err != nil {
 			return nil, err
 		}
 		if state.Status != "planned" {
 			continue
+		}
+		plan, _, _, err := Load(cfg, entry.Name())
+		if err != nil {
+			return nil, err
 		}
 		for _, input := range plan.Inboxes {
 			active[input.ID] = true
@@ -969,11 +1006,14 @@ func ActiveCount(cfg *config.Instance) (int, error) {
 		if !entry.IsDir() || !document.ValidID("prm", entry.Name()) {
 			continue
 		}
-		_, state, _, err := Load(cfg, entry.Name())
+		state, err := loadStateAndPlanHash(cfg, entry.Name())
 		if err != nil {
 			return 0, err
 		}
 		if state.Status == "planned" {
+			if _, _, _, err := Load(cfg, entry.Name()); err != nil {
+				return 0, err
+			}
 			count++
 		}
 	}

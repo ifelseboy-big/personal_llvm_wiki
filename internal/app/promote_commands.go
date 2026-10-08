@@ -169,22 +169,15 @@ func newPromoteRejectCommand(rt *Runtime) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if rt.DryRun {
-				_, state, _, loadErr := promote.Load(cfg, args[0])
-				if loadErr != nil {
-					return E("PROMOTION_REJECT_FAILED", "cannot reject promotion", ExitConflict, loadErr)
-				}
-				if state.Status != "planned" {
-					return E("PROMOTION_REJECT_FAILED", "cannot reject promotion", ExitConflict, fmt.Errorf("promotion is %s, expected planned", state.Status))
-				}
-				return rt.Success("promote.reject", ref, map[string]any{"promotion_id": args[0], "status": "rejected", "reason": reason, "dry_run": true}, recoveryWarnings, nil)
-			}
-			state, err := promote.Reject(cfg, args[0], reason, time.Time{})
+			state, err := promote.Reject(cfg, args[0], reason, time.Time{}, rt.DryRun)
 			if err != nil {
 				if errors.Is(err, vault.ErrLocked) {
 					return E("WIKI_LOCKED", "wiki is locked by another writer", ExitLock, err)
 				}
 				return E("PROMOTION_REJECT_FAILED", "cannot reject promotion", ExitConflict, err)
+			}
+			if rt.DryRun {
+				return rt.Success("promote.reject", ref, map[string]any{"promotion_id": args[0], "status": "rejected", "reason": reason, "dry_run": true}, recoveryWarnings, nil)
 			}
 			statePath := filepath.ToSlash(filepath.Join(cfg.Paths.Runtime, "promotions", args[0], "state.json"))
 			return rt.Success("promote.reject", ref, map[string]any{"promotion_id": args[0], "state": state}, recoveryWarnings, []string{statePath})

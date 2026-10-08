@@ -159,6 +159,8 @@ planned -> applied
 
 Plan 不写 Knowledge、不修改 Inbox、不更新索引。创建后 Apply 不再读取工作草稿。
 
+查询活动 Promotion 时，先校验每份记录的 state 与冻结 plan 文件哈希；只有 `planned` 状态才按当前 Plan Schema 完整解码。已应用、已拒绝或已失效的历史 plan 不参与 Inbox 活动占用判断。`promote reject` 的真实执行只允许在独占写锁内将哈希匹配的 `planned` 记录改为 `rejected`，即使其 plan 已不符合当前 Schema；它不解析 plan、不写 Inbox 或 Knowledge。`promote diff/apply` 始终严格拒绝不符合当前 Schema 的 plan。
+
 ### 7.2 Diff、批准与 Apply 预检
 
 Diff 返回冻结完整 diff 与 plan hash。人工批准对象是 promotion ID、完整 diff 和 plan hash。Apply 必须显式传入 `--approve <plan-hash>`；缺少或不一致直接冲突。

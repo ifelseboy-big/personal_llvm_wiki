@@ -72,6 +72,119 @@ func TestPromotionSupportsMultipleInputsAndOutputs(t *testing.T) {
 	}
 }
 
+func TestInvalidFrozenPlanCanBeRejectedWithoutAcceptingIt(t *testing.T) {
+	cfg := initPromotionWiki(t)
+	input := addInbox(t, cfg, "source.txt", "original source", 100)
+	base := t.TempDir()
+	writeDraft(t, filepath.Join(base, "draft.md"), "note", "Old plan", "A published fact.")
+	manifest := Manifest{SchemaVersion: SchemaVersion,
+		Inboxes: []ManifestInbox{{ID: input.ID, PayloadHash: input.PayloadHash, ItemHash: input.ItemHash, Consume: true}},
+		Targets: []ManifestTarget{{Operation: "create", DraftFile: "draft.md", InboxIDs: []string{input.ID}}},
+	}
+	planned, err := PlanPromotion(cfg, PlanOptions{ManifestPath: writeManifest(t, base, manifest), Now: time.Unix(200, 0).UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	removeFrozenAttachmentList(t, cfg, planned.Plan.ID)
+	if _, _, _, err := Load(cfg, planned.Plan.ID); err == nil {
+		t.Fatal("invalid frozen plan was accepted")
+	}
+	if _, err := ActiveInboxIDs(cfg); err == nil {
+		t.Fatal("invalid planned promotion was hidden from active Inbox scan")
+	}
+	if _, err := ActiveCount(cfg); err == nil {
+		t.Fatal("invalid planned promotion was hidden from active count")
+	}
+	statePath := filepath.Join(promotionDir(cfg, planned.Plan.ID), "state.json")
+	before, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview, err := Reject(cfg, planned.Plan.ID, "replace with current plan", time.Unix(300, 0).UTC(), true)
+	if err != nil || preview.Status != "rejected" {
+		t.Fatalf("cannot preview rejection of invalid plan: %#v %v", preview, err)
+	}
+	after, err := os.ReadFile(statePath)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("reject preview changed the state: %v", err)
+	}
+	rejected, err := Reject(cfg, planned.Plan.ID, "replace with current plan", time.Unix(300, 0).UTC(), false)
+	if err != nil || rejected.Status != "rejected" {
+		t.Fatalf("cannot reject invalid plan: %#v %v", rejected, err)
+	}
+	active, err := ActiveInboxIDs(cfg)
+	if err != nil || len(active) != 0 {
+		t.Fatalf("rejected plan still blocks Inbox: %#v %v", active, err)
+	}
+	count, err := ActiveCount(cfg)
+	if err != nil || count != 0 {
+		t.Fatalf("rejected plan still counts as active: %d %v", count, err)
+	}
+	if _, _, _, err := Load(cfg, planned.Plan.ID); err == nil {
+		t.Fatal("rejection made invalid plan readable")
+	}
+}
+
+func TestPromotionStateScanRejectsChangedFrozenBytes(t *testing.T) {
+	cfg := initPromotionWiki(t)
+	input := addInbox(t, cfg, "source.txt", "original source", 100)
+	base := t.TempDir()
+	writeDraft(t, filepath.Join(base, "draft.md"), "note", "Frozen plan", "A published fact.")
+	manifest := Manifest{SchemaVersion: SchemaVersion,
+		Inboxes: []ManifestInbox{{ID: input.ID, PayloadHash: input.PayloadHash, ItemHash: input.ItemHash, Consume: true}},
+		Targets: []ManifestTarget{{Operation: "create", DraftFile: "draft.md", InboxIDs: []string{input.ID}}},
+	}
+	planned, err := PlanPromotion(cfg, PlanOptions{ManifestPath: writeManifest(t, base, manifest), Now: time.Unix(200, 0).UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planPath := filepath.Join(promotionDir(cfg, planned.Plan.ID), "plan.json")
+	if err := os.WriteFile(planPath, []byte("changed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Reject(cfg, planned.Plan.ID, "invalid", time.Unix(300, 0).UTC(), false); err == nil {
+		t.Fatal("changed frozen plan was rejected without integrity verification")
+	}
+	if _, err := ActiveInboxIDs(cfg); err == nil {
+		t.Fatal("changed frozen plan was hidden from active Inbox scan")
+	}
+}
+
+func removeFrozenAttachmentList(t *testing.T, cfg *config.Instance, promotionID string) {
+	t.Helper()
+	planPath := filepath.Join(promotionDir(cfg, promotionID), "plan.json")
+	planBytes, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan map[string]any
+	if err := json.Unmarshal(planBytes, &plan); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range plan["targets"].([]any) {
+		delete(target.(map[string]any), "attachments")
+	}
+	planBytes, err = json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(planPath, planBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stateBytes, err := os.ReadFile(filepath.Join(promotionDir(cfg, promotionID), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state State
+	if err := json.Unmarshal(stateBytes, &state); err != nil {
+		t.Fatal(err)
+	}
+	state.PlanHash = document.HashBytes(planBytes)
+	if err := writeState(cfg, promotionID, state); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPromotionPublishesAttachmentIndependentlyOfInbox(t *testing.T) {
 	cfg := initPromotionWiki(t)
 	payload := []byte("%PDF-1.0\noriginal attachment\n")

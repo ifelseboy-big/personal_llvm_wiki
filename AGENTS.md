@@ -8,7 +8,7 @@
 
 - 用户请求定义本次任务范围。目标、范围或破坏性影响不明确时，先确认再修改。
 - 只修改完成目标所需的文件，保留无关工作区改动。未经明确要求，禁止提交、推送或改写 Git 历史。
-- 仓库只实现权威文档定义的当前契约。instance、Knowledge frontmatter、content pack policy、内容包 identity 或 governance 版本不匹配时必须拒绝，禁止新增旧版本读取、字段猜测或迁移分支。Inbox 是临时材料，不以版本字段、采集哈希或目录命名作为读取与发布门槛。
+- 仓库只实现权威文档定义的当前契约。instance、Knowledge frontmatter、content pack policy、内容包 identity 或 governance 版本不匹配时必须拒绝；Promotion 的 diff/apply 必须拒绝非当前 Plan Schema。仅允许通过校验 state 与冻结文件哈希，把无法读取的 planned 计划标记为 rejected，不解析或迁移旧 plan。禁止新增旧版本读取、字段猜测或迁移分支。Inbox 是临时材料，不以版本字段、采集哈希或目录命名作为读取与发布门槛。
 - 发现实现、Schema、模板或文档冲突时必须同步修正；禁止任选一侧作为临时正确答案。
 
 ## 2. 权威来源
