@@ -1249,9 +1249,6 @@ func validatePlan(cfg *config.Instance, plan Plan, expected string) error {
 		if target.FrozenFile != expectedFrozen {
 			return errors.New("promotion frozen file path is not canonical")
 		}
-		if target.Attachments == nil {
-			return errors.New("promotion target requires an attachments list")
-		}
 		seenAttachments := map[string]bool{}
 		for _, attachment := range target.Attachments {
 			if !targetInboxes[attachment.InboxID] || seenAttachments[attachment.InboxID] || !document.ValidAttachmentName(attachment.Name) ||

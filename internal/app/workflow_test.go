@@ -197,7 +197,7 @@ func TestPromotionApprovalAndStaleErrorsAreStable(t *testing.T) {
 	}
 }
 
-func TestInvalidHistoricalPromotionCanBeRetiredWithoutChangingInbox(t *testing.T) {
+func TestAttachmentFreeHistoricalPromotionCanBeRetiredWithoutChangingInbox(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "wiki")
 	runCLI(t, "", "init", root, "--name", "historical-plan", "--json", "--no-interactive")
 	added := runCLI(t, "original source", "inbox", "add", "-", "--name", "source.txt", "--wiki", root, "--json", "--no-interactive")
@@ -249,9 +249,16 @@ func TestInvalidHistoricalPromotionCanBeRetiredWithoutChangingInbox(t *testing.T
 	if err := os.WriteFile(statePath, stateBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	blocked := runCLIFailure(t, "", "inbox", "list", "--status", "pending", "--wiki", root, "--json", "--no-interactive")
-	if blocked.Error == nil || blocked.Error.Code != "PROMOTION_READ_FAILED" {
-		t.Fatalf("invalid planned promotion did not block active Inbox scan: %#v", blocked)
+	listedBefore := runCLI(t, "", "inbox", "list", "--status", "pending", "--wiki", root, "--json", "--no-interactive")
+	if nestedFloat(t, listedBefore.Data, "count") != 1 || nestedString(t, listedBefore.Data, "items", 0, "id") != inputID {
+		t.Fatalf("attachment-free promotion blocked Inbox: %#v", listedBefore)
+	}
+	beforeStatus := runCLI(t, "", "status", "--wiki", root, "--json", "--no-interactive")
+	if nestedFloat(t, beforeStatus.Data, "active_promotions") != 1 || len(beforeStatus.Warnings) != 0 {
+		t.Fatalf("attachment-free promotion blocked status: %#v", beforeStatus)
+	}
+	if diff := runCLI(t, "", "promote", "diff", promotionID, "--wiki", root, "--json", "--no-interactive"); nestedString(t, diff.Data, "plan_hash") != state["plan_hash"] {
+		t.Fatalf("attachment-free promotion cannot be reviewed: %#v", diff)
 	}
 	runCLI(t, "", "promote", "reject", promotionID, "--dry-run", "--wiki", root, "--json", "--no-interactive")
 	afterPreview, err := os.ReadFile(statePath)
@@ -266,9 +273,6 @@ func TestInvalidHistoricalPromotionCanBeRetiredWithoutChangingInbox(t *testing.T
 	status := runCLI(t, "", "status", "--wiki", root, "--json", "--no-interactive")
 	if nestedFloat(t, status.Data, "active_promotions") != 0 || len(status.Warnings) != 0 {
 		t.Fatalf("retired plan still blocks status: %#v", status)
-	}
-	if diff := runCLIFailure(t, "", "promote", "diff", promotionID, "--wiki", root, "--json", "--no-interactive"); diff.Error == nil {
-		t.Fatal("invalid historical plan became readable for publication")
 	}
 }
 

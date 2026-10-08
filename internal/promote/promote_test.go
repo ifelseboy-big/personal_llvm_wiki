@@ -72,6 +72,70 @@ func TestPromotionSupportsMultipleInputsAndOutputs(t *testing.T) {
 	}
 }
 
+func TestFrozenPlanWithoutAttachmentsListCanBeApplied(t *testing.T) {
+	cfg := initPromotionWiki(t)
+	input := addInbox(t, cfg, "source.txt", "original source", 100)
+	base := t.TempDir()
+	writeDraft(t, filepath.Join(base, "draft.md"), "note", "No attachments", "A published fact.")
+	manifest := Manifest{SchemaVersion: SchemaVersion,
+		Inboxes: []ManifestInbox{{ID: input.ID, PayloadHash: input.PayloadHash, ItemHash: input.ItemHash, Consume: true}},
+		Targets: []ManifestTarget{{Operation: "create", DraftFile: "draft.md", InboxIDs: []string{input.ID}}},
+	}
+	planned, err := PlanPromotion(cfg, PlanOptions{ManifestPath: writeManifest(t, base, manifest), Now: time.Unix(200, 0).UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rewriteFrozenPlan(t, cfg, planned.Plan.ID, func(plan map[string]any) {
+		delete(plan["targets"].([]any)[0].(map[string]any), "attachments")
+	})
+	loaded, state, _, err := Load(cfg, planned.Plan.ID)
+	if err != nil || len(loaded.Targets[0].Attachments) != 0 {
+		t.Fatalf("attachment-free plan cannot be read: %#v %v", loaded, err)
+	}
+	active, err := ActiveInboxIDs(cfg)
+	if err != nil || !active[input.ID] {
+		t.Fatalf("attachment-free plan is not active: %#v %v", active, err)
+	}
+	if _, err := Diff(cfg, planned.Plan.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Apply(cfg, planned.Plan.ID, state.PlanHash, false, time.Unix(300, 0).UTC()); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := document.FindByID(cfg.KnowledgeDir(), loaded.Targets[0].KnowledgeID)
+	if err != nil || len(doc.Metadata.Attachments) != 0 {
+		t.Fatalf("attachment-free promotion published unexpected attachments: %#v %v", doc, err)
+	}
+}
+
+func TestFrozenPlanCannotOmitReferencedAttachment(t *testing.T) {
+	cfg := initPromotionWiki(t)
+	input := addInbox(t, cfg, "source.pdf", "%PDF-1.0\noriginal attachment", 100)
+	base := t.TempDir()
+	writeDraft(t, filepath.Join(base, "draft.md"), "note", "Attachment required", "A published fact.")
+	manifest := Manifest{SchemaVersion: SchemaVersion,
+		Inboxes: []ManifestInbox{{ID: input.ID, PayloadHash: input.PayloadHash, ItemHash: input.ItemHash, Consume: true}},
+		Targets: []ManifestTarget{{Operation: "create", DraftFile: "draft.md", InboxIDs: []string{input.ID}}},
+	}
+	planned, err := PlanPromotion(cfg, PlanOptions{ManifestPath: writeManifest(t, base, manifest), Now: time.Unix(200, 0).UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rewriteFrozenPlan(t, cfg, planned.Plan.ID, func(plan map[string]any) {
+		delete(plan["targets"].([]any)[0].(map[string]any), "attachments")
+	})
+	_, state, _, err := Load(cfg, planned.Plan.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Apply(cfg, planned.Plan.ID, state.PlanHash, false, time.Unix(300, 0).UTC()); !errors.Is(err, ErrApplyConflict) {
+		t.Fatalf("missing frozen attachment was accepted: %v", err)
+	}
+	if _, err := document.FindByID(cfg.KnowledgeDir(), planned.Plan.Targets[0].KnowledgeID); err == nil {
+		t.Fatal("invalid promotion wrote Knowledge")
+	}
+}
+
 func TestInvalidFrozenPlanCanBeRejectedWithoutAcceptingIt(t *testing.T) {
 	cfg := initPromotionWiki(t)
 	input := addInbox(t, cfg, "source.txt", "original source", 100)
@@ -85,7 +149,9 @@ func TestInvalidFrozenPlanCanBeRejectedWithoutAcceptingIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	removeFrozenAttachmentList(t, cfg, planned.Plan.ID)
+	rewriteFrozenPlan(t, cfg, planned.Plan.ID, func(plan map[string]any) {
+		plan["targets"].([]any)[0].(map[string]any)["attachments"] = "invalid"
+	})
 	if _, _, _, err := Load(cfg, planned.Plan.ID); err == nil {
 		t.Fatal("invalid frozen plan was accepted")
 	}
@@ -150,7 +216,7 @@ func TestPromotionStateScanRejectsChangedFrozenBytes(t *testing.T) {
 	}
 }
 
-func removeFrozenAttachmentList(t *testing.T, cfg *config.Instance, promotionID string) {
+func rewriteFrozenPlan(t *testing.T, cfg *config.Instance, promotionID string, mutate func(map[string]any)) {
 	t.Helper()
 	planPath := filepath.Join(promotionDir(cfg, promotionID), "plan.json")
 	planBytes, err := os.ReadFile(planPath)
@@ -161,9 +227,7 @@ func removeFrozenAttachmentList(t *testing.T, cfg *config.Instance, promotionID 
 	if err := json.Unmarshal(planBytes, &plan); err != nil {
 		t.Fatal(err)
 	}
-	for _, target := range plan["targets"].([]any) {
-		delete(target.(map[string]any), "attachments")
-	}
+	mutate(plan)
 	planBytes, err = json.Marshal(plan)
 	if err != nil {
 		t.Fatal(err)

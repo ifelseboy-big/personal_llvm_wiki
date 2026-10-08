@@ -145,7 +145,7 @@ Manifest 包含：
 - update 的 Knowledge ID、正文基线 hash 和完整文件基线 hash；
 - 可选 create Knowledge ID 与目标路径；内置 Workflow 使用 `template create` 返回的 CLI 生成 ID，以支持同计划 reciprocal 关系。
 
-冻结 Plan 额外绑定内容包 name、version、governance version 与规范策略 hash；同版本策略内容漂移也必须使 apply 失败并标记 stale。
+冻结 Plan 额外绑定内容包 name、version、governance version 与规范策略 hash；同版本策略内容漂移也必须使 apply 失败并标记 stale。target 的 `attachments` 缺省、为 null 或为空数组均表示本次没有新增附件；只要 Inbox 引用了独立原始附件，Apply 仍要求冻结目标声明并保存相应附件，不能因缺省字段跳过。
 
 Create draft 必须显式提供内容包允许的 type；Core 不猜测默认类型。`template create` 为 Knowledge 草稿返回一个 `proposed_knowledge_id`，该 ID 尚未写入事实或保留，但由 CLI 使用加密随机源生成，Plan 会再次校验格式、唯一性和目标冲突；manifest 未提供时 Plan 仍可生成 ID。Plan 先校验内容包版本、全部 Inbox、draft、Knowledge baseline、已有附件、声明式治理、关系、路径和重复目标。然后生成 `prm_` ID，将最终渲染文件和本次新增附件复制到 Promotion 的 `files/`，diff 列出全部 target 与附件的路径、大小和哈希，并以规范 plan JSON 的 SHA-256 作为 plan hash 写入 state。
 

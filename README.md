@@ -171,7 +171,7 @@ llm-wiki promote diff <promotion-id> --wiki ~/wiki
 llm-wiki promote apply <promotion-id> --approve <plan-hash> --wiki ~/wiki
 ```
 
-Plan 会冻结最终 Knowledge 文档、本次引用的原始附件和内容包 identity/策略 hash；diff 列出附件目标路径、大小与哈希。Apply 只接受完全相同的 plan hash，且只读取冻结副本；内容包、Inbox、Knowledge、已有附件、plan 或冻结文件漂移会使 Promotion 进入 `stale`，不会写入事实。
+Plan 会冻结最终 Knowledge 文档、本次引用的原始附件和内容包 identity/策略 hash；没有附件时不需要附件文件或 `attachments` 列表。diff 列出实际附件的目标路径、大小与哈希。Apply 只接受完全相同的 plan hash，且只读取冻结副本；内容包、Inbox、Knowledge、已有附件、plan 或冻结文件漂移会使 Promotion 进入 `stale`，不会写入事实。
 
 旧的冻结计划若不符合当前 Plan Schema，不能继续 diff/apply。`promote reject <promotion-id> --dry-run` 可先预览；确认后执行 `promote reject <promotion-id> --reason "重新规划"`，仅将哈希匹配的计划状态改为 `rejected`，保留原计划和差异文件，不改 Inbox 或 Knowledge。已完成的历史计划不占用 Inbox；新发布应重新生成并审阅当前格式的计划。
 

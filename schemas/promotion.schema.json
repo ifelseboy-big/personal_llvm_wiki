@@ -55,7 +55,7 @@
     },
     "target": {
       "type": "object",
-      "required": ["operation", "knowledge_id", "target_path", "frozen_file", "inbox_ids", "new_content_hash", "file_hash", "attachments"],
+      "required": ["operation", "knowledge_id", "target_path", "frozen_file", "inbox_ids", "new_content_hash", "file_hash"],
       "properties": {
         "operation": { "enum": ["create", "update"] },
         "knowledge_id": { "$ref": "#/$defs/knowledgeId" },
@@ -66,7 +66,7 @@
         "base_file_hash": { "$ref": "#/$defs/hash" },
         "new_content_hash": { "$ref": "#/$defs/hash" },
         "file_hash": { "$ref": "#/$defs/hash" },
-        "attachments": { "type": "array", "items": { "$ref": "#/$defs/attachment" } }
+        "attachments": { "type": ["array", "null"], "items": { "$ref": "#/$defs/attachment" } }
       },
       "additionalProperties": false
     }
